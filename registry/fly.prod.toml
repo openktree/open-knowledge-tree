@@ -1,0 +1,46 @@
+# Fly.io config for the OKT Knowledge Registry (prod app: okt-registry-prod).
+#
+# Prod deployment: Postgres metadata (okt-registry-prod-db cluster)
+# + filesystem object storage on the mounted Fly volume. The Postgres
+# connection string is set as a Fly secret (REGISTRY_DATABASE_URL), NOT
+# in this file. Auth is closed in prod — set REGISTRY_AUTH_JWT_SECRET
+# and REGISTRY_AUTH_AUTH_MODE via flyctl secrets.
+#
+# Secrets set via `flyctl secrets set -a okt-registry-prod`:
+#   REGISTRY_DATABASE_URL=postgres://postgres:<pw>@okt-registry-prod-db.flycast:5432
+#   REGISTRY_DATABASE_DRIVER=postgres
+#   REGISTRY_AUTH_JWT_SECRET=<strong-random>
+#   REGISTRY_AUTH_AUTH_MODE=closed
+#
+# The Postgres cluster (okt-registry-prod-db) was provisioned separately
+# via `flyctl postgres create`. It runs in the same org (okt-1) and is
+# reachable over the Fly private network at *.flycast:5432.
+app = 'okt-registry-prod'
+primary_region = 'iad'
+
+[build]
+image = 'ghcr.io/openktree/registry:latest'
+
+[env]
+REGISTRY_STORAGE_BACKEND = 'filesystem'
+REGISTRY_STORAGE_FILESYSTEM_ROOT = '/data/files'
+
+[http_service]
+internal_port = 8080
+force_https = true
+auto_stop_machines = false
+auto_start_machines = false
+min_machines_running = 1
+
+[http_service.concurrency]
+type = 'requests'
+hard_limit = 250
+soft_limit = 200
+
+[[vm]]
+size = 'shared-cpu-1x'
+memory = '256mb'
+
+[[mounts]]
+source = 'registry_data'
+destination = '/data'

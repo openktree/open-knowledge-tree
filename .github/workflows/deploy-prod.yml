@@ -8,21 +8,35 @@
 #
 # Inputs:
 #   service   - one of api, registry, frontend
-#   version   - the release tag to promote (e.g. api-v1.2.0). Must
-#               match the chosen service. The image tag (1.2.0) is
-#               derived from the tag.
+#   version   - the release tag to promote (e.g. registry-v1.0.0).
+#               Must match the chosen service. The image tag (1.0.0)
+#               is derived from the tag.
+#
+# Per-service prod config:
+#   registry  - uses registry/fly.prod.toml (Postgres + filesystem
+#               storage). The Postgres cluster okt-registry-prod-db
+#               must be running in the same Fly org.
+#   api       - uses backend/fly.toml (todo: prod variant).
+#   frontend  - uses frontend/fly.toml (todo: prod variant).
 #
 # Prereq: create the prod Fly apps and set their secrets:
-#   flyctl apps create okt-api-prod
-#   flyctl apps create okt-registry-prod
-#   flyctl apps create okt-frontend-prod
-#   # (secrets per app, same keys as the dev apps)
+#   flyctl apps create okt-api-prod --org okt-1
+#   flyctl apps create okt-registry-prod --org okt-1
+#   flyctl apps create okt-frontend-prod --org okt-1
+#   flyctl postgres create --name okt-registry-prod-db --org okt-1 \
+#     --region iad --vm-size shared-cpu-1x --vm-memory 512 \
+#     --volume-size 1 --initial-cluster-size 1 --detach
+#   flyctl secrets set -a okt-registry-prod \
+#     REGISTRY_DATABASE_DRIVER=postgres \
+#     REGISTRY_DATABASE_URL=postgres://postgres:<pw>@okt-registry-prod-db.flycast:5432 \
+#     REGISTRY_AUTH_JWT_SECRET=<strong-random> \
+#     REGISTRY_AUTH_AUTH_MODE=closed
 #
 # Prereq: set FLY_API_TOKEN as a GitHub Actions secret in repo
 # settings. Until it exists this workflow fails at the deploy step.
 #
 # Run from the Actions tab:
-#   Actions → deploy-prod → Run workflow → service=api, version=api-v1.2.0
+#   Actions → deploy-prod → Run workflow → service=registry, version=registry-v1.0.0
 name: deploy-prod
 
 on:
@@ -34,7 +48,7 @@ on:
         type: choice
         options: [api, registry, frontend]
       version:
-        description: 'Release tag to promote (e.g. api-v1.2.0)'
+        description: 'Release tag to promote (e.g. registry-v1.0.0)'
         required: true
         type: string
 
@@ -64,6 +78,15 @@ jobs:
             *) echo "version '$VERSION' does not match service '$SERVICE'" >&2; exit 1 ;;
           esac
 
+      - name: Select fly config file
+        id: cfg
+        run: |
+          if [ -f "$SERVICE/fly.prod.toml" ]; then
+            echo "path=$SERVICE/fly.prod.toml" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=$SERVICE/fly.toml" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -80,6 +103,7 @@ jobs:
         working-directory: ${{ env.SERVICE }}
         run: |
           flyctl deploy --app "$FLY_APP" \
+            --config "$(basename ${{ steps.cfg.outputs.path }})" \
             --image "$IMAGE:${{ steps.tag.outputs.tag }}" \
             --strategy rolling \
             --yes
