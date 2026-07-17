@@ -6,6 +6,11 @@ title: Expected Cost
 
 # Expected Cost
 
+:::caution Reference only
+
+The numbers on this page are **planning estimates, not quotes**. Actual spend varies widely with your model configuration (chat model choice, embedding model choice, posture classifier on/off), the length and density of the sources you fetch, how many syntheses you run, deduplication hit rate, and provider pricing changes. Use the table to size a budget; then confirm against the `ai_usage` table after your run (see [Cost tracking](#cost-tracking)).
+:::
+
 This page gives you a rough idea of what an OKT research run costs in **AI provider usage** — the tokens spent on chat models (fact decomposition, summarization, synthesis, posture classification) and on the embedding model. It does **not** include the cost of the agent that drives the Agentic Flow (opencode, Claude Code, Cursor, etc.), which is billed separately by whoever hosts that agent.
 
 ## What you pay for
@@ -37,7 +42,7 @@ That run started from an empty repository and ran the full Agentic Flow: `resear
 
 ## Estimated cost per scale
 
-Linear extrapolation from the baseline (~$50 / 1,300 sources, ~$50 / 200k facts). Real runs vary with source length, fact density, and how many syntheses you produce; treat these as order-of-magnitude planning numbers, not quotes.
+Linear extrapolation from the baseline (~$50 / 1,300 sources, ~$50 / 200k facts). Real runs vary with source length, fact density, model pricing, and how many syntheses you produce; treat these as **order-of-magnitude planning numbers, not quotes**. A cheaper chat model or a corpus of short sources can move the real spend several multiples in either direction.
 
 | Scale | Sources | Facts (approx.) | Estimated AI spend |
 |---|---|---|---|
