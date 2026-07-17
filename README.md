@@ -8,6 +8,10 @@ sources, investigations, and synthesized reports from them.
 See [`AGENTS.md`](./AGENTS.md) for the full contributor guide, conventions,
 folder structure, testing policy, and artifact placement rules.
 
+## Documentation
+
+User and reference docs are hosted at **<https://docs.openktree.com>**.
+
 ## Core services
 
 | Service | Path | Description |
@@ -161,7 +165,3 @@ repo variable and the `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets.
 ## License
 
 MIT — see [LICENSE](./LICENSE).
-
-## Documentation
-
-User and reference docs are hosted at **<https://docs.openktree.com>**.
