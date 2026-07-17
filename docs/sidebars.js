@@ -50,8 +50,9 @@ const sidebars = {
           label: "Examples",
           link: { type: "doc", id: "reference/examples/overview" },
           items: [
-            "reference/examples/healing",
             "reference/examples/agroforestry",
+            "reference/examples/humanalimentation",
+            "reference/examples/healing",
           ],
         },
       ],
