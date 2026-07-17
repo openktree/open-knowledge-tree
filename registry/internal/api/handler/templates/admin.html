@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Admin — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <h1>User Management</h1>
+    <div class="card">
+        {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="success">{{.Success}}</div>{{end}}
+        <table>
+            <tr><th>Email</th><th>Display Name</th><th>Role</th><th>Created</th><th></th></tr>
+            {{range .Users}}
+            <tr>
+                <td>{{.Email}}</td>
+                <td>{{.DisplayName}}</td>
+                <td>
+                    <form method="POST" action="/ui/admin/users/{{.ID}}/role" class="inline flex">
+                        <select name="role">
+                            <option value="viewer" {{if eq .Role "viewer"}}selected{{end}}>Viewer</option>
+                            <option value="editor" {{if eq .Role "editor"}}selected{{end}}>Editor</option>
+                            <option value="admin" {{if eq .Role "admin"}}selected{{end}}>Admin</option>
+                        </select>
+                        <button type="submit" class="btn-sm">Update</button>
+                    </form>
+                </td>
+                <td class="text-sm">{{.CreatedAt.Format "2006-01-02"}}</td>
+            </tr>
+            {{end}}
+        </table>
+    </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,134 @@
+# =============================================================================
+# Root .gitignore for open-knowledge-tree (Go + SolidJS monorepo)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment & secrets
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# -----------------------------------------------------------------------------
+# Go (backend)
+# -----------------------------------------------------------------------------
+# Binaries / build output
+backend/bin/
+backend/*.exe
+backend/*.exe~
+backend/*.dll
+backend/*.so
+backend/*.dylib
+backend/app
+backend/api
+backend/dbpedia-pull
+backend/dist/
+# Go build artifacts produced by cmd/ packages are placed in the
+# repo root of their module; ignore known binaries so they aren't
+# re-added accidentally. Binaries should be built on demand.
+/backend/api
+/backend/dbpedia-pull
+/registry/backfill-embedding-models
+
+# Test output & coverage
+backend/*.out
+backend/coverage.*
+backend/.cover/
+backend/.test/
+
+# Go workspace files
+backend/go.work
+backend/go.work.sum
+
+# Vendoring (uncomment if you vendor deps; sqlc-generated code is in repo)
+# backend/vendor/
+
+# -----------------------------------------------------------------------------
+# Node / Vite / SolidJS (frontend)
+# -----------------------------------------------------------------------------
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/.cache/
+frontend/.parcel-cache/
+frontend/.next/
+frontend/.nuxt/
+frontend/.svelte-kit/
+frontend/.output/
+frontend/storybook-static/
+
+# Logs
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+frontend/lerna-debug.log*
+frontend/.pnpm-store/
+
+# Editors / OS noise inside node projects
+frontend/.idea/
+frontend/.vscode/*
+!frontend/.vscode/extensions.json
+!frontend/.vscode/settings.json
+
+# -----------------------------------------------------------------------------
+# IDEs & editors
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+# Docker / dev runtime
+# -----------------------------------------------------------------------------
+# Air live-reload temp (see backend/.air.toml)
+backend/tmp/
+backend/build-errors.log
+
+# Registry (Go service at registry/, own go.mod)
+registry/tmp/
+registry/*.exe
+registry/*.dll
+registry/*.so
+registry/*.dylib
+
+# Volume mounts from docker-compose (uncomment paths you actually mount)
+# backend/db/data/
+# backend/uploads/
+# backend/storage/
+
+# -----------------------------------------------------------------------------
+# Misc build / cache
+# -----------------------------------------------------------------------------
+*.log
+*.local
+.cache/
+.tmp/
+tmp/
+*.tgz
+*.tar.gz
+
+# -----------------------------------------------------------------------------
+# Docusaurus (docs site)
+# -----------------------------------------------------------------------------
+docs/node_modules/
+docs/build/
+docs/.docusaurus/

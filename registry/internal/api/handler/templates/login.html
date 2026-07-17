@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Login — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <div class="card" style="max-width:28rem;margin:2rem auto">
+        <h1>Login</h1>
+        {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+        <form method="POST" action="/ui/login">
+            <label for="email">Email</label>
+            <input type="email" name="email" id="email" required autofocus>
+            <label for="password">Password</label>
+            <input type="password" name="password" id="password" required>
+            <button type="submit">Log in</button>
+        </form>
+        <p class="text-sm mt-1">Don't have an account? <a href="/ui/register">Register</a></p>
+    </div>
+</div>
+</body>
+</html>

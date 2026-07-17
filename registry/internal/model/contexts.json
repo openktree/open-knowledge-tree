@@ -1,0 +1,270 @@
+{
+  "contexts": [
+    {
+      "label": "Person"
+    },
+    {
+      "label": "Politician"
+    },
+    {
+      "label": "Election"
+    },
+    {
+      "label": "Government body"
+    },
+    {
+      "label": "Noble"
+    },
+    {
+      "label": "Diplomat"
+    },
+    {
+      "label": "Military person"
+    },
+    {
+      "label": "Military equipment"
+    },
+    {
+      "label": "Cleric"
+    },
+    {
+      "label": "Religious organisation"
+    },
+    {
+      "label": "Deity"
+    },
+    {
+      "label": "Judge"
+    },
+    {
+      "label": "Criminal"
+    },
+    {
+      "label": "Scientist"
+    },
+    {
+      "label": "Engineer"
+    },
+    {
+      "label": "Economist"
+    },
+    {
+      "label": "Businessperson"
+    },
+    {
+      "label": "Organisation"
+    },
+    {
+      "label": "Team member"
+    },
+    {
+      "label": "Writer"
+    },
+    {
+      "label": "Artist"
+    },
+    {
+      "label": "Musician"
+    },
+    {
+      "label": "Actor"
+    },
+    {
+      "label": "Television personality"
+    },
+    {
+      "label": "Film director"
+    },
+    {
+      "label": "Model"
+    },
+    {
+      "label": "Athlete"
+    },
+    {
+      "label": "Sports team"
+    },
+    {
+      "label": "Sports league"
+    },
+    {
+      "label": "Sports competition"
+    },
+    {
+      "label": "Sports coach"
+    },
+    {
+      "label": "Sport facility"
+    },
+    {
+      "label": "Animal"
+    },
+    {
+      "label": "Microorganism"
+    },
+    {
+      "label": "Plant"
+    },
+    {
+      "label": "Species"
+    },
+    {
+      "label": "Anatomical structure"
+    },
+    {
+      "label": "Chemical substance"
+    },
+    {
+      "label": "Disease"
+    },
+    {
+      "label": "Medicine",
+      "description": "drugs, vaccines, and medical treatments"
+    },
+    {
+      "label": "Gene"
+    },
+    {
+      "label": "Place"
+    },
+    {
+      "label": "Settlement"
+    },
+    {
+      "label": "Administrative region"
+    },
+    {
+      "label": "Country"
+    },
+    {
+      "label": "Historical region"
+    },
+    {
+      "label": "Geographic feature"
+    },
+    {
+      "label": "Infrastructure"
+    },
+    {
+      "label": "Building"
+    },
+    {
+      "label": "Power station"
+    },
+    {
+      "label": "Transportation"
+    },
+    {
+      "label": "Space"
+    },
+    {
+      "label": "Beverage"
+    },
+    {
+      "label": "Food"
+    },
+    {
+      "label": "Media publication"
+    },
+    {
+      "label": "Book"
+    },
+    {
+      "label": "Fictional character"
+    },
+    {
+      "label": "Film"
+    },
+    {
+      "label": "Television show"
+    },
+    {
+      "label": "Music"
+    },
+    {
+      "label": "Genre"
+    },
+    {
+      "label": "Theatre"
+    },
+    {
+      "label": "Game"
+    },
+    {
+      "label": "Artwork"
+    },
+    {
+      "label": "University"
+    },
+    {
+      "label": "Concept"
+    },
+    {
+      "label": "Algorithm"
+    },
+    {
+      "label": "Software"
+    },
+    {
+      "label": "Device"
+    },
+    {
+      "label": "Historical period"
+    },
+    {
+      "label": "Event"
+    },
+    {
+      "label": "Finance"
+    },
+    {
+      "label": "Award"
+    },
+    {
+      "label": "Name"
+    },
+    {
+      "label": "Activity",
+      "description": "practices, exercises, healing methods, and things people do"
+    },
+    {
+      "label": "Standard"
+    },
+    {
+      "label": "Collection"
+    },
+    {
+      "label": "Protected area"
+    },
+    {
+      "label": "Mine"
+    },
+    {
+      "label": "Language"
+    },
+    {
+      "label": "Pyramid"
+    },
+    {
+      "label": "Pilot"
+    },
+    {
+      "label": "Depth"
+    },
+    {
+      "label": "Open Swarm"
+    },
+    {
+      "label": "Back scene"
+    },
+    {
+      "label": "Area"
+    },
+    {
+      "label": "Radio program"
+    },
+    {
+      "label": "Member of Resistance Movement"
+    }
+  ]
+}

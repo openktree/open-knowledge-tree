@@ -1,0 +1,10 @@
+-- 0027_concept_relations.up.sql
+--
+-- No-op: the original slug-keyed concept_relations matview was
+-- superseded by migration 0030, which drops and rebuilds it keyed on
+-- lower(canonical_name) (name_a / name_b). The slug column the
+-- original 0027 matview depended on was removed in 0030, so re-running
+-- 0027 against a fresh database fails (c1.slug does not exist). This
+-- file is intentionally empty — migration 0030 creates the real
+-- matview; the version bump alone is enough to keep the migration
+-- sequence monotonic.

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Article on Trafilatura Testing</title>
+    <meta name="description" content="A short article used to verify the content parser." />
+    <meta name="author" content="OpenKT Test" />
+    <meta property="og:site_name" content="OpenKT Test Site" />
+    <style>body { background: white; }</style>
+    <script>console.log("this should not leak into the body text");</script>
+  </head>
+  <body>
+    <header>
+      <nav>
+        <a href="/home">Home</a>
+        <a href="/about">About</a>
+      </nav>
+    </header>
+
+    <main>
+      <article>
+        <h1>Article on Trafilatura Testing</h1>
+        <p>
+          Trafilatura is designed to extract the main readable
+          content from a web page while ignoring boilerplate
+          such as navigation, footers, and sidebars.
+        </p>
+        <p>
+          This second paragraph is here to give the
+          extractor enough text to make a confident
+          decision about what counts as the main body.
+        </p>
+        <p>
+          <img src="https://example.com/diagram.png" alt="diagram" />
+          <img src="/relative-image.jpg" alt="relative" />
+        </p>
+        <p>
+          A final paragraph with a <a href="https://example.com/">link</a> to
+          confirm the extractor preserves trailing prose.
+        </p>
+      </article>
+    </main>
+
+    <aside>This sidebar text must be stripped from the parsed body.</aside>
+
+    <footer>
+      <p>Copyright (c) 2025 OpenKT. All rights reserved.</p>
+    </footer>
+  </body>
+</html>

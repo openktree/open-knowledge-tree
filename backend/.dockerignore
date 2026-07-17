@@ -1,0 +1,7 @@
+vendor/
+tmp/
+docker-compose.yml
+Dockerfile
+.dockerignore
+.git
+.gitignore

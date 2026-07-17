@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>API Tokens — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <h1>API Tokens</h1>
+
+    <div class="card">
+        <h2>Create Token</h2>
+        {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+        {{if .NewToken}}
+            <div class="success">Token created! Copy it now — it won't be shown again.</div>
+            <div class="card" style="background:#f0f0f0;word-break:break-all;font-family:monospace;padding:.75rem">{{.NewToken}}</div>
+        {{end}}
+        <form method="POST" action="/ui/dashboard">
+            <label for="name">Name</label>
+            <input type="text" name="name" id="name" required placeholder="e.g. my-okt-instance">
+            <label for="scope">Scope</label>
+            <select name="scope" id="scope">
+                <option value="read">Read</option>
+                <option value="write">Write</option>
+                <option value="readwrite">Read & Write</option>
+            </select>
+            <label for="expiry">Expires in (days, 0 = never)</label>
+            <input type="number" name="expires_in_days" id="expiry" value="0" min="0">
+            <button type="submit">Create Token</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h2>Your Tokens</h2>
+        {{if .Tokens}}
+        <table>
+            <tr><th>Name</th><th>Scope</th><th>Created</th><th>Expires</th><th></th></tr>
+            {{range .Tokens}}
+            <tr>
+                <td>{{.Name}}</td>
+                <td><span class="tag">{{.Scope}}</span></td>
+                <td class="text-sm">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                <td class="text-sm">{{if .ExpiresAt}}{{.ExpiresAt.Format "2006-01-02"}}{{else}}never{{end}}</td>
+                <td>
+                    <form method="POST" action="/ui/tokens/{{.ID}}/revoke" class="inline">
+                        <button type="submit" class="btn-sm" onclick="return confirm('Revoke this token?')">Revoke</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </table>
+        {{else}}
+        <p class="text-sm">No tokens yet. Create one above.</p>
+        {{end}}
+    </div>
+</div>
+</body>
+</html>

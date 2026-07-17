@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Hide the default disclosure triangle on <summary> so the custom
+   chevron in RegistryBanner (and any future <details>) is the only
+   marker. Safari keeps the marker even with list-style: none, so we
+   also clear the ::-webkit-details-marker pseudo-element. */
+details > summary::-webkit-details-marker { display: none; }
+details > summary { list-style: none; }
+
+/* OKT design tokens — Docusaurus.io / Infima palette.
+   Light uses Infima neutral ramp + brand teal #25c2a0; dark uses the
+   docusaurus.io dark-mode primary (#2dd4b8) on Infima dark neutrals.
+   Values are stored as space-separated RGB channels so Tailwind's
+   `<alpha-value>` opacity modifier works (see tailwind.config.js). */
+:root {
+  --okt-primary: 37 194 160;        /* #25c2a0 */
+  --okt-primary-hover: 26 157 128;  /* #1a9d80 */
+  --okt-primary-soft: 230 247 243;  /* #e6f7f3 */
+  --okt-primary-fg: 13 124 99;      /* #0d7c63 */
+  --okt-primary-ring: 37 194 160;
+  --okt-success: 0 164 0;           /* #00a400 */
+  --okt-info: 84 199 236;           /* #54c7ec */
+  --okt-warning: 255 189 0;         /* #ffbd00 */
+  --okt-danger: 250 56 56;          /* #fa3838 */
+  --okt-link: 28 101 140;           /* #1c658c */
+  --okt-page: 247 248 248;          /* #f7f8f8 */
+  --okt-surface: 255 255 255;       /* #ffffff */
+  --okt-border: 235 237 240;        /* #ebedf0 */
+  --okt-text: 27 27 29;             /* #1b1b1d */
+  --okt-muted: 106 106 106;         /* #6a6a6a */
+}
+
+.dark {
+  --okt-primary: 45 212 184;        /* #2dd4b8 */
+  --okt-primary-hover: 37 194 160;   /* #25c2a0 */
+  --okt-primary-soft: 15 46 40;      /* #0f2e28 */
+  --okt-primary-fg: 45 212 184;     /* #2dd4b8 */
+  --okt-primary-ring: 45 212 184;
+  --okt-success: 63 185 80;         /* #3fb950 */
+  --okt-info: 121 199 236;         /* #79c7ec */
+  --okt-warning: 210 153 34;       /* #d29922 */
+  --okt-danger: 248 81 73;         /* #f85149 */
+  --okt-link: 78 137 232;          /* #4e89e8 */
+  --okt-page: 27 27 29;             /* #1b1b1d */
+  --okt-surface: 36 37 38;         /* #242526 */
+  --okt-border: 57 58 57;          /* #393a39 */
+  --okt-text: 227 227 227;         /* #e3e3e3 */
+  --okt-muted: 154 154 154;        /* #9a9a9a */
+}
+
+@layer base {
+  html {
+    background-color: rgb(var(--okt-page));
+    color: rgb(var(--okt-text));
+  }
+  body {
+    background-color: rgb(var(--okt-page));
+    color: rgb(var(--okt-text));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  ::selection {
+    background-color: rgb(var(--okt-primary) / 0.25);
+  }
+}
+
+/* Thin, on-brand scrollbars for scrollable panes (progressive enhancement;
+   ignored by Firefox, which uses scrollbar-width/scrollbar-color). */
+@media (pointer: fine) {
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--okt-border));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(var(--okt-muted) / 0.6);
+  }
+}
+
+/* Sentence highlight on the source detail page: sentences that
+   have at least one extracted fact get a subtle primary tint,
+   a dotted underline, and a pointer cursor; clicking opens the
+   facts modal. Kept low-opacity so long prose paragraphs don't
+   look like a wall of color. */
+.okt-sentence--has-facts {
+  background-color: rgb(var(--okt-primary) / 0.10);
+  border-bottom: 1px dotted rgb(var(--okt-primary-fg) / 0.45);
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 0 1px;
+  transition: background-color 120ms ease;
+}
+.okt-sentence--has-facts:hover {
+  background-color: rgb(var(--okt-primary) / 0.22);
+}
+.dark .okt-sentence--has-facts {
+  background-color: rgb(var(--okt-primary) / 0.08);
+  border-bottom-color: rgb(var(--okt-primary) / 0.30);
+}
+.dark .okt-sentence--has-facts:hover {
+  background-color: rgb(var(--okt-primary) / 0.18);
+}
+
+/* Per-sentence fact count badge appended inside each highlighted
+   sentence span. Small circular pill showing how many facts were
+   derived from that sentence. */
+.okt-sentence-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 3px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 600;
+  border-radius: 9999px;
+  vertical-align: baseline;
+  background-color: rgb(var(--okt-primary-fg) / 0.85);
+  color: #fff;
+  user-select: none;
+}
+.dark .okt-sentence-count {
+  background-color: rgb(var(--okt-primary) / 0.75);
+  color: rgb(var(--okt-page));
+}

@@ -1,0 +1,95 @@
+@baseUrl = http://localhost:8080/api/v1
+
+### ================================================================
+### Register a new user
+### ================================================================
+# @name register
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123",
+  "display_name": "Test User"
+}
+
+### ================================================================
+### Register a second user
+### ================================================================
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "test2@example.com",
+  "password": "password456",
+  "display_name": "Test User 2"
+}
+
+### ================================================================
+### Login with registered user credentials
+### (send this, then subsequent requests can use {{login.response.body.$.token}})
+### ================================================================
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+### ================================================================
+### Login with second user credentials
+### ================================================================
+# @name login2
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "test2@example.com",
+  "password": "password456"
+}
+
+### ================================================================
+### Logout (send login request above first)
+### ================================================================
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{login.response.body.$.token}}
+
+### ================================================================
+### Refresh session token (send login request above first)
+### ================================================================
+POST {{baseUrl}}/auth/refresh
+Authorization: Bearer {{login.response.body.$.token}}
+
+### ================================================================
+### Login with invalid credentials (expect 401)
+### ================================================================
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "wrongpassword"
+}
+
+### ================================================================
+### Register with missing fields (expect 400)
+### ================================================================
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "incomplete@example.com"
+}
+
+### ================================================================
+### Register with duplicate email (expect 409)
+### ================================================================
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}

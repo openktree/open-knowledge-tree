@@ -1,0 +1,41 @@
+{{define "styles"}}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; color: #1a1a2e; background: #f5f5f5; line-height: 1.6; }
+.container { max-width: 64rem; margin: 0 auto; padding: 1rem; }
+nav { background: #1a1a2e; color: #fff; padding: .75rem 1rem; display: flex; gap: 1.5rem; align-items: center; }
+nav a { color: #a0a0c0; text-decoration: none; font-size: .9rem; }
+nav a:hover { color: #fff; }
+nav .brand { font-weight: 700; font-size: 1.1rem; color: #fff; }
+.card { background: #fff; border-radius: 8px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+h2 { font-size: 1.2rem; margin-bottom: .75rem; }
+label { display: block; margin: .75rem 0 .25rem; font-weight: 600; font-size: .9rem; }
+input, select { width: 100%; padding: .5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
+button { background: #1a1a2e; color: #fff; border: none; padding: .6rem 1.2rem; border-radius: 4px; font-size: 1rem; cursor: pointer; margin-top: 1rem; }
+button:hover { opacity: .9; }
+.error { color: #c00; margin-bottom: .5rem; font-size: .9rem; }
+.success { color: #0a0; margin-bottom: .5rem; font-size: .9rem; }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { text-align: left; padding: .5rem; border-bottom: 1px solid #eee; font-size: .9rem; }
+th { font-weight: 600; color: #666; }
+.inline { display: inline; }
+.btn-sm { padding: .25rem .5rem; font-size: .8rem; margin: 0; }
+.flex { display: flex; gap: .5rem; align-items: center; }
+.mt-1 { margin-top: 1rem; }
+.text-sm { font-size: .85rem; color: #666; }
+.tag { display: inline-block; background: #eef; padding: .15rem .5rem; border-radius: 4px; font-size: .8rem; }
+{{end}}
+
+{{define "navbar"}}
+<nav>
+    <span class="brand">Knowledge Registry</span>
+    {{if .UserID}}
+        <a href="/ui/dashboard">Dashboard</a>
+        {{if .IsAdmin}}<a href="/ui/admin">Admin</a>{{end}}
+        <a href="/ui/logout" style="margin-left:auto">Logout</a>
+    {{else}}
+        <a href="/ui/login" style="margin-left:auto">Login</a>
+        <a href="/ui/register">Register</a>
+    {{end}}
+</nav>
+{{end}}

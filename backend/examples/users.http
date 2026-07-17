@@ -1,0 +1,82 @@
+@baseUrl = http://localhost:8080/api/v1
+
+### ================================================================
+### Step 1: Login to get session token
+### ================================================================
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+### ================================================================
+### Get current user details (no user ID needed)
+### ================================================================
+# @name me
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{login.response.body.$.token}}
+
+### ================================================================
+### Get own profile by ID
+### ================================================================
+GET {{baseUrl}}/users/{{me.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### ================================================================
+### Update own display name
+### ================================================================
+PUT {{baseUrl}}/users/{{me.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+Content-Type: application/json
+
+{
+  "display_name": "Updated Display Name"
+}
+
+### ================================================================
+### Update display name to empty
+### ================================================================
+PUT {{baseUrl}}/users/{{me.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+Content-Type: application/json
+
+{
+  "display_name": ""
+}
+
+### ================================================================
+### Try to update another user's profile (expect 403)
+### ================================================================
+PUT {{baseUrl}}/users/00000000-0000-0000-0000-000000000001
+Authorization: Bearer {{login.response.body.$.token}}
+Content-Type: application/json
+
+{
+  "display_name": "Hacked Name"
+}
+
+### ================================================================
+### Get profile without auth header (expect 401)
+### ================================================================
+GET {{baseUrl}}/users/me
+
+### ================================================================
+### Get profile with invalid token (expect 401)
+### ================================================================
+GET {{baseUrl}}/users/me
+Authorization: Bearer deadbeef
+
+### ================================================================
+### Get profile with invalid UUID (expect 400)
+### ================================================================
+GET {{baseUrl}}/users/not-a-valid-uuid
+Authorization: Bearer {{login.response.body.$.token}}
+
+### ================================================================
+### Get non-existent user profile (expect 404)
+### ================================================================
+GET {{baseUrl}}/users/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{login.response.body.$.token}}

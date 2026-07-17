@@ -1,0 +1,421 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: okt-postgres
+    environment:
+      POSTGRES_USER: okt
+      POSTGRES_PASSWORD: okt_dev
+      POSTGRES_DB: okt
+    # Postgres uses /dev/shm for parallel-query work buffers. The
+    # Docker default of 64MB is too small when 10+ embed_facts
+    # workers fire parallel queries concurrently — they exhaust shm
+    # and fail with "could not resize shared memory segment ... No
+    # space left on device" (SQLSTATE 53100). 1GB gives parallel
+    # workers ample room even under heavy bulk-embedding load.
+    shm_size: 1gb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U okt -d okt"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Dedicated Postgres for the River task queue. Kept on a
+  # separate port (5434) and a separate volume so a runaway
+  # job or a long-running VACUUM on the task DB cannot
+  # starve the application DB. Both containers share the
+  # same `okt` user; the okt_tasks database is created by
+  # the init script mounted at /docker-entrypoint-initdb.d.
+  #
+  # To switch the API to use it, set the TASK_* env vars
+  # on the api/api-dev containers (already done below).
+  postgres-tasks:
+    image: postgres:16-alpine
+    container_name: okt-postgres-tasks
+    environment:
+      POSTGRES_USER: okt
+      POSTGRES_PASSWORD: okt_dev
+      POSTGRES_DB: okt_tasks
+    shm_size: 1gb
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata_tasks:/var/lib/postgresql/data
+      - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U okt -d okt_tasks"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # FlareSolverr / Byparr is the headless-browser sidecar the
+  # fetch strategy's heaviest tier talks to. It runs an
+  # undetected-Chromium instance that solves JavaScript
+  # challenges (Cloudflare "Checking your browser", Datadome,
+  # PerimeterX) that no amount of TLS fingerprinting or header
+  # spoofing can bypass. The API container talks to it over
+  # HTTP on port 8191 (the FlareSolverr / Byparr protocol).
+  #
+  # The service is gated on the dev + prod profiles so `just
+  # test-e2e` (which uses the `test` profile) does not boot a
+  # real browser per test run. The API self-disables the
+  # FlareSolverr tier when FLARESOLVERR_URL is empty, so a
+  # deployment that doesn't need the heavy tier pays zero
+  # cost. Byparr is the actively-maintained fork of
+  # FlareSolverr; the image can be swapped via the
+  # FLARESOLVERR_IMAGE env var if an operator prefers the
+  # original.
+  flaresolverr:
+    image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
+    container_name: okt-flaresolverr
+    ports:
+      - "8191:8191"
+    healthcheck:
+      # The Byparr/FlareSolverr image ships curl and exposes a
+      # /health endpoint that returns 200 once Uvicorn is up.
+      # The root path redirects (301), so we probe /health
+      # rather than "/". The qdrant service below can't use
+      # curl (distroless) and keeps the /dev/tcp form; Byparr
+      # can use the simpler, more robust curl-based check.
+      # Byparr's /health handler does synchronous work (~10s
+      # per call on this host), so the probe timeout has to
+      # comfortably exceed that or the container flips to
+      # unhealthy and trips dependent services. 15s gives
+      # headroom; start_period keeps the boot window quiet.
+      test: ["CMD", "curl", "-fsS", "--max-time", "14", "http://127.0.0.1:8191/health"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 30s
+    profiles:
+      - dev
+      - prod
+
+  registry-dev:
+    build:
+      context: ../registry
+      dockerfile: Dockerfile.dev
+    container_name: okt-registry-dev
+    environment:
+      REGISTRY_PORT: "8081"
+      REGISTRY_DATABASE_DRIVER: sqlite
+      REGISTRY_DATABASE_URL: /data/registry.db
+      REGISTRY_STORAGE_BACKEND: s3
+      REGISTRY_S3_ENDPOINT: minio:9000
+      REGISTRY_S3_REGION: us-east-1
+      REGISTRY_S3_BUCKET: knowledge-registry
+      REGISTRY_S3_ACCESS_KEY: minioadmin
+      REGISTRY_S3_SECRET_KEY: minioadmin
+      REGISTRY_S3_PATH_STYLE: "true"
+      REGISTRY_S3_PRESIGN_TTL: "900"
+    ports:
+      - "8081:8081"
+    volumes:
+      - ../registry:/app
+      - /app/tmp
+      - registry_data:/data
+    depends_on:
+      minio:
+        condition: service_healthy
+    profiles:
+      - dev
+
+  # Qdrant is the vector index for the embedding+dedup pipeline.
+  # It is a dumb vector store: payloads carry {repository_id,
+  # status} only — Postgres is the single source of truth for
+  # everything except the vector. Port 6333 is the REST/dashboard
+  # endpoint; port 6334 is the gRPC endpoint the application talks
+  # to. A named volume persists the indexed vectors across
+  # container restarts. The test profile does NOT include Qdrant
+  # (e2e tests that need it skip when unreachable, mirroring the
+  # serper/openalex env-gated pattern).
+  qdrant:
+    image: qdrant/qdrant:v1.18
+    container_name: okt-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    # The Qdrant image is distroless-ish (no curl/wget/python), so
+    # the healthcheck uses bash's /dev/tcp pseudo-device to open a
+    # TCP connection to the REST port and issue a GET /healthz,
+    # then checks the response starts with "HTTP/1.1 200". Port
+    # 6333 is the REST/dashboard endpoint; the gRPC client talks
+    # to 6334. /healthz returns 200 when Qdrant is ready to serve.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c '
+            exec 3<>/dev/tcp/127.0.0.1/6333 &&
+            printf "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+            head -n1 <&3 | grep -q "200 OK"
+          '
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - dev
+      - prod
+
+  api:
+    build: .
+    container_name: okt-api
+    command: --mode=api
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: okt
+      DATABASE_PASSWORD: okt_dev
+      DATABASE_NAME: okt
+      DATABASE_SSLMODE: disable
+      # Point the task manager at the dedicated `postgres-tasks`
+      # service. The config default (`task.database: tasks`) already
+      # routes River to the `tasks` databases entry; these env vars
+      # override that entry's host/port/name so the task pool resolves
+      # to the `postgres-tasks` container instead of the YAML's
+      # `localhost:5432/okt_tasks`. Leaving them unset falls back to
+      # the YAML `tasks:` block (same Postgres, `okt_tasks` database
+      # created by the initdb script).
+      TASK_HOST: postgres-tasks
+      TASK_PORT: 5432
+      TASK_USER: okt
+      TASK_PASSWORD: okt_dev
+      TASK_NAME: okt_tasks
+      TASK_SSLMODE: disable
+      AUTH_JWTSECRET: change-me-in-production
+      SERPER_API_KEY: ${SERPER_API_KEY}
+      OPENALEX_EMAIL: ${OPENALEX_EMAIL:-carlosgomezsoza@gmail.com}
+      # UNPAYWALL_EMAIL is the de-facto API key for
+      # api.unpaywall.org; leave unset to disable the
+      # resolution provider (DOIs then resolve through
+      # the plain HTTP fetch, same as before this env
+      # var was introduced). When set, the API
+      # container logs the email via Unpaywall's
+      # request log on every call.
+      UNPAYWALL_EMAIL: ${UNPAYWALL_EMAIL:-}
+      # OKT_FETCH_IMPERSONATE enables the TLS-impersonation
+      # tier. Set to a tls-client profile id (e.g.
+      # "chrome_124") to enable; empty disables the tier
+      # (the provider self-disables and the chain runs
+      # unpaywall → fetch only). Defaults to chrome_124 in
+      # dev/prod so the TLS-fingerprint WAF bypass is on
+      # out of the box.
+      OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_124}
+      # FLARESOLVERR_URL points at the headless-browser
+      # sidecar. Empty disables the tier. The dev/prod
+      # profiles boot the flaresolverr service alongside
+      # the API; the test profile does not, so e2e tests
+      # that need it skip gracefully.
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      # Qdrant host/port for the embedding+dedup pipeline. The
+      # API container health-checks Qdrant at boot and fails
+      # fast if unreachable; leave QDRANT_HOST empty to boot
+      # without the pipeline (facts endpoints still serve).
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6334"
+      # FZ_VERSION must match the system MuPDF library version.
+      # go-fitz (the PDF parser binding) uses this to negotiate
+      # the context version with libmupdf.so at init time. The
+      # Alpine 3.23 community repo ships mupdf 1.26.11; without
+      # this env var go-fitz defaults to "1.24.9" (its build
+      # version), the context creation fails, and every PDF
+      # silently ends up with parse_status='unsupported'.
+      FZ_VERSION: "1.26.11"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist stored source assets (inline images, PDF page
+      # renders, full PDF source bodies) across container
+      # restarts. The path matches
+      # `providers.storage.filesystem.root` in
+      # configs/config.default.yaml; the api process writes
+      # there and the serving endpoint streams files back from
+      # it. A named volume keeps the data when the container is
+      # recreated; an anonymous bind would lose it on `down`.
+      - source_assets:/app/var/source_assets
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-tasks:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      flaresolverr:
+        condition: service_healthy
+    profiles:
+      - prod
+
+  frontend:
+    build: ../frontend
+    container_name: okt-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    profiles:
+      - prod
+
+  api-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: okt-api-dev
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: okt
+      DATABASE_PASSWORD: okt_dev
+      DATABASE_NAME: okt
+      DATABASE_SSLMODE: disable
+      # Mirror the prod `api` service: route the task manager to the
+      # dedicated `postgres-tasks` container. The config default
+      # (`task.database: tasks`) already isolates River; these env
+      # vars override the YAML `tasks:` block's host/port/name for
+      # the dev compose network.
+      TASK_HOST: postgres-tasks
+      TASK_PORT: 5432
+      TASK_USER: okt
+      TASK_PASSWORD: okt_dev
+      TASK_NAME: okt_tasks
+      TASK_SSLMODE: disable
+      AUTH_JWTSECRET: change-me-in-production
+      SERPER_API_KEY: ${SERPER_API_KEY}
+      OPENALEX_EMAIL: ${OPENALEX_EMAIL:-carlosgomezsoza@gmail.com}
+      UNPAYWALL_EMAIL: ${UNPAYWALL_EMAIL:-}
+      OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_124}
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      # Qdrant host/port — see `api` service.
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6334"
+      # FZ_VERSION — see `api` service. Must match the
+      # installed MuPDF library version so go-fitz can
+      # create the context for PDF parsing.
+      FZ_VERSION: "1.26.11"
+      REGISTRY_URL: http://registry-dev:8081
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - /app/tmp
+      # Persist stored source assets across `docker compose down`
+      # / `up` cycles. The path matches
+      # `providers.storage.filesystem.root` in
+      # configs/config.default.yaml. The `.:/app` bind above
+      # already covers the path on the host filesystem (so the
+      # `var/source_assets` directory under the project root is
+      # where files land in dev); this named volume is a
+      # belt-and-suspenders for the prod profile and for any
+      # dev setup that doesn't keep the project tree on the
+      # host.
+      - source_assets:/app/var/source_assets
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-tasks:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      flaresolverr:
+        condition: service_healthy
+    profiles:
+      - dev
+
+  frontend-dev:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      target: builder
+    container_name: okt-frontend-dev
+    command: npx vite --host 0.0.0.0 --port 5173
+    environment:
+      VITE_API_TARGET: http://api-dev:8080
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../frontend:/app
+    depends_on:
+      - api-dev
+    profiles:
+      - dev
+
+  minio:
+    image: minio/minio:latest
+    container_name: okt-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - dev
+
+  test-postgres:
+    image: postgres:16-alpine
+    container_name: okt-test-postgres
+    environment:
+      POSTGRES_USER: okt
+      POSTGRES_PASSWORD: okt_test
+      POSTGRES_DB: okt
+    ports:
+      - "5433:5432"
+    # tmpfs + the initdb.d bind mount together: tmpfs
+    # makes the data directory ephemeral (recreated on
+    # every `just test-e2e`), and the bind mount drops
+    # the okt_tasks init script into Postgres's
+    # first-boot path so the dedicated task database
+    # exists by the time tests run.
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U okt -d okt"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - test
+
+  # Docusaurus documentation site. Build the static site and
+  # serve it via nginx on port 3002. Gated on the `docs`
+  # profile so it doesn't boot with dev/prod/test. Build from
+  # the docs/ directory at the repo root.
+  #
+  #   just docs-serve
+  docs:
+    build:
+      context: ../docs
+      dockerfile: Dockerfile
+    container_name: okt-docs
+    ports:
+      - "3002:80"
+    restart: unless-stopped
+    profiles:
+      - docs
+
+volumes:
+  pgdata:
+  pgdata_tasks:
+  qdrant_data:
+  source_assets:
+  minio_data:
+  registry_data:

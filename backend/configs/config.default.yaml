@@ -1,0 +1,810 @@
+server:
+  port: 8080
+  read_timeout: 15s
+  write_timeout: 15s
+
+# Named database registry. The operator declares one or more Postgres
+# databases by name and the rest of the config picks them by name.
+# `default` is always required; legacy `database:` and `task.*`
+# fields are still parsed (with a deprecation log) and synthesized
+# into the new shape.
+#
+# The same migration set runs against every database declared
+# here, so any database the operator adds gets the full okt_system
+# and okt_repository schema. Per-tenant databases (e.g. `iso_8f3a`
+# below) start as empty mirrors of the system DDL; the
+# tier-upgrade flow populates them when a customer moves to the
+# isolated tier.
+databases:
+  default:
+    host: localhost
+    port: 5432
+    user: okt
+    password: okt_dev
+    name: okt
+    ssl_mode: disable
+    # The default (per-repository) database pool. Workers grab
+    # connections from here only for short, bursty queries (claim
+    # lock, read facts, write slice, release lock) — the long LLM
+    # calls run on context.Background() outside any transaction, so
+    # a connection is NOT held for the full job duration. This means
+    # the pool can be far smaller than the total worker count; the
+    # workers multiplex over the backend connections. 200 is a
+    # comfortable ceiling for the default queue layout (sum of all
+    # queue workers ≈ 950) because no single worker pins a
+    # connection for more than a few seconds. Raise this if you
+    # also serve heavy HTTP read traffic from the same pool.
+    max_conns: 200
+  # Dedicated River task database. Declared by default so every
+  # profile (dev + prod) isolates River's job bookkeeping (fetch,
+  # state transitions, LISTEN/NOTIFY) from the application DB. The
+  # docker-compose dev/prod stacks point `task.database` here via
+  # the `postgres-tasks` service; for a single-instance dev Postgres
+  # the initdb script (docker-entrypoint-initdb.d/01-create-tasks-db.sh)
+  # creates the `okt_tasks` database on the same instance, so the
+  # second pool resolves to the same host:port with a different
+  # database name and the two pools don't compete for slots.
+  #
+  # Sizing: River holds ~one connection per active worker ONLY for
+  # the short fetch/state-transition queries — the worker goroutine
+  # itself does not hold a task-DB connection during `Work()`, so
+  # the task pool can be much smaller than the worker sum. 200 is
+  # generous headroom over the burst of fetch + completer +
+  # notifier + producer-keepalive traffic the queue layout below
+  # generates. The formula `sum(task.queues.*) + 5` from the old
+  # comment assumed one-conn-per-worker-held-for-the-job, which is
+  # NOT how River v0.39+ works; the real demand is bursty.
+  tasks:
+    host: localhost
+    port: 5432
+    user: okt
+    password: okt_dev
+    name: okt_tasks
+    ssl_mode: disable
+    max_conns: 200
+  # Per-tenant databases go here. The picker is gated on this
+  # list; an operator who wants the picker closed leaves the
+  # isolation.allowed_databases block empty (the default).
+  # iso_8f3a:
+  #   host: tenant-8f3a-pg.internal
+  #   port: 5432
+  #   user: okt
+  #   password: <tenant-secret>
+  #   name: okt_iso_8f3a
+  #   ssl_mode: disable
+  #   max_conns: 30
+
+# Database carrying the system tables (users, sessions, casbin_rule,
+# the repositories registry). Empty falls back to "default". The
+# named database must exist in `databases`.
+system:
+  database: default
+
+# Per-repository data isolation.
+#
+# `default_database` is the database new repositories are created
+# in when the caller does not pick anything (or cannot pick).
+# Empty falls back to "default". The named database must exist
+# in `databases`.
+#
+# `allowed_databases` is the allow-list the picker validates
+# against. Leave empty (the default) to close the picker: every
+# new repository lands in `default_database`. Operators explicitly
+# opt in to multi-DB by listing database names that exist in
+# `databases`. The default database is always allowed regardless
+# of whether it's listed (an explicit entry is just a UX hint).
+isolation:
+  default_database: default
+  allowed_databases: []
+  # - iso_8f3a
+  # - iso_91bc
+
+# Task manager (River) configuration. By default the task manager
+# talks to the dedicated `tasks` database declared above, isolating
+# River's job bookkeeping (fetch, state transitions, LISTEN/NOTIFY)
+# from the application DB. An operator that wants to collapse onto a
+# single database can set `task.database: default` and remove the
+# `tasks:` entry from `databases` (or leave it; it just won't be
+# referenced).
+#
+# This block is a TOP-LEVEL key. Indenting it under another mapping
+# (e.g. `isolation:`) silently drops every task setting — River then
+# boots with only the catch-all `default` queue, the per-task queues
+# (`retrieve_source`, `source_decomposition`, …) are never declared,
+# and jobs sit in `available` forever. The config loader now rejects
+# unknown keys at boot to catch this kind of misplacement.
+task:
+  database: tasks
+  # JobTimeout is the wall-clock cap for a single River job. Large
+  # sources (books with hundreds of chunks + image extraction) need
+  # hours; small jobs finish early so the long budget costs nothing.
+  # Set to "0s" to disable River's job-level timeout entirely.
+  job_timeout: 4h
+  # Worker heartbeat. Each API process registers itself in the
+  # okt_worker_heartbeat table and updates last_heartbeat every
+  # heartbeat_interval. The rescue query (startup + on-demand from
+  # /tasks) resets running jobs whose owner has a stale heartbeat
+  # (older than heartbeat_timeout) back to available so River
+  # re-processes them. This is the recovery path for jobs orphaned
+  # by an API restart: when the process dies, its heartbeat goes
+  # stale, and the next startup (or an operator clicking Rescue) re-
+  # queues its jobs.
+  heartbeat_interval: 1m
+  heartbeat_timeout: 10m
+  rescue_on_startup: true
+  # RefreshConceptRelationsInterval is the cadence of the periodic
+  # concept-relations matview refresh. Every interval, one refresh
+  # job per registered database is enqueued (deduped by database so
+  # overlapping ticks coalesce). The matview is also refreshed at the
+  # end of every extract_concepts batch, so this periodic mainly
+  # catches repos with no recent extraction. 10m keeps relations at
+  # most ~10 minutes stale.
+  refresh_concept_relations_interval: 10m
+  queues:
+    # Worker counts are sized for the "separate task DB" default:
+    # River v0.39+ does NOT hold a database connection for the full
+    # job duration — each worker only briefly grabs a connection for
+    # the fetch/state-transition queries and its own short per-slice
+    # write tx, then releases it. The long LLM-bound jobs run on
+    # context.Background() outside any transaction, so the pool
+    # (max_conns: 200) multiplexes far more workers than it has
+    # backend connections. The real ceiling at this concurrency is
+    # the LLM provider's rate limit, not Postgres.
+    #
+    # Heavy LLM-bound extraction/summarization/synthesis/decomposition
+    # queues get 100 workers each — the throughput knobs for
+    # ingestion. Everything else (embedding, dedup, cleanup, refresh,
+    # registry sync, reports, migration) gets 50, which is generous
+    # for their lighter per-job cost.
+    retrieve_source: 50
+    source_decomposition: 100
+    embed_facts: 50
+    deduplicate_facts: 50
+    extract_concepts: 100
+    # refine_concepts resolves unresolved concept_candidates (LLM
+    # alias-generation pass). It fans out from extract_concepts and
+    # runs BEFORE summarize_concepts so the summarizer sees final
+    # canonical names. 100 workers lets the candidate backlog drain
+    # concurrently with extraction; the per-candidate advisory lock
+    # keeps two workers from refining the same canonical at once.
+    refine_concepts: 100
+    embed_concepts: 50
+    cleanup_facts: 50
+    # summarize_concepts is fanned out from extract_concepts in
+    # parallel with embed_concepts. 100 workers lets a large repo's
+    # concept chunks drain concurrently; the per-concept advisory
+    # lock (ClaimConceptForSummary) keeps two workers from
+    # summarizing the same concept at once.
+    summarize_concepts: 100
+    # Concept synthesis ("definition") is chained from
+    # summarize_concepts: every time a slice is written/updated, one
+    # synthesize_concept job is enqueued. 100 workers lets synthesis
+    # keep up with the summarization fan-out.
+    synthesize_concept: 100
+    # Concept-relations matview refresh. The refresh is deduped per-
+    # database (only one runs at a time) and is a single CONCURRENTLY-
+    # refresh statement, so high concurrency is wasted here; 50 is
+    # far more than the number of databases that will refresh in
+    # parallel, but harmless because the dedup collapses the rest.
+    refresh_concept_relations: 50
+    # Report autofact annotation. Each job makes N embedding calls
+    # (one per sentence) then a Qdrant search per sentence. 50 lets
+    # several reports annotate in parallel.
+    annotate_report: 50
+    # Context migration (merge semantics). A migration is a serial
+    # per-concept tx loop, and only one migration per (repo, old,
+    # new) triple can run at a time (river unique opts). 50 lets
+    # many repos migrate in parallel.
+    migrate_context: 50
+    # Knowledge registry contribution. Chained from cleanup_facts
+    # (source-scoped). Pushes surviving facts, concepts, and
+    # embeddings to the configured registry service — one HTTP POST
+    # per source, not taxing.
+    contribute_source: 50
+    # Pull all from registry: checks every processed source in the
+    # repo against the registry and imports available decompositions.
+    # Each job does one GET per source + potentially imports facts/
+    # concepts/embeddings, which can be intensive.
+    pull_all_from_registry: 50
+
+auth:
+  jwt_secret: "change-me-in-production"
+  token_ttl: 24h
+
+# OAuth 2.1 authorization server. OKT acts as its own authorization
+# server so MCP clients (Claude Desktop, etc.) can connect to the
+# OKT MCP endpoint (POST /api/v1/mcp) via Authorization Code + PKCE
+# instead of a static API token. The access tokens it issues are
+# HS256 JWTs signed with auth.jwt_secret (shared with the session
+# JWT) so the MCP resource server can validate them statelessly.
+#
+# issuer is the externally-resolvable base URL of the OKT instance.
+# It MUST be overridden in production to the URL users' browsers and
+# MCP clients reach OKT at (e.g. "https://okt.example.com"). Empty
+# falls back to "http://localhost:8080" for local dev. The env var
+# OKT_OAUTH_ISSUER overrides it for docker-compose / secrets.
+#
+# The TTLs match OAuth 2.1 best practice: short-lived access JWTs
+# (15m), rotating refresh tokens (30d), single-use authorization
+# codes (10m). All three default when zero; leaving them commented
+# is fine.
+oauth:
+  issuer: ""
+  access_token_ttl: 15m
+  refresh_token_ttl: 720h   # 30d
+  auth_code_ttl: 10m
+
+providers:
+  search:
+    provider: "serper"
+    serper:
+      api_key: ""
+    openalex:
+      email: ""
+  resolution:
+    fetch:
+      enabled: true
+      user_agent: "Mozilla/5.0 (compatible; OpenKT/1.0; +https://github.com/openktree/open-knowledge-tree)"
+      # Timeout is the per-request HTTP client timeout.
+      # Increased from the historical 30s default to 60s so large
+      # PDFs from slow academic hosts are less likely to time out.
+      timeout: 60s
+      # Retry configures transient-failure retries for the HTTP
+      # fetch provider (and TLS impersonation when also configured).
+      # max_attempts: total attempts including the first (3 =
+      # initial + 2 retries). Set to 1 to disable retry entirely.
+      # base_delay / max_delay govern exponential backoff: 2s, 4s,
+      # 8s, ... capped at max_delay.
+      retry:
+        max_attempts: 3
+        base_delay: 2s
+        max_delay: 15s
+    # Unpaywall (https://unpaywall.org) is an opt-in
+    # resolution provider that, for DOI-classified sources,
+    # looks up an open-access copy of the work and fetches
+    # it. When email is set the provider is registered
+    # ahead of the plain HTTP fetch in the fetch strategy,
+    # so DOIs that have a freely-readable OA copy are
+    # resolved to that copy's body. DOIs without OA fall
+    # through to the plain fetch (the publisher landing
+    # page). The email can also be supplied via the
+    # UNPAYWALL_EMAIL env var.
+    unpaywall:
+      email: ""
+    # TLS-impersonation resolution provider (Phase 3). When
+    # impersonate is empty the provider self-disables and is
+    # not registered. impersonate is the browser fingerprint
+    # target (e.g. "chrome_124"); the underlying tls-client
+    # library accepts the same identifiers as
+    # curl-impersonate. Can also be supplied via the
+    # OKT_FETCH_IMPERSONATE env var.
+    tls:
+      impersonate: ""
+      # Timeout is the per-request timeout for the TLS-impersonating
+      # HTTP client. Defaults to 30s when empty.
+      timeout: 30s
+    # FlareSolverr / Byparr headless-browser resolution
+    # provider (Phase 3). When url is empty the provider
+    # self-disables. url is the HTTP endpoint of the
+    # headless-browser sidecar (e.g.
+    # "http://flaresolverr:8191"). timeout defaults to 60s
+    # when empty. Can also be supplied via the
+    # FLARESOLVERR_URL env var.
+    flaresolverr:
+      url: ""
+      timeout: 60s
+    # Static host → provider-id overrides. The strategy
+    # consults this map before learning, so an operator can
+    # pin "www.cell.com" → "tls" without waiting for the
+    # learned preference to converge. Exact host match
+    # first, then suffix match (so "cell.com" matches
+    # "www.cell.com"). Empty means no static overrides.
+    host_overrides: {}
+    # Ordered, comma-separated list of provider ids the
+    # strategy should try. When empty the strategy uses the
+    # order providers were registered in (the production
+    # default is unpaywall → tls → fetch → flaresolverr,
+    # with tls/flaresolverr self-skipping when not
+    # configured). This is an operator escape hatch for
+    # reordering without code changes.
+    chain: ""
+  decomposition:
+    chunking:
+      chunk_size: 2000
+      chunk_overlap: 200
+    fact_extraction:
+      provider: "openrouter"
+      model: "google/gemma-4-31b-it"
+      # Concurrency caps how many chunks are sent to the model in
+      # parallel within one source_decomposition job. The AI calls fan
+      # out (phase 1); the DB persistence stays serial (phase 2) so DB
+      # connection pressure is unchanged from the serial baseline.
+      # Lower this if your provider returns 429 storms; the per-call
+      # retry/backoff already handles transient rate limits.
+      concurrency: 4
+    # Image fact extraction: a multimodal model that receives each
+    # image attached to a source (inline image URL fetched via the
+    # fetch provider, or PDF page render bytes from the DB) plus the
+    # source URL, title, and the image's alt text, and returns
+    # fact-oriented descriptions that become image facts (facts
+    # carrying a non-null image_url so the frontend can render the
+    # picture next to the fact). The model MUST support vision /
+    # multimodal input (image_url content parts in the OpenAI wire
+    # format); a text-only model will error on every image. When
+    # enabled is false (or the provider/model is not configured),
+    # image extraction is a no-op and only text facts are produced.
+    image_extraction:
+      enabled: true
+      provider: "ollama_cloud"
+      model: "gemma4:31b-cloud"
+      max_image_bytes: 5242880    # 5 MB
+      max_images_per_source: 20
+      # Concurrency caps how many images are sent to the multimodal
+      # model in parallel within one source_decomposition job. The AI
+      # calls fan out (phase 1); the DB persistence stays serial
+      # (phase 2). Image bytes are fetched from storage concurrently
+      # (read-only, safe).
+      concurrency: 4
+    # Concept extraction: a chat model that receives a single stable
+    # fact (after dedup) and returns a list of (concept, context,
+    # seed_aliases) triples. The context is constrained to the
+    # embedded context vocabulary the worker loads at boot (see
+    # providers.ontology). Seed aliases boost text-search matching so
+    # the next fact mentioning the same concept under a different
+    # surface form links to the existing concept. When enabled is
+    # false (or the provider/model is not configured), the
+    # extract_concepts worker is a no-op and the dedup→cleanup chain
+    # runs without concept linking.
+    concept_extraction:
+      enabled: true
+      provider: "openrouter"
+      model: "google/gemma-4-31b-it"
+      # FactBatchSize caps how many facts are sent to the concept
+      # model in a single LLM call. The default (10) amortizes the
+      # per-call overhead and the repeated ontology prefix across
+      # multiple facts, so 10 facts cost one ontology prefix instead
+      # of ten. Raising it lowers token cost and call count further;
+      # lowering it (min 1) restores the legacy one-call-per-fact
+      # behavior. Each call's concepts carry a fact_index so the
+      # worker can map them back to their fact.
+      fact_batch_size: 10
+      # Concurrency caps how many fact-batches are sent to the concept
+      # model in parallel. One round fetches Concurrency ×
+      # fact_batch_size facts (one parallel wave), splits them into
+      # Concurrency chunks of fact_batch_size facts each, fans the
+      # chunks out, persists the results serially in input order, then
+      # re-fetches. There is no separate fetch-batch knob — the wave
+      # size is derived so every fetched fact is in a chunk that runs
+      # immediately (no straggler waiting for a semaphore slot). The
+      # serial persistence phase preserves fact #2's FindConceptByAlias
+      # seeing concepts created by fact #1.
+      concurrency: 4
+  # Embedding provider used by the embed_facts task to vectorize
+  # extracted facts into Qdrant. The provider name must match a key
+  # in the `ai` block (the same provider instances are reused); the
+  # model and dimensions must be consistent with the Qdrant
+  # collection's vector size. Switching dimension requires
+  # recreating the Qdrant collection and re-embedding all facts —
+  # set `qdrant.allow_recreate: true` (dev only) to let
+  # EnsureCollection drop+recreate at boot.
+  embedding:
+    provider: "openrouter"
+    model: "google/gemini-embedding-2"
+    dimensions: 3072
+    # Local-dev / cost-free alternative (different dimension —
+    # requires recreating the Qdrant collection and re-embedding
+    # all facts):
+    # provider: "ollama"
+    # model: "qwen3-embedding"
+    # dimensions: 1024
+  # Qdrant is a dumb vector index. Payloads carry
+  # `{repository_id, status}` only — no fact text, no source_id.
+  # Postgres is the single source of truth for everything except
+  # the vector. The collection is shared (single `okt_facts`
+  # collection) and filtered by `repository_id` at query time.
+  qdrant:
+    host: "localhost"
+    port: 6334
+    api_key: ""
+    collection: "okt_facts"
+    # Concept vectors live in a separate collection so concept
+    # searches don't scan fact vectors and a dimension change on
+    # one collection doesn't force re-embedding the other.
+    concept_collection: "okt_concepts"
+    allow_recreate: false
+  # Per-repository cross-source deduplication. Threshold is the
+  # cosine similarity score above which two facts are considered
+  # duplicates. CatchupMaxAge is the age beyond which stuck
+  # `to_delete`/`new` facts are reaped by the daily fact_catchup
+  # periodic job (Go duration string).
+  dedup:
+    threshold: 0.94
+    catchup_max_age: 168h
+  # Report autofact annotation. The annotate_report worker chunks an
+  # uploaded report into sentences, embeds each with the same
+  # embedding provider the facts use, and searches the okt_facts
+  # Qdrant collection for similar facts above the configured threshold;
+  # matches persist in report_annotations so the UI can render each
+  # sentence alongside its auto-cited facts (an "autocitation" view).
+  # SimilarityThreshold is lower than dedup's 0.94 because we want
+  # "supporting", not "duplicate". When enabled is false (or the
+  # embedding provider is not configured) the worker is a no-op and
+  # reports stay in `pending` until annotation is enabled.
+  reports:
+    enabled: true
+    similarity_threshold: 0.7
+    max_facts_per_sentence: 5
+    min_sentence_runes: 40
+    # Autocite posture classifier. After Qdrant retrieval, each
+    # (sentence, candidate fact) pair is sent to an LLM that labels
+    # the relationship as related / supports / contradicts / irrelevant;
+    # irrelevant pairs are dropped before persistence. Falls back to
+    # the legacy keep-all behavior (posture = NULL) when the chat/AI
+    # provider is not configured, Enabled is false, or a per-repo
+    # repository_report_settings row turns the classifier off. A
+    # repository_model_settings row for task_kind='report_annotation'
+    # overrides Provider+Model per repo (resolved via ModelResolver).
+    posture_classifier:
+      enabled: true
+      # Provider + model match the rest of the AI stack (fact
+      # extraction, summarization, synthesis all use Gemma on
+      # OpenRouter). A per-repo repository_model_settings row for
+      # task_kind='report_annotation' can override this model per
+      # repo without touching the global config. An operator that
+      # wants the classifier off sets enabled: false here, or
+      # toggles the per-repo posture_classifier_enabled flag.
+      provider: "openrouter"
+      model: "google/gemma-4-31b-it"
+      batch_size: 8       # sentences per LLM call
+      max_concurrent: 4   # in-flight LLM calls per annotate_report job
+      max_tokens: 800     # output token cap per batch
+  # File storage backend for source assets (inline images, PDF page
+  # renders, and full PDF source bodies). The backend is pluggable:
+  # `backend` selects the implementation. Today only `filesystem`
+  # (local disk) is implemented; `s3` is reserved for the future
+  # cloud/CDN provider (config is parsed but the backend returns
+  # ErrNotImplemented until it lands).
+  #
+  # Files are keyed per-repository/per-source under
+  # `repositories/{repoID}/sources/{sourceID}/...`. The filesystem
+  # root must be writable and persistent (mount a docker volume in
+  # production). Stored files are served via the authenticated
+  # `/api/v1/repositories/{repoID}/sources/{sourceID}/images/{imageID}`
+  # and `.../body` endpoints.
+  storage:
+    backend: filesystem
+    filesystem:
+      root: var/source_assets
+    # s3:
+    #   bucket: ""
+    #   region: ""
+    #   endpoint: ""
+  # Knowledge Registry: the pre-decomposed source cache. Most users
+  # don't run their own registry — they use the shared instance. Leave
+  # URL empty to disable the integration (default).
+  #
+  # When URL is set, the retrieve_source worker checks the registry
+  # before fetching. If a source matching the URL or DOI exists, the
+  # worker imports the pre-computed artifacts (facts, concepts,
+  # summaries, embeddings) and skips the entire AI pipeline.
+  #
+  # Models not in AllowedModels are ignored. Set to ["*"] to allow all
+  # models.
+  #
+  # Auth: set auth_mode to "bearer" (API key) or "hmac" (signed
+  # requests) when the registry requires authentication. Leave empty
+  # or "none" for public registries. api_key is the write key (push)
+  # or HMAC secret; read_api_key is an optional separate read key
+  # (search/pull) that falls back to api_key when empty.
+  #
+  # Env var overrides: REGISTRY_URL, REGISTRY_AUTH_MODE,
+  # REGISTRY_API_KEY, REGISTRY_READ_API_KEY.
+  #
+  # To run a local registry for development:
+  #   just knowledge-registry
+  # Then set URL to "http://localhost:8081" via config.local.yaml or
+  # the REGISTRY_URL env var.
+  registry:
+    url: ""
+    auth_mode: ""
+    api_key: ""
+    read_api_key: ""
+    allowed_models: []
+  # Knowledge Registry — multi-registry list (optional). When set,
+  # each repository can pick which registry it uses (cache lookup on
+  # fetch + remote browse/pull) from its Settings page. The legacy
+  # single `registry:` block above is the default entry (id
+  # "default") when this list is empty; you don't need to duplicate
+  # it here.
+  #
+  # Each entry needs a unique `id` (used as the per-repo selector)
+  # and a `url`. Set `auth_mode` to "bearer" or "hmac" when the
+  # registry requires auth; `api_key` is the write/HMAC key,
+  # `read_api_key` is an optional separate read key.
+  #
+  # Example:
+  #   registries:
+  #     - id: public
+  #       url: "https://registry.example.org"
+  #       auth_mode: bearer
+  #       api_key: "write-secret"
+  #       read_api_key: "read-secret"
+  #       allowed_models: ["*"]
+  #     - id: internal
+  #       url: "http://internal-registry:8081"
+  #       allowed_models: ["openai/gpt-4o"]
+  registries: []
+  # Concept summarization: a chat model that receives the facts
+  # linked to a (concept, context) pair and returns a credulous
+  # markdown summary citing central/key facts via [text](<fact_id>).
+  # Summaries are incremental — sliced into BatchSize-fact chunks;
+  # the open slice is regenerated as new facts arrive until it
+  # reaches BatchSize and freezes, then the next batch seeds a new
+  # open slice. This keeps LLM spend bounded while still letting a
+  # reader absorb 100 facts via a few short summaries. When enabled
+  # is false (or the provider/model is not configured), the
+  # summarize_concepts worker is a no-op and extract_concepts does
+  # not enqueue it. LockStaleness is the window after which a held
+  # per-concept summarizing_at lock is reclaimable by the next
+  # worker run; MaxConceptsPerRun is the chunk size for fan-out
+  # (extract_concepts enqueues one SummarizeConcepts job per chunk).
+  summarization:
+    enabled: false
+    provider: "openrouter"
+    model: "google/gemma-4-31b-it"
+    batch_size: 20
+    max_concepts_per_run: 40
+    lock_staleness: 2h
+    # max_tokens caps the LLM's output length per summary slice so a
+    # 20-fact slice stays a bounded read. The prompt also nudges the
+    # model toward a concise (~400-500 word) summary; this is the
+    # hard backstop. Default 600 (~450 words).
+    max_tokens: 600
+  # Concept refinement: a chat model that resolves unresolved concept
+  # candidates — proposes the full formal canonical name, known
+  # aliases to add, and aliases to prune. Runs once per unresolved
+  # candidate (genuinely new concepts only; resolved candidates route
+  # via the concept_candidates cache, matched candidates route via
+  # pre-LLM DB lookups). The refine_concepts task fans out from
+  # extract_concepts and runs BEFORE summarize_concepts so the
+  # summarizer sees the final canonical names. When enabled is false
+  # (or the provider/model is not configured), refine_concepts is a
+  # no-op — candidates stay unresolved until an operator enables it.
+  # prune_threshold: re-prune an established concept's aliases only
+  # when >= X new aliases have accumulated since the last refinement.
+  refinement:
+    enabled: false
+    provider: "openrouter"
+    model: "google/gemma-4-31b-it"
+    max_candidates_per_run: 40
+    prune_threshold: 5
+    # max_tokens caps the LLM's output length per refinement call.
+    # The response is a small JSON object; 400 is generous.
+    max_tokens: 400
+    # max_concurrency bounds the number of candidates processed
+    # concurrently within a single RefineConcepts job. Each candidate
+    # that misses pre-LLM routing makes its own LLM call, so this is
+    # the main wall-time knob: 5 lets a 40-candidate chunk with ~30
+    # LLM calls drain in ~6 concurrent waves instead of 30 serial
+    # calls. The per-canonical advisory lock keeps two goroutines
+    # from refining the same canonical at once.
+    max_concurrency: 5
+  # Concept synthesis ("definition"): a chat model that folds ALL of a
+  # canonical-name group's summary slices into ONE authoritative
+  # definition per (repository_id, lower(canonical_name)). The
+  # synthesize_concept worker is chained from summarize_concepts —
+  # every time a slice is written/updated, one synthesize_concept job
+  # is enqueued for that concept_id (which resolves to its canonical-
+  # name group). The synthesis is the user-facing "definition" of the
+  # concept (GET /concepts/{conceptID}/definition).
+  #
+  # A separate image-picker LLM call (ImagePickerModel) narrows the
+  # group's image facts down to MaxImages before the synthesis call,
+  # so the synthesis can embed ![alt](<fact_id>) images that
+  # illustrate the concept. When the candidate count is <= MaxImages
+  # the picker call is skipped. When Enabled is false (or the
+  # provider/model is not configured), the synthesize_concept worker
+  # is a no-op and summarize_concepts does not enqueue it.
+  synthesis:
+    enabled: true
+    provider: "openrouter"
+    model: "deepseek/deepseek-v4-flash:turbo"
+    image_picker_model: "google/gemma-4-31b-it"
+    max_tokens: 10000
+    # thinking_level controls the model's reasoning effort. Valid values:
+    #   "low" — minimal reasoning chain, faster + cheaper but less thorough
+    #   "medium" — balanced reasoning depth (default when unset)
+    #   "high" — deep reasoning, slower + more expensive
+    # Only applies to models that support the reasoning_effort parameter
+    # (OpenAI o-series, DeepSeek R1, etc.). Set to "low" for the synthesis
+    # model since it's primarily a prose-composition task where extended
+    # reasoning chains waste tokens.
+    thinking_level: "low"
+    max_images: 10
+    max_image_candidates: 50
+    # Top N1 related concept names (ranked by shared_fact_count) loaded
+    # as the graph-structure block of the synthesis prompt. Drives the
+    # Graph-Aware Reasoning section.
+    max_related_concepts: 10
+    # Of those N1, the top N2 (by shared_fact_count) also have their
+    # existing concept_syntheses.content attached verbatim. Smaller
+    # than N1 because each synthesis adds substantial prompt context.
+    # Clamped to <= max_related_concepts at boot.
+    max_related_syntheses: 3
+  ai:
+    ollama:
+      base_url: ""
+    ollama_cloud:
+      api_key: ""
+    openrouter:
+      api_key: ""
+      # Max inputs per POST /v1/embeddings request. OpenRouter returns an
+      # empty `data` array when a batch exceeds the underlying embedding
+      # model's input-count or total-token limit. When that happens the
+      # client auto-halves the batch and retries, down to a single input,
+      # so this is a starting point rather than a hard limit. Default 32
+      # when unset or <=0.
+      embed_batch_size: 32
+    # Model catalog. Each entry describes one model served by the
+    # named provider. `rate_limit_rpm` caps the requests-per-minute
+    # sent to that model (enforced per-model, not per-provider, via
+    # a rate.Limiter in the RateLimitedProvider decorator). 0 means
+    # "use the default" (DefaultModelRateLimitRPM = 30) — set a very
+    # large number (e.g. 100000) to opt a model out of limiting. The
+    # default 30 keeps a single model from drowning an LLM provider
+    # when the queue fans out hundreds of workers; raise it per
+    # model to match the provider's real RPM headroom.
+    models:
+      - id: "nemotron-3-ultra"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "glm-5.2"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "kimi-k2.7"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "gemma4:31b"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "ministral-3:8b"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "glm-5.2"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "deepseek-v4-pro"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "deepseek-v4-flash"
+        provider: "ollama_cloud"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+      - id: "z-ai/glm-5.2"
+        provider: "openrouter"
+        input_cost_per_1m: 1.4
+        output_cost_per_1m: 4.4
+        rate_limit_rpm: 500
+      - id: "google/gemma-4-31b-it"
+        provider: "openrouter"
+        input_cost_per_1m: 0.12
+        output_cost_per_1m: 0.4
+        rate_limit_rpm: 500
+      - id: "google/gemini-embedding-2"
+        provider: "openrouter"
+        input_cost_per_1m: 0.0
+        output_cost_per_1m: 0.0
+        rate_limit_rpm: 500
+
+# Bootstrap controls one-time startup data creation. Each step is
+# idempotent and only acts when its target table is empty, so the
+# settings are safe to leave on across restarts. The two steps are
+# independent and may be enabled/disabled separately.
+#
+# `default_repository` creates a single starter repository the
+# first time the app boots against an empty database. The
+# startup path picks the earliest user as the owner; the lazy
+# path in GET /repositories picks the calling user, so the first
+# user to register always has a starter repo.
+#
+# `default_admin` seeds a system administrator the first time
+# the app boots against an empty users table. The credentials
+# are read from the OKT_BOOTSTRAP_DEFAULT_ADMIN_{EMAIL,PASSWORD,
+# DISPLAY_NAME} env vars (the password is intentionally kept out
+# of the YAML schema). The step is skipped if the env vars are
+# missing, the users table isn't empty, or the flag is off.
+# Once the admin is seeded, the flag is no longer consulted.
+bootstrap:
+  default_repository: true
+  default_admin: false
+  # OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL: admin@example.com
+  # OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD: change-me
+  # OKT_BOOTSTRAP_DEFAULT_ADMIN_DISPLAY_NAME: "Default Admin"
+
+# Repository presets: the "types" the create-repository UI offers.
+# Each preset bundles a curated provider set + context allow-list so
+# a new repo starts optimized for its use case (scientific,
+# general, enterprise, …). Presets are config-driven so an operator
+# can tune or add them without a code change.
+#
+# Providers is a map of kind ("search"|"resolution") → list of
+# provider ids to seed enabled. Contexts is the curated context
+# allow-list; the special string "all" means the full embedded
+# context vocabulary (resolved at creation time, ~88 categories); an
+# empty list means "no contexts allowed" (the admin fills custom
+# ones — the Enterprise pattern). custom_contexts lists
+# non-standard labels to also seed with is_custom=TRUE, and
+# custom_context_descriptions carries their short descriptions.
+#
+# default_repository_preset names the preset used when the create
+# body omits `preset`.
+repository_presets:
+  - id: general
+    label: General
+    description: "All providers enabled, full context vocabulary. The safe default for a broad knowledge base."
+    providers:
+      search: ["serper", "openalex"]
+      resolution: ["fetch", "unpaywall", "tls", "flaresolverr"]
+    contexts: ["all"]
+  - id: scientific
+    label: Scientific
+    description: "OpenAlex search + Open-Access resolution, curated scientific contexts. For academic / research repos."
+    providers:
+      search: ["openalex"]
+      resolution: ["fetch", "unpaywall", "tls"]
+    contexts:
+      - Biomolecule
+      - chemical compound
+      - chemical substance
+      - drug
+      - gene
+      - protein
+      - organisation
+      - academic journal
+      - scientist
+      - research project
+      - article
+      - book
+      - Scientific concept
+      - disease
+      - Medicine
+      - medical specialty
+      - species
+      - plant
+      - animal
+      - enzyme
+      - mean of transportation
+      - Instrument
+      - device
+      - chemical element
+      - HumanGene
+      - organ
+  - id: enterprise
+    label: Enterprise
+    description: "Web search + plain fetch, no preset contexts. Admin adds custom contexts (Product, Application, Role, …) after creation."
+    providers:
+      search: ["serper"]
+      resolution: ["fetch"]
+    contexts: []
+    custom_contexts: ["Product", "Application", "Role"]
+    custom_context_descriptions:
+      Product: "A product or service the organisation offers."
+      Application: "A software application or internal tool."
+      Role: "A job role or responsibility within the organisation."
+
+default_repository_preset: general

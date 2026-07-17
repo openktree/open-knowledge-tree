@@ -1,0 +1,5 @@
+-- 0027_concept_relations.down.sql
+--
+-- No-op (see the matching .up.sql). The real concept_relations matview
+-- is created by 0030 and dropped by 0030's .down.sql; nothing to undo
+-- here.

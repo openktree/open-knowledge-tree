@@ -1,0 +1,12 @@
+configs/config.local.yaml
+.env
+vendor/
+tmp/
+# Stored source assets (inline images, PDF page renders, full
+# PDF source bodies). The directory is created at boot by the
+# filesystem storage backend; the contents are runtime data,
+# not source. Keep this ignore even though the directory is
+# referenced from configs/config.default.yaml
+# (providers.storage.filesystem.root: var/source_assets).
+var/source_assets/*
+!var/source_assets/.gitkeep

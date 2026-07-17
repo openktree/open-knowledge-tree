@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Register — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <div class="card" style="max-width:28rem;margin:2rem auto">
+        <h1>Register</h1>
+        {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="success">{{.Success}}</div>{{end}}
+        <form method="POST" action="/ui/register">
+            <label for="display_name">Display name</label>
+            <input type="text" name="display_name" id="display_name">
+            <label for="email">Email</label>
+            <input type="email" name="email" id="email" required autofocus>
+            <label for="password">Password</label>
+            <input type="password" name="password" id="password" required>
+            <button type="submit">Create account</button>
+        </form>
+        <p class="text-sm mt-1">Already have an account? <a href="/ui/login">Login</a></p>
+    </div>
+</div>
+</body>
+</html>

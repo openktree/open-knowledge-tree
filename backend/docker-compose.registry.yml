@@ -1,0 +1,58 @@
+# docker-compose.registry.yml — standalone Knowledge Registry stack.
+#
+# This compose file is separate from the main OKT compose because
+# most users don't need their own registry — they use the shared
+# one. Run it when you want a local registry for development:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.registry.yml up -d
+#   just knowledge-registry   # shorthand
+#
+# The registry API listens on :8081, MinIO console on :9001.
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: okt-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  registry:
+    build:
+      context: ../registry
+      dockerfile: Dockerfile.registry
+    container_name: okt-registry
+    environment:
+      REGISTRY_PORT: "8081"
+      REGISTRY_DATABASE_DRIVER: sqlite
+      REGISTRY_DATABASE_URL: /data/registry.db
+      REGISTRY_STORAGE_BACKEND: s3
+      REGISTRY_S3_ENDPOINT: minio:9000
+      REGISTRY_S3_REGION: us-east-1
+      REGISTRY_S3_BUCKET: knowledge-registry
+      REGISTRY_S3_ACCESS_KEY: minioadmin
+      REGISTRY_S3_SECRET_KEY: minioadmin
+      REGISTRY_S3_PATH_STYLE: "true"
+      REGISTRY_S3_PRESIGN_TTL: "900"
+    ports:
+      - "8081:8081"
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - registry_data:/data
+
+volumes:
+  minio_data:
+  registry_data:

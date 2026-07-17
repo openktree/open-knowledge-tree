@@ -1,0 +1,7 @@
+DROP TABLE IF EXISTS api_tokens;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS fact_hashes;
+DROP TABLE IF EXISTS decompositions;
+DROP TABLE IF EXISTS contexts;
+DROP TABLE IF EXISTS sources;
+DROP TABLE IF EXISTS repositories;

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "okt",
+  "mcp": {
+    "open-knowledge-tree": {
+      "type": "remote",
+      "url": "http://localhost:8080/api/v1/mcp",
+      "enabled": true,
+      "timeout": 15000,
+      "oauth": {
+        "scope": "mcp",
+        "callbackPort": 19876
+      }
+    }
+  }
+}

@@ -1,0 +1,4797 @@
+{
+  "model": "google/gemma-4-31b-it",
+  "original_label_count": 789,
+  "candidate_label_count": 87,
+  "summary": {
+    "original_found": 96,
+    "original_correct": 70,
+    "candidate_found": 97,
+    "candidate_correct": 73,
+    "total_cases": 100
+  },
+  "cases": [
+    {
+      "id": "cancer_disease_vs_journal",
+      "fact": "A 2023 study published in Cancer found that early-stage melanoma patients had a 94% survival rate when treated with combination immunotherapy.",
+      "target_concept": "Cancer",
+      "expected_original": "disease",
+      "expected_candidate": "Disease",
+      "ambiguity": "Cancer is both a disease AND a journal name; the fact mentions both meanings (the disease and the journal it was published in).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Cancer",
+            "context": "academic journal"
+          },
+          {
+            "concept": "melanoma",
+            "context": "disease"
+          },
+          {
+            "concept": "combination immunotherapy",
+            "context": "Medicine"
+          }
+        ],
+        "target_match": "academic journal",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Cancer",
+            "context": "Media publication"
+          },
+          {
+            "concept": "melanoma",
+            "context": "Disease"
+          },
+          {
+            "concept": "combination immunotherapy",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Media publication",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "coffee_beverage_vs_food_vs_book",
+      "fact": "Coffee consumption of more than 4 cups per day is associated with reduced risk of liver cirrhosis according to a meta-analysis.",
+      "target_concept": "Coffee",
+      "expected_original": "beverage",
+      "expected_candidate": "Beverage",
+      "ambiguity": "Coffee can be a beverage, a food, or a book about coffee. The fact is about drinking coffee.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Coffee",
+            "context": "beverage"
+          },
+          {
+            "concept": "liver cirrhosis",
+            "context": "disease"
+          },
+          {
+            "concept": "meta-analysis",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "beverage",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Coffee",
+            "context": "Beverage"
+          },
+          {
+            "concept": "liver cirrhosis",
+            "context": "Disease"
+          },
+          {
+            "concept": "meta-analysis",
+            "context": "Algorithm"
+          }
+        ],
+        "target_match": "Beverage",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "water_compound_vs_body_of_water",
+      "fact": "The water in the Pacific Ocean covers approximately 165 million square kilometers, making it the largest geographic feature on Earth.",
+      "target_concept": "Water",
+      "expected_original": "body of water",
+      "expected_candidate": "Geographic feature",
+      "ambiguity": "Water is both a chemical compound (H2O) and a body of water (ocean, lake). The fact refers to the Pacific Ocean as a body of water.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Pacific Ocean",
+            "context": "Ocean"
+          },
+          {
+            "concept": "Earth",
+            "context": "planet"
+          }
+        ],
+        "target_match": "",
+        "found": false,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Pacific Ocean",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Earth",
+            "context": "Place"
+          }
+        ],
+        "target_match": "",
+        "found": false,
+        "correct": false
+      }
+    },
+    {
+      "id": "lourdes_place_vs_novel",
+      "fact": "Lourdes is a commune in the Hautes-Pyrenees department of France, situated at the foot of the Pyrenees mountain range.",
+      "target_concept": "Lourdes",
+      "expected_original": "place",
+      "expected_candidate": "Place",
+      "ambiguity": "Lourdes is both a town in France and a novel by Emile Zola. The fact describes the geographic town.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Lourdes",
+            "context": "municipality"
+          },
+          {
+            "concept": "Hautes-Pyrenees",
+            "context": "department"
+          },
+          {
+            "concept": "France",
+            "context": "country"
+          },
+          {
+            "concept": "Pyrenees",
+            "context": "mountain range"
+          }
+        ],
+        "target_match": "municipality",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Lourdes",
+            "context": "Settlement"
+          },
+          {
+            "concept": "Hautes-Pyrenees",
+            "context": "Administrative region"
+          },
+          {
+            "concept": "France",
+            "context": "Country"
+          },
+          {
+            "concept": "Pyrenees",
+            "context": "Geographic feature"
+          }
+        ],
+        "target_match": "Settlement",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "universe_celestial_vs_concept",
+      "fact": "The universe began 13.8 billion years ago with the Big Bang, expanding from an extremely hot, dense initial state.",
+      "target_concept": "Universe",
+      "expected_original": "celestial body",
+      "expected_candidate": "Space",
+      "ambiguity": "Universe could be a celestial body, a place, or a Scientific concept. The fact is about cosmology.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "universe",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "Big Bang",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "Scientific concept",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "universe",
+            "context": "Space"
+          },
+          {
+            "concept": "Big Bang",
+            "context": "Event"
+          }
+        ],
+        "target_match": "Space",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "energy_concept_vs_quantity",
+      "fact": "The energy released by the Hiroshima bomb was approximately 63 terajoules, equivalent to 15 kilotons of TNT.",
+      "target_concept": "Energy",
+      "expected_original": "Scientific concept",
+      "expected_candidate": "Concept",
+      "ambiguity": "Energy is a Scientific concept but also a measurable quantity. The fact uses it as a physics concept.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Hiroshima bomb",
+            "context": "weapon"
+          },
+          {
+            "concept": "TNT",
+            "context": "chemical compound"
+          }
+        ],
+        "target_match": "",
+        "found": false,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Hiroshima bomb",
+            "context": "Military equipment"
+          },
+          {
+            "concept": "TNT",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "terajoules",
+            "context": "Concept"
+          },
+          {
+            "concept": "kilotons",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "",
+        "found": false,
+        "correct": false
+      }
+    },
+    {
+      "id": "soil_mineral_vs_concept",
+      "fact": "The soil in the Amazon basin contains high levels of aluminum and iron oxides, making it acidic and low in nutrients.",
+      "target_concept": "Soil",
+      "expected_original": "topical concept",
+      "expected_candidate": "Concept",
+      "ambiguity": "Soil could be a mineral, a chemical substance, or a topical concept. The fact describes soil composition.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Amazon basin",
+            "context": "natural region"
+          },
+          {
+            "concept": "aluminum",
+            "context": "chemical element"
+          },
+          {
+            "concept": "iron oxides",
+            "context": "chemical compound"
+          }
+        ],
+        "target_match": "",
+        "found": false,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Amazon basin",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "aluminum",
+            "context": "Concept"
+          },
+          {
+            "concept": "iron oxides",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "",
+        "found": false,
+        "correct": false
+      }
+    },
+    {
+      "id": "pain_disease_vs_concept",
+      "fact": "Chronic pain affects over 1.5 billion people worldwide and is defined as pain lasting longer than 3 months.",
+      "target_concept": "Pain",
+      "expected_original": "disease",
+      "expected_candidate": "Disease",
+      "ambiguity": "Pain is both a disease (chronic pain syndrome) and a Scientific concept (nociception).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Chronic pain",
+            "context": "disease"
+          }
+        ],
+        "target_match": "disease",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Chronic pain",
+            "context": "Disease"
+          }
+        ],
+        "target_match": "Disease",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "placebo_medicine_vs_concept",
+      "fact": "The placebo effect was demonstrated in a clinical trial where 32% of patients receiving sugar pills reported pain reduction.",
+      "target_concept": "Placebo",
+      "expected_original": "Medicine",
+      "expected_candidate": "Disease",
+      "ambiguity": "Placebo is both a Medicine and a Scientific concept. The fact is about the medical/clinical use.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "placebo effect",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "clinical trial",
+            "context": "activity"
+          },
+          {
+            "concept": "sugar pills",
+            "context": "chemical substance"
+          }
+        ],
+        "target_match": "Scientific concept",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "placebo effect",
+            "context": "Concept"
+          },
+          {
+            "concept": "clinical trial",
+            "context": "Activity"
+          },
+          {
+            "concept": "sugar pills",
+            "context": "Device"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "drought_event_vs_concept",
+      "fact": "The drought that affected the Sahel region from 1968 to 1985 caused an estimated 100,000 deaths and displaced millions.",
+      "target_concept": "Drought",
+      "expected_original": "natural event",
+      "expected_candidate": "Event",
+      "ambiguity": "Drought is both a natural event and a Scientific concept. The fact describes a specific historical event.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Sahel region",
+            "context": "natural region"
+          },
+          {
+            "concept": "drought",
+            "context": "natural event"
+          }
+        ],
+        "target_match": "natural event",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Sahel region",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "drought",
+            "context": "Event"
+          }
+        ],
+        "target_match": "Event",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "california_state_vs_region",
+      "fact": "California became the 31st state of the United States on September 9, 1850, after being ceded by Mexico.",
+      "target_concept": "California",
+      "expected_original": "state",
+      "expected_candidate": "Administrative region",
+      "ambiguity": "California is both a US state (administrative region) and a geographic region. The fact is about statehood.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "California",
+            "context": "state"
+          },
+          {
+            "concept": "United States",
+            "context": "country"
+          },
+          {
+            "concept": "Mexico",
+            "context": "country"
+          }
+        ],
+        "target_match": "state",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "California",
+            "context": "Administrative region"
+          },
+          {
+            "concept": "United States",
+            "context": "Country"
+          },
+          {
+            "concept": "Mexico",
+            "context": "Country"
+          }
+        ],
+        "target_match": "Administrative region",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "nature_journal_vs_concept",
+      "fact": "The journal Nature, founded in 1869 by Norman Lockyer, is one of the oldest and most cited scientific publications in the world.",
+      "target_concept": "Nature",
+      "expected_original": "academic journal",
+      "expected_candidate": "Media publication",
+      "ambiguity": "Nature is both an academic journal and a topical concept (the natural world). The fact is about the journal.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Nature",
+            "context": "academic journal"
+          },
+          {
+            "concept": "Norman Lockyer",
+            "context": "Academic Person"
+          }
+        ],
+        "target_match": "academic journal",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Nature",
+            "context": "Media publication"
+          },
+          {
+            "concept": "Norman Lockyer",
+            "context": "Scientist"
+          }
+        ],
+        "target_match": "Media publication",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "general_relativity_concept_vs_book",
+      "fact": "Einstein's general relativity predicts that light bends around massive objects, confirmed by Eddington's 1919 eclipse expedition.",
+      "target_concept": "General Relativity",
+      "expected_original": "Scientific concept",
+      "expected_candidate": "Concept",
+      "ambiguity": "General relativity is both a Scientific concept and a book title. The fact describes the theory.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Einstein",
+            "context": "Academic Person"
+          },
+          {
+            "concept": "general relativity",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "Eddington",
+            "context": "Academic Person"
+          },
+          {
+            "concept": "1919 eclipse expedition",
+            "context": "event"
+          }
+        ],
+        "target_match": "Scientific concept",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Einstein",
+            "context": "Scientist"
+          },
+          {
+            "concept": "general relativity",
+            "context": "Concept"
+          },
+          {
+            "concept": "Eddington",
+            "context": "Scientist"
+          },
+          {
+            "concept": "1919 eclipse expedition",
+            "context": "Event"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "reiki_activity_vs_concept",
+      "fact": "Reiki practitioners place their hands lightly on or near the patient's body to channel healing energy during sessions lasting 45-90 minutes.",
+      "target_concept": "Reiki",
+      "expected_original": "activity",
+      "expected_candidate": "Activity",
+      "ambiguity": "Reiki is both an activity (the practice) and a Scientific concept (the energy theory).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Reiki",
+            "context": "activity"
+          },
+          {
+            "concept": "healing energy",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "activity",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Reiki",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "climate_change_event_vs_concept",
+      "fact": "Climate change has caused global average temperatures to rise by 1.1 degrees Celsius since the pre-industrial era.",
+      "target_concept": "Climate Change",
+      "expected_original": "Scientific concept",
+      "expected_candidate": "Concept",
+      "ambiguity": "Climate change is both a Scientific concept and a natural event. The fact describes the phenomenon.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Climate change",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "pre-industrial era",
+            "context": "historical period"
+          }
+        ],
+        "target_match": "Scientific concept",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Climate change",
+            "context": "Concept"
+          },
+          {
+            "concept": "pre-industrial era",
+            "context": "Historical period"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "clinical_trial_concept_vs_project",
+      "fact": "A phase III clinical trial with 2,847 participants demonstrated that the new drug reduced mortality by 23% compared to placebo.",
+      "target_concept": "Clinical Trial",
+      "expected_original": "Scientific concept",
+      "expected_candidate": "Concept",
+      "ambiguity": "Clinical trial is both a Scientific concept and a research project. The fact describes the methodology.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "phase III clinical trial",
+            "context": "research project"
+          },
+          {
+            "concept": "placebo",
+            "context": "drug"
+          }
+        ],
+        "target_match": "research project",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "phase III clinical trial",
+            "context": "Activity"
+          },
+          {
+            "concept": "placebo",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Activity",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "apple_fruit_vs_company",
+      "fact": "Apple announced its new M4 chip at WWDC 2024, claiming a 50% performance improvement over the M2.",
+      "target_concept": "Apple",
+      "expected_original": "organisation",
+      "expected_candidate": "Organisation",
+      "ambiguity": "Apple is both a fruit (food) and a company (organisation). The fact is about the tech company.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Apple",
+            "context": "company"
+          },
+          {
+            "concept": "M4 chip",
+            "context": "device"
+          },
+          {
+            "concept": "WWDC 2024",
+            "context": "event"
+          },
+          {
+            "concept": "M2",
+            "context": "device"
+          }
+        ],
+        "target_match": "company",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Apple",
+            "context": "Organisation"
+          },
+          {
+            "concept": "M4 chip",
+            "context": "Device"
+          },
+          {
+            "concept": "WWDC 2024",
+            "context": "Event"
+          },
+          {
+            "concept": "M2",
+            "context": "Device"
+          }
+        ],
+        "target_match": "Organisation",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "amazon_company_vs_river",
+      "fact": "Amazon has over 1.5 million employees worldwide and reported $574.8 billion in revenue for fiscal year 2023.",
+      "target_concept": "Amazon",
+      "expected_original": "organisation",
+      "expected_candidate": "Organisation",
+      "ambiguity": "Amazon is both a river (geographic feature) and a company (organisation). The fact is about the company.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Amazon",
+            "context": "company"
+          },
+          {
+            "concept": "2023",
+            "context": "year"
+          }
+        ],
+        "target_match": "company",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Amazon",
+            "context": "Organisation"
+          },
+          {
+            "concept": "fiscal year 2023",
+            "context": "Historical period"
+          }
+        ],
+        "target_match": "Organisation",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "trump_politician_vs_brand",
+      "fact": "Trump Tower on Fifth Avenue in New York City is a 58-story mixed-use building valued at approximately $400 million.",
+      "target_concept": "Trump",
+      "expected_original": "Politician",
+      "expected_candidate": "Politician",
+      "ambiguity": "Trump is both a politician and a building/brand name. The fact is about a building but named after the person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Trump Tower",
+            "context": "building"
+          },
+          {
+            "concept": "Fifth Avenue",
+            "context": "street"
+          },
+          {
+            "concept": "New York City",
+            "context": "city"
+          }
+        ],
+        "target_match": "building",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Trump Tower",
+            "context": "Building"
+          },
+          {
+            "concept": "Fifth Avenue",
+            "context": "Infrastructure"
+          },
+          {
+            "concept": "New York City",
+            "context": "Settlement"
+          }
+        ],
+        "target_match": "Building",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "turkey_country_vs_animal_vs_food",
+      "fact": "Turkey is a transcontinental country spanning the Anatolian peninsula in Western Asia and the Balkan peninsula in Southeastern Europe.",
+      "target_concept": "Turkey",
+      "expected_original": "country",
+      "expected_candidate": "Country",
+      "ambiguity": "Turkey is a country, an animal (bird), and a food. The fact is about the country.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Turkey",
+            "context": "country"
+          },
+          {
+            "concept": "Anatolian peninsula",
+            "context": "natural region"
+          },
+          {
+            "concept": "Western Asia",
+            "context": "region"
+          },
+          {
+            "concept": "Balkan peninsula",
+            "context": "natural region"
+          },
+          {
+            "concept": "Southeastern Europe",
+            "context": "region"
+          }
+        ],
+        "target_match": "country",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Turkey",
+            "context": "Country"
+          },
+          {
+            "concept": "Anatolian peninsula",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Western Asia",
+            "context": "Administrative region"
+          },
+          {
+            "concept": "Balkan peninsula",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Southeastern Europe",
+            "context": "Administrative region"
+          },
+          {
+            "concept": "Europe",
+            "context": "Place"
+          }
+        ],
+        "target_match": "Country",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "einstein_scientist_vs_person",
+      "fact": "Albert Einstein published four groundbreaking papers in 1905, including the discovery of the photoelectric effect and special relativity.",
+      "target_concept": "Einstein",
+      "expected_original": "scientist",
+      "expected_candidate": "Scientist",
+      "ambiguity": "Einstein is a scientist but could also be just a person or Academic Person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Albert Einstein",
+            "context": "scientist"
+          },
+          {
+            "concept": "photoelectric effect",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "special relativity",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "1905",
+            "context": "year"
+          }
+        ],
+        "target_match": "scientist",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Albert Einstein",
+            "context": "Scientist"
+          },
+          {
+            "concept": "photoelectric effect",
+            "context": "Concept"
+          },
+          {
+            "concept": "special relativity",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Scientist",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "mozart_artist_vs_person",
+      "fact": "Mozart composed his first symphony at age 8 and produced over 600 works before dying at 35.",
+      "target_concept": "Mozart",
+      "expected_original": "artist",
+      "expected_candidate": "Artist",
+      "ambiguity": "Mozart is a musical artist but could be a generic person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Mozart",
+            "context": "music composer"
+          },
+          {
+            "concept": "symphony",
+            "context": "musical work"
+          }
+        ],
+        "target_match": "music composer",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Mozart",
+            "context": "Musician"
+          },
+          {
+            "concept": "symphony",
+            "context": "Genre"
+          }
+        ],
+        "target_match": "Musician",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "obama_politician_vs_person",
+      "fact": "Obama signed the Affordable Care Act into law on March 23, 2010, extending health insurance to 20 million Americans.",
+      "target_concept": "Obama",
+      "expected_original": "politician",
+      "expected_candidate": "Politician",
+      "ambiguity": "Obama is a politician but could be a generic person or office holder.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Obama",
+            "context": "American Leader"
+          },
+          {
+            "concept": "Affordable Care Act",
+            "context": "law"
+          },
+          {
+            "concept": "Americans",
+            "context": "ethnic group"
+          }
+        ],
+        "target_match": "American Leader",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Obama",
+            "context": "Politician"
+          },
+          {
+            "concept": "Affordable Care Act",
+            "context": "Concept"
+          },
+          {
+            "concept": "Americans",
+            "context": "Person"
+          }
+        ],
+        "target_match": "Politician",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "scorsese_director_vs_person",
+      "fact": "Scorsese directed Goodfellas in 1990, using a tracking shot that has become one of the most studied sequences in cinema history.",
+      "target_concept": "Scorsese",
+      "expected_original": "actor",
+      "expected_candidate": "Film director",
+      "ambiguity": "Scorsese is a film director, not an actor. The L3 list lacks a 'director' class so may misassign.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Scorsese",
+            "context": "Movie director"
+          },
+          {
+            "concept": "Goodfellas",
+            "context": "movie"
+          },
+          {
+            "concept": "tracking shot",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "Movie director",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Scorsese",
+            "context": "Film director"
+          },
+          {
+            "concept": "Goodfellas",
+            "context": "Film"
+          },
+          {
+            "concept": "tracking shot",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Film director",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "shakespeare_writer_vs_person",
+      "fact": "Shakespeare wrote 39 plays and 154 sonnets during his career, with Hamlet being his longest at 4,042 lines.",
+      "target_concept": "Shakespeare",
+      "expected_original": "writer",
+      "expected_candidate": "Writer",
+      "ambiguity": "Shakespeare is a writer but could be just a person.",
+      "original": {
+        "all_concepts": [],
+        "target_match": "",
+        "found": false,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Shakespeare",
+            "context": "Writer"
+          },
+          {
+            "concept": "Hamlet",
+            "context": "Artwork"
+          }
+        ],
+        "target_match": "Writer",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "tesla_scientist_vs_person_vs_company",
+      "fact": "Nikola Tesla patented the alternating current motor in 1888, a foundation of modern electrical power distribution.",
+      "target_concept": "Tesla",
+      "expected_original": "scientist",
+      "expected_candidate": "Scientist",
+      "ambiguity": "Tesla is a person (Nikola), a company (Tesla Inc.), and a sports team. The fact is about the person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Nikola Tesla",
+            "context": "scientist"
+          },
+          {
+            "concept": "alternating current motor",
+            "context": "device"
+          },
+          {
+            "concept": "electrical power distribution",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "scientist",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Nikola Tesla",
+            "context": "Scientist"
+          },
+          {
+            "concept": "alternating current motor",
+            "context": "Device"
+          },
+          {
+            "concept": "electrical power distribution",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Scientist",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "curie_scientist_vs_person",
+      "fact": "Marie Curie discovered radium and polonium, winning Nobel Prizes in both physics (1903) and chemistry (1911).",
+      "target_concept": "Curie",
+      "expected_original": "scientist",
+      "expected_candidate": "Scientist",
+      "ambiguity": "Curie is a scientist, could be generic person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Marie Curie",
+            "context": "scientist"
+          },
+          {
+            "concept": "radium",
+            "context": "chemical element"
+          },
+          {
+            "concept": "polonium",
+            "context": "chemical element"
+          },
+          {
+            "concept": "Nobel Prizes",
+            "context": "award"
+          },
+          {
+            "concept": "physics",
+            "context": "academic subject"
+          },
+          {
+            "concept": "chemistry",
+            "context": "academic subject"
+          }
+        ],
+        "target_match": "scientist",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Marie Curie",
+            "context": "Scientist"
+          },
+          {
+            "concept": "radium",
+            "context": "Concept"
+          },
+          {
+            "concept": "polonium",
+            "context": "Concept"
+          },
+          {
+            "concept": "Nobel Prizes",
+            "context": "Award"
+          },
+          {
+            "concept": "physics",
+            "context": "Concept"
+          },
+          {
+            "concept": "chemistry",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Scientist",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "napoleon_politician_vs_person",
+      "fact": "Napoleon crowned himself Emperor of the French in 1804 and led France through the Napoleonic Wars until 1815.",
+      "target_concept": "Napoleon",
+      "expected_original": "politician",
+      "expected_candidate": "Politician",
+      "ambiguity": "Napoleon is a politician/monarch but could be a generic person or office holder.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Napoleon",
+            "context": "American Leader"
+          },
+          {
+            "concept": "France",
+            "context": "country"
+          },
+          {
+            "concept": "Napoleonic Wars",
+            "context": "military conflict"
+          }
+        ],
+        "target_match": "American Leader",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Napoleon",
+            "context": "Politician"
+          },
+          {
+            "concept": "Emperor of the French",
+            "context": "Noble"
+          },
+          {
+            "concept": "France",
+            "context": "Country"
+          },
+          {
+            "concept": "Napoleonic Wars",
+            "context": "Event"
+          }
+        ],
+        "target_match": "Politician",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "davinci_artist_vs_scientist",
+      "fact": "Leonardo da Vinci painted the Mona Lisa between 1503 and 1519, using his sfumato technique to create atmospheric depth.",
+      "target_concept": "da Vinci",
+      "expected_original": "artist",
+      "expected_candidate": "Artist",
+      "ambiguity": "Da Vinci was both an artist and a scientist/engineer. The fact is about painting.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Leonardo da Vinci",
+            "context": "artist"
+          },
+          {
+            "concept": "Mona Lisa",
+            "context": "artwork"
+          },
+          {
+            "concept": "sfumato",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "artist",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Leonardo da Vinci",
+            "context": "Artist"
+          },
+          {
+            "concept": "Mona Lisa",
+            "context": "Artwork"
+          },
+          {
+            "concept": "sfumato",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Artist",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "darwin_scientist_vs_writer",
+      "fact": "Charles Darwin observed finch beak variations on the Galapagos Islands, leading to his theory of natural selection published in 1859.",
+      "target_concept": "Darwin",
+      "expected_original": "scientist",
+      "expected_candidate": "Scientist",
+      "ambiguity": "Darwin is a scientist but also a writer (author of On the Origin of Species).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Charles Darwin",
+            "context": "scientist"
+          },
+          {
+            "concept": "finch",
+            "context": "bird"
+          },
+          {
+            "concept": "Galapagos Islands",
+            "context": "archipelago"
+          },
+          {
+            "concept": "natural selection",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "scientist",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Charles Darwin",
+            "context": "Scientist"
+          },
+          {
+            "concept": "finch",
+            "context": "Animal"
+          },
+          {
+            "concept": "Galapagos Islands",
+            "context": "Place"
+          },
+          {
+            "concept": "natural selection",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Scientist",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "gandhi_politician_vs_person",
+      "fact": "Gandhi led the 240-mile Salt March in 1930, a nonviolent protest against British salt taxation that drew international attention.",
+      "target_concept": "Gandhi",
+      "expected_original": "politician",
+      "expected_candidate": "Politician",
+      "ambiguity": "Gandhi is a political figure but could be a generic person or office holder.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Gandhi",
+            "context": "person"
+          },
+          {
+            "concept": "Salt March",
+            "context": "historical event"
+          },
+          {
+            "concept": "British",
+            "context": "ethnic group"
+          }
+        ],
+        "target_match": "person",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Gandhi",
+            "context": "Politician"
+          },
+          {
+            "concept": "Salt March",
+            "context": "Event"
+          },
+          {
+            "concept": "British salt taxation",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Politician",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "picasso_artist_vs_person",
+      "fact": "Pablo Picasso co-founded the Cubist movement in 1907 with Georges Braque, producing over 20,000 artworks in his lifetime.",
+      "target_concept": "Picasso",
+      "expected_original": "artist",
+      "expected_candidate": "Artist",
+      "ambiguity": "Picasso is an artist, could be a generic person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Pablo Picasso",
+            "context": "artist"
+          },
+          {
+            "concept": "Cubist movement",
+            "context": "artistic genre"
+          },
+          {
+            "concept": "Georges Braque",
+            "context": "artist"
+          }
+        ],
+        "target_match": "artist",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Pablo Picasso",
+            "context": "Artist"
+          },
+          {
+            "concept": "Cubist movement",
+            "context": "Genre"
+          },
+          {
+            "concept": "Georges Braque",
+            "context": "Artist"
+          }
+        ],
+        "target_match": "Artist",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "jordan_athlete_vs_person",
+      "fact": "Michael Jordan scored a career-high 69 points against the Cavaliers on March 28, 1990, shooting 23-of-37 from the field.",
+      "target_concept": "Jordan",
+      "expected_original": "basketball player",
+      "expected_candidate": "Athlete",
+      "ambiguity": "Jordan is an athlete (basketball player) but also a country (Jordan) and a river.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Michael Jordan",
+            "context": "basketball player"
+          },
+          {
+            "concept": "Cavaliers",
+            "context": "basketball team"
+          }
+        ],
+        "target_match": "basketball player",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Michael Jordan",
+            "context": "Athlete"
+          },
+          {
+            "concept": "Cavaliers",
+            "context": "Sports team"
+          }
+        ],
+        "target_match": "Athlete",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "woods_athlete_vs_person",
+      "fact": "Tiger Woods won his 15th major championship at the 2019 Masters, completing one of the greatest comeback stories in sports.",
+      "target_concept": "Woods",
+      "expected_original": "golf player",
+      "expected_candidate": "Athlete",
+      "ambiguity": "Woods is a golf player but also a forest (woods). The fact is about the golfer.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Tiger Woods",
+            "context": "athlete"
+          },
+          {
+            "concept": "2019 Masters",
+            "context": "sports event"
+          },
+          {
+            "concept": "major championship",
+            "context": "competition"
+          }
+        ],
+        "target_match": "athlete",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Tiger Woods",
+            "context": "Athlete"
+          },
+          {
+            "concept": "2019 Masters",
+            "context": "Sports competition"
+          }
+        ],
+        "target_match": "Athlete",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "musk_businessperson_vs_politician",
+      "fact": "Elon Musk founded SpaceX in 2002 with $100 million of his PayPal fortune, aiming to reduce space transportation costs.",
+      "target_concept": "Musk",
+      "expected_original": "businessperson",
+      "expected_candidate": "Businessperson",
+      "ambiguity": "Musk is a businessperson, sometimes seen as a politician or engineer.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Elon Musk",
+            "context": "businessperson"
+          },
+          {
+            "concept": "SpaceX",
+            "context": "company"
+          },
+          {
+            "concept": "PayPal",
+            "context": "company"
+          },
+          {
+            "concept": "space transportation",
+            "context": "activity"
+          }
+        ],
+        "target_match": "businessperson",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Elon Musk",
+            "context": "Businessperson"
+          },
+          {
+            "concept": "SpaceX",
+            "context": "Organisation"
+          },
+          {
+            "concept": "PayPal",
+            "context": "Organisation"
+          },
+          {
+            "concept": "space transportation",
+            "context": "Transportation"
+          }
+        ],
+        "target_match": "Businessperson",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "pope_francis_cleric_vs_politician",
+      "fact": "Pope Francis became the 266th pontiff of the Catholic Church in 2013, the first Jesuit and first from the Americas.",
+      "target_concept": "Pope Francis",
+      "expected_original": "pope",
+      "expected_candidate": "Cleric",
+      "ambiguity": "Pope Francis is a cleric (pope) but could be seen as a political leader (head of Vatican state).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Pope Francis",
+            "context": "pope"
+          },
+          {
+            "concept": "Catholic Church",
+            "context": "religious organisation"
+          },
+          {
+            "concept": "Jesuit",
+            "context": "clerical order"
+          },
+          {
+            "concept": "Americas",
+            "context": "continent"
+          }
+        ],
+        "target_match": "pope",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Pope Francis",
+            "context": "Cleric"
+          },
+          {
+            "concept": "Catholic Church",
+            "context": "Religious organisation"
+          },
+          {
+            "concept": "Jesuit",
+            "context": "Religious organisation"
+          },
+          {
+            "concept": "Americas",
+            "context": "Place"
+          }
+        ],
+        "target_match": "Cleric",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "jobs_businessperson_vs_person",
+      "fact": "Steve Jobs unveiled the iPhone at Macworld 2007, calling it 'a revolutionary product that changes everything.'",
+      "target_concept": "Jobs",
+      "expected_original": "businessperson",
+      "expected_candidate": "Businessperson",
+      "ambiguity": "Jobs is a businessperson but the word 'jobs' also means employment. The fact is about the person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Steve Jobs",
+            "context": "businessperson"
+          },
+          {
+            "concept": "iPhone",
+            "context": "device"
+          },
+          {
+            "concept": "Macworld 2007",
+            "context": "event"
+          }
+        ],
+        "target_match": "businessperson",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Steve Jobs",
+            "context": "Businessperson"
+          },
+          {
+            "concept": "iPhone",
+            "context": "Device"
+          },
+          {
+            "concept": "Macworld 2007",
+            "context": "Event"
+          }
+        ],
+        "target_match": "Businessperson",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "judge_judge_vs_person",
+      "fact": "Judge Bork was nominated to the Supreme Court by Reagan in 1987 but was rejected by the Senate 58-42.",
+      "target_concept": "Judge",
+      "expected_original": "judge",
+      "expected_candidate": "Judge",
+      "ambiguity": "Judge is both a person type (judge) and a generic title. The fact is about a specific judge.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Judge Bork",
+            "context": "judge"
+          },
+          {
+            "concept": "Supreme Court",
+            "context": "legislature"
+          },
+          {
+            "concept": "Reagan",
+            "context": "American Leader"
+          },
+          {
+            "concept": "Senate",
+            "context": "legislature"
+          }
+        ],
+        "target_match": "judge",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Judge Bork",
+            "context": "Judge"
+          },
+          {
+            "concept": "Supreme Court",
+            "context": "Government body"
+          },
+          {
+            "concept": "Reagan",
+            "context": "Politician"
+          },
+          {
+            "concept": "Senate",
+            "context": "Government body"
+          }
+        ],
+        "target_match": "Judge",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "nasa_organisation_vs_government",
+      "fact": "NASA was established on October 1, 1958, by the National Aeronautics and Space Act, replacing NACA.",
+      "target_concept": "NASA",
+      "expected_original": "organisation",
+      "expected_candidate": "Organisation",
+      "ambiguity": "NASA is both an organisation and a government agency. The fact is about its founding.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "NASA",
+            "context": "government agency"
+          },
+          {
+            "concept": "National Aeronautics and Space Act",
+            "context": "law"
+          },
+          {
+            "concept": "NACA",
+            "context": "government agency"
+          }
+        ],
+        "target_match": "government agency",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "NASA",
+            "context": "Organisation"
+          },
+          {
+            "concept": "National Aeronautics and Space Act",
+            "context": "Concept"
+          },
+          {
+            "concept": "NACA",
+            "context": "Organisation"
+          }
+        ],
+        "target_match": "Organisation",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "who_organisation_vs_person",
+      "fact": "The WHO declared COVID-19 a pandemic on March 11, 2020, triggering coordinated international health responses.",
+      "target_concept": "WHO",
+      "expected_original": "organisation",
+      "expected_candidate": "Organisation",
+      "ambiguity": "WHO is an organisation (World Health Organization) but could be confused with the pronoun.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "WHO",
+            "context": "international organisation"
+          },
+          {
+            "concept": "COVID-19",
+            "context": "COVID-19 pandemic"
+          },
+          {
+            "concept": "pandemic",
+            "context": "Pandemic"
+          }
+        ],
+        "target_match": "international organisation",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "WHO",
+            "context": "Organisation"
+          },
+          {
+            "concept": "COVID-19",
+            "context": "Disease"
+          },
+          {
+            "concept": "pandemic",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Organisation",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "washington_person_vs_place",
+      "fact": "Washington led the Continental Army to victory over the British at Yorktown in 1781, securing American independence.",
+      "target_concept": "Washington",
+      "expected_original": "person",
+      "expected_candidate": "Politician",
+      "ambiguity": "Washington is a person (George), a US state, and a city (DC). The fact is about the person.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Washington",
+            "context": "American Leader"
+          },
+          {
+            "concept": "Continental Army",
+            "context": "military unit"
+          },
+          {
+            "concept": "British",
+            "context": "ethnic group"
+          },
+          {
+            "concept": "Yorktown",
+            "context": "populated place"
+          },
+          {
+            "concept": "American independence",
+            "context": "historical event"
+          }
+        ],
+        "target_match": "American Leader",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Washington",
+            "context": "Military person"
+          },
+          {
+            "concept": "Continental Army",
+            "context": "Organisation"
+          },
+          {
+            "concept": "British",
+            "context": "Organisation"
+          },
+          {
+            "concept": "Yorktown",
+            "context": "Settlement"
+          },
+          {
+            "concept": "American independence",
+            "context": "Event"
+          }
+        ],
+        "target_match": "Military person",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "paris_place_vs_person",
+      "fact": "Paris is the capital of France, situated on the Seine River with a metropolitan population of over 12 million.",
+      "target_concept": "Paris",
+      "expected_original": "city",
+      "expected_candidate": "Settlement",
+      "ambiguity": "Paris is a city but also a figure from Greek mythology and a person name. The fact is about the city.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Paris",
+            "context": "city"
+          },
+          {
+            "concept": "France",
+            "context": "country"
+          },
+          {
+            "concept": "Seine River",
+            "context": "river"
+          }
+        ],
+        "target_match": "city",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Paris",
+            "context": "Settlement"
+          },
+          {
+            "concept": "France",
+            "context": "Country"
+          },
+          {
+            "concept": "Seine River",
+            "context": "Geographic feature"
+          }
+        ],
+        "target_match": "Settlement",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "cairo_place_vs_brand",
+      "fact": "Cairo is the largest city in the Arab world, with a population of over 21 million in its metropolitan area.",
+      "target_concept": "Cairo",
+      "expected_original": "city",
+      "expected_candidate": "Settlement",
+      "ambiguity": "Cairo is a city, but also a typeface and a code name. The fact is about the city.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Cairo",
+            "context": "city"
+          },
+          {
+            "concept": "Arab world",
+            "context": "region"
+          }
+        ],
+        "target_match": "city",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Cairo",
+            "context": "Settlement"
+          },
+          {
+            "concept": "Arab world",
+            "context": "Historical region"
+          }
+        ],
+        "target_match": "Settlement",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "georgia_country_vs_state",
+      "fact": "Georgia is a country in the Caucasus region, bordered by Russia to the north and Turkey to the south.",
+      "target_concept": "Georgia",
+      "expected_original": "country",
+      "expected_candidate": "Country",
+      "ambiguity": "Georgia is both a country (in Caucasus) and a US state. The fact is about the country.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Georgia",
+            "context": "country"
+          },
+          {
+            "concept": "Caucasus",
+            "context": "region"
+          },
+          {
+            "concept": "Russia",
+            "context": "country"
+          },
+          {
+            "concept": "Turkey",
+            "context": "country"
+          }
+        ],
+        "target_match": "country",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Georgia",
+            "context": "Country"
+          },
+          {
+            "concept": "Caucasus region",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Russia",
+            "context": "Country"
+          },
+          {
+            "concept": "Turkey",
+            "context": "Country"
+          }
+        ],
+        "target_match": "Country",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "memphis_city_vs_person",
+      "fact": "Memphis, Tennessee, located on the Mississippi River, is the second-largest city in the state with a population of 633,000.",
+      "target_concept": "Memphis",
+      "expected_original": "city",
+      "expected_candidate": "Settlement",
+      "ambiguity": "Memphis is a city but also an ancient Egyptian capital and a person name. The fact is about the US city.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Memphis",
+            "context": "city"
+          },
+          {
+            "concept": "Tennessee",
+            "context": "state"
+          },
+          {
+            "concept": "Mississippi River",
+            "context": "river"
+          }
+        ],
+        "target_match": "city",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Memphis",
+            "context": "Settlement"
+          },
+          {
+            "concept": "Tennessee",
+            "context": "Administrative region"
+          },
+          {
+            "concept": "Mississippi River",
+            "context": "Geographic feature"
+          }
+        ],
+        "target_match": "Settlement",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "boston_place_vs_organisation",
+      "fact": "Boston was founded in 1630, making it one of the oldest cities in the United States, and became a center of the American Revolution.",
+      "target_concept": "Boston",
+      "expected_original": "city",
+      "expected_candidate": "Settlement",
+      "ambiguity": "Boston is a city but also a band (Boston) and a tea party event. The fact is about the city.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Boston",
+            "context": "city"
+          },
+          {
+            "concept": "United States",
+            "context": "country"
+          },
+          {
+            "concept": "American Revolution",
+            "context": "historical event"
+          }
+        ],
+        "target_match": "city",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Boston",
+            "context": "Settlement"
+          },
+          {
+            "concept": "United States",
+            "context": "Country"
+          },
+          {
+            "concept": "American Revolution",
+            "context": "Event"
+          }
+        ],
+        "target_match": "Settlement",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "sahara_place_vs_concept",
+      "fact": "The Sahara is the world's largest hot desert, covering 9.2 million square kilometers across North Africa.",
+      "target_concept": "Sahara",
+      "expected_original": "Desert",
+      "expected_candidate": "Geographic feature",
+      "ambiguity": "Sahara is a desert (geographic) but also a casino and a hotel brand.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Sahara",
+            "context": "Desert"
+          },
+          {
+            "concept": "North Africa",
+            "context": "region"
+          }
+        ],
+        "target_match": "Desert",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Sahara",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "North Africa",
+            "context": "Administrative region"
+          }
+        ],
+        "target_match": "Geographic feature",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "amazon_river_vs_company",
+      "fact": "The Amazon River discharges approximately 209,000 cubic meters per second, accounting for 20% of global river flow.",
+      "target_concept": "Amazon",
+      "expected_original": "river",
+      "expected_candidate": "Geographic feature",
+      "ambiguity": "Amazon is a river, a company, and a rainforest. The fact is about the river.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Amazon River",
+            "context": "river"
+          },
+          {
+            "concept": "river flow",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "river",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Amazon River",
+            "context": "Geographic feature"
+          }
+        ],
+        "target_match": "Geographic feature",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "everest_mountain_vs_person",
+      "fact": "Mount Everest stands at 8,849 meters above sea level, the highest point on Earth, located on the Nepal-China border.",
+      "target_concept": "Everest",
+      "expected_original": "mountain",
+      "expected_candidate": "Geographic feature",
+      "ambiguity": "Everest is a mountain but also a person name and a brand.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Mount Everest",
+            "context": "mountain"
+          },
+          {
+            "concept": "Earth",
+            "context": "planet"
+          },
+          {
+            "concept": "Nepal",
+            "context": "country"
+          },
+          {
+            "concept": "China",
+            "context": "country"
+          }
+        ],
+        "target_match": "mountain",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Mount Everest",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Earth",
+            "context": "Space"
+          },
+          {
+            "concept": "Nepal",
+            "context": "Country"
+          },
+          {
+            "concept": "China",
+            "context": "Country"
+          }
+        ],
+        "target_match": "Geographic feature",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "rome_place_vs_empire",
+      "fact": "Rome was founded on April 21, 753 BC, according to tradition, and grew from a small settlement to the center of a vast empire.",
+      "target_concept": "Rome",
+      "expected_original": "city",
+      "expected_candidate": "Settlement",
+      "ambiguity": "Rome is a city, an empire, and a historical concept. The fact is about the city's founding.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Rome",
+            "context": "city"
+          }
+        ],
+        "target_match": "city",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Rome",
+            "context": "Settlement"
+          }
+        ],
+        "target_match": "Settlement",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "nile_river_vs_concept",
+      "fact": "The Nile flows 6,650 kilometers from Lake Victoria to the Mediterranean, making it the longest river in Africa.",
+      "target_concept": "Nile",
+      "expected_original": "river",
+      "expected_candidate": "Geographic feature",
+      "ambiguity": "Nile is a river but also a brand name and a color.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Nile",
+            "context": "river"
+          },
+          {
+            "concept": "Lake Victoria",
+            "context": "lake"
+          },
+          {
+            "concept": "Mediterranean",
+            "context": "sea"
+          },
+          {
+            "concept": "Africa",
+            "context": "continent"
+          }
+        ],
+        "target_match": "river",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Nile",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Lake Victoria",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Mediterranean",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Africa",
+            "context": "Country"
+          }
+        ],
+        "target_match": "Geographic feature",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "silk_road_infrastructure_vs_concept",
+      "fact": "The Silk Road was a network of trade routes spanning 6,400 km, connecting China to the Mediterranean from 130 BC to 1453 AD.",
+      "target_concept": "Silk Road",
+      "expected_original": "infrastructure",
+      "expected_candidate": "Infrastructure",
+      "ambiguity": "Silk Road is infrastructure (trade routes) but also a historical concept and a website.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Silk Road",
+            "context": "route of transportation"
+          },
+          {
+            "concept": "China",
+            "context": "country"
+          },
+          {
+            "concept": "Mediterranean",
+            "context": "body of water"
+          }
+        ],
+        "target_match": "route of transportation",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Silk Road",
+            "context": "Infrastructure"
+          },
+          {
+            "concept": "China",
+            "context": "Country"
+          },
+          {
+            "concept": "Mediterranean",
+            "context": "Geographic feature"
+          }
+        ],
+        "target_match": "Infrastructure",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "gold_element_vs_award_vs_color",
+      "fact": "Gold has an atomic number of 79 and is one of the least reactive chemical elements, making it ideal for coins and jewelry.",
+      "target_concept": "Gold",
+      "expected_original": "chemical element",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Gold is a chemical element, a color, and an award (gold medal). The fact is about the element.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Gold",
+            "context": "chemical element"
+          },
+          {
+            "concept": "atomic number",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "chemical element",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Gold",
+            "context": "Concept"
+          },
+          {
+            "concept": "atomic number",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "mercury_element_vs_planet_vs_person",
+      "fact": "Mercury is the closest planet to the Sun, with surface temperatures ranging from -173 to 427 degrees Celsius.",
+      "target_concept": "Mercury",
+      "expected_original": "planet",
+      "expected_candidate": "Space",
+      "ambiguity": "Mercury is a planet, a chemical element, and a Roman god. The fact is about the planet.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Mercury",
+            "context": "planet"
+          },
+          {
+            "concept": "Sun",
+            "context": "star"
+          }
+        ],
+        "target_match": "planet",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Mercury",
+            "context": "Space"
+          },
+          {
+            "concept": "Sun",
+            "context": "Space"
+          }
+        ],
+        "target_match": "Space",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "oxygen_element_vs_molecule",
+      "fact": "Oxygen constitutes approximately 21% of Earth's atmosphere and is essential for cellular respiration in most organisms.",
+      "target_concept": "Oxygen",
+      "expected_original": "chemical element",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Oxygen is a chemical element (O) and a molecule (O2). The fact discusses atmospheric composition.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Oxygen",
+            "context": "chemical element"
+          },
+          {
+            "concept": "Earth",
+            "context": "planet"
+          },
+          {
+            "concept": "atmosphere",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "cellular respiration",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "chemical element",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Oxygen",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "Earth",
+            "context": "Place"
+          },
+          {
+            "concept": "atmosphere",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "cellular respiration",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "dna_molecule_vs_gene",
+      "fact": "DNA was identified as genetic material by Avery, MacLeod, and McCarty in 1944, before its double helix structure was solved by Watson and Crick.",
+      "target_concept": "DNA",
+      "expected_original": "Biomolecule",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "DNA is a biomolecule but also relates to genes and chemical compounds.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "DNA",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "genetic material",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "Avery",
+            "context": "scientist"
+          },
+          {
+            "concept": "MacLeod",
+            "context": "scientist"
+          },
+          {
+            "concept": "McCarty",
+            "context": "scientist"
+          },
+          {
+            "concept": "double helix",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "Watson",
+            "context": "scientist"
+          },
+          {
+            "concept": "Crick",
+            "context": "scientist"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "DNA",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "genetic material",
+            "context": "Concept"
+          },
+          {
+            "concept": "Avery",
+            "context": "Scientist"
+          },
+          {
+            "concept": "MacLeod",
+            "context": "Scientist"
+          },
+          {
+            "concept": "McCarty",
+            "context": "Scientist"
+          },
+          {
+            "concept": "double helix structure",
+            "context": "Concept"
+          },
+          {
+            "concept": "Watson",
+            "context": "Scientist"
+          },
+          {
+            "concept": "Crick",
+            "context": "Scientist"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "insulin_hormone_vs_drug",
+      "fact": "Insulin was discovered by Banting and Best in 1921, revolutionizing diabetes treatment and saving millions of lives.",
+      "target_concept": "Insulin",
+      "expected_original": "Hormone",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Insulin is a hormone but also a drug (medication).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Insulin",
+            "context": "Hormone"
+          },
+          {
+            "concept": "Banting",
+            "context": "scientist"
+          },
+          {
+            "concept": "Best",
+            "context": "scientist"
+          },
+          {
+            "concept": "diabetes",
+            "context": "disease"
+          }
+        ],
+        "target_match": "Hormone",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Insulin",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "Banting",
+            "context": "Scientist"
+          },
+          {
+            "concept": "Best",
+            "context": "Scientist"
+          },
+          {
+            "concept": "diabetes",
+            "context": "Disease"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "penicillin_drug_vs_molecule",
+      "fact": "Penicillin was discovered by Alexander Fleming in 1928 when he noticed that mold inhibited bacterial growth in a petri dish.",
+      "target_concept": "Penicillin",
+      "expected_original": "drug",
+      "expected_candidate": "Disease",
+      "ambiguity": "Penicillin is a drug but also a chemical compound/antibiotic.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Penicillin",
+            "context": "drug"
+          },
+          {
+            "concept": "Alexander Fleming",
+            "context": "scientist"
+          },
+          {
+            "concept": "1928",
+            "context": "year"
+          }
+        ],
+        "target_match": "drug",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Penicillin",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "Alexander Fleming",
+            "context": "Scientist"
+          },
+          {
+            "concept": "mold",
+            "context": "Microorganism"
+          },
+          {
+            "concept": "petri dish",
+            "context": "Device"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "aspirin_drug_vs_brand",
+      "fact": "Aspirin, synthesized by Felix Hoffmann at Bayer in 1897, remains one of the most widely used medications with over 100 million tablets consumed daily.",
+      "target_concept": "Aspirin",
+      "expected_original": "drug",
+      "expected_candidate": "Disease",
+      "ambiguity": "Aspirin is a drug but also a brand name and a chemical compound.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Aspirin",
+            "context": "drug"
+          },
+          {
+            "concept": "Felix Hoffmann",
+            "context": "scientist"
+          },
+          {
+            "concept": "Bayer",
+            "context": "company"
+          }
+        ],
+        "target_match": "drug",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Aspirin",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "Felix Hoffmann",
+            "context": "Scientist"
+          },
+          {
+            "concept": "Bayer",
+            "context": "Organisation"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "covid_disease_vs_event",
+      "fact": "COVID-19 is caused by the SARS-CoV-2 virus, which was first identified in Wuhan, China in December 2019.",
+      "target_concept": "COVID-19",
+      "expected_original": "disease",
+      "expected_candidate": "Disease",
+      "ambiguity": "COVID-19 is a disease but also an event (the pandemic).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "COVID-19",
+            "context": "COVID-19 pandemic"
+          },
+          {
+            "concept": "SARS-CoV-2",
+            "context": "virus"
+          },
+          {
+            "concept": "Wuhan",
+            "context": "city"
+          },
+          {
+            "concept": "China",
+            "context": "country"
+          }
+        ],
+        "target_match": "COVID-19 pandemic",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "COVID-19",
+            "context": "Disease"
+          },
+          {
+            "concept": "SARS-CoV-2",
+            "context": "Microorganism"
+          },
+          {
+            "concept": "Wuhan",
+            "context": "Settlement"
+          },
+          {
+            "concept": "China",
+            "context": "Country"
+          }
+        ],
+        "target_match": "Disease",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "malaria_disease_vs_concept",
+      "fact": "Malaria kills over 600,000 people annually, primarily children under 5 in sub-Saharan Africa.",
+      "target_concept": "Malaria",
+      "expected_original": "disease",
+      "expected_candidate": "Disease",
+      "ambiguity": "Malaria is a disease but also a scientific concept (the study of malaria).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Malaria",
+            "context": "disease"
+          },
+          {
+            "concept": "sub-Saharan Africa",
+            "context": "region"
+          }
+        ],
+        "target_match": "disease",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Malaria",
+            "context": "Disease"
+          },
+          {
+            "concept": "sub-Saharan Africa",
+            "context": "Geographic feature"
+          }
+        ],
+        "target_match": "Disease",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "alzheimer_disease_vs_person",
+      "fact": "Alzheimer's disease was first described by Alois Alzheimer in 1906, characterized by amyloid plaques and neurofibrillary tangles.",
+      "target_concept": "Alzheimer",
+      "expected_original": "scientist",
+      "expected_candidate": "Scientist",
+      "ambiguity": "Alzheimer is a scientist (Alois) and a disease (Alzheimer's). The fact describes the person's discovery.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Alzheimer's disease",
+            "context": "disease"
+          },
+          {
+            "concept": "Alois Alzheimer",
+            "context": "Academic Person"
+          },
+          {
+            "concept": "amyloid plaques",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "neurofibrillary tangles",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "disease",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Alzheimer's disease",
+            "context": "Disease"
+          },
+          {
+            "concept": "Alois Alzheimer",
+            "context": "Scientist"
+          },
+          {
+            "concept": "amyloid plaques",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "neurofibrillary tangles",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "Disease",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "brain_organ_vs_journal",
+      "fact": "The brain consumes approximately 20% of the body's oxygen despite comprising only 2% of body weight.",
+      "target_concept": "Brain",
+      "expected_original": "brain",
+      "expected_candidate": "Anatomical structure",
+      "ambiguity": "Brain is an anatomical structure but also an academic journal named 'Brain'. The fact is about the organ.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "brain",
+            "context": "brain"
+          },
+          {
+            "concept": "oxygen",
+            "context": "chemical element"
+          }
+        ],
+        "target_match": "brain",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "brain",
+            "context": "Anatomical structure"
+          },
+          {
+            "concept": "oxygen",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "Anatomical structure",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "vitamin_biomolecule_vs_food",
+      "fact": "Vitamin D deficiency affects an estimated 1 billion people worldwide, causing rickets in children and osteomalacia in adults.",
+      "target_concept": "Vitamin D",
+      "expected_original": "Biomolecule",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Vitamin D is a biomolecule but also a nutrient/food component and a supplement.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Vitamin D",
+            "context": "chemical compound"
+          },
+          {
+            "concept": "Vitamin D deficiency",
+            "context": "disease"
+          },
+          {
+            "concept": "rickets",
+            "context": "disease"
+          },
+          {
+            "concept": "osteomalacia",
+            "context": "disease"
+          }
+        ],
+        "target_match": "chemical compound",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Vitamin D deficiency",
+            "context": "Disease"
+          },
+          {
+            "concept": "rickets",
+            "context": "Disease"
+          },
+          {
+            "concept": "osteomalacia",
+            "context": "Disease"
+          }
+        ],
+        "target_match": "Disease",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "iron_element_vs_mineral_vs_nutrient",
+      "fact": "Iron has been smelted from ore since 1200 BC, revolutionizing tool-making and warfare with its superior strength over bronze.",
+      "target_concept": "Iron",
+      "expected_original": "chemical element",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Iron is a chemical element, a mineral, and a nutrient. The fact is about metallurgy.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Iron",
+            "context": "chemical element"
+          },
+          {
+            "concept": "bronze",
+            "context": "chemical compound"
+          },
+          {
+            "concept": "warfare",
+            "context": "activity"
+          }
+        ],
+        "target_match": "chemical element",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Iron",
+            "context": "Concept"
+          },
+          {
+            "concept": "bronze",
+            "context": "Concept"
+          },
+          {
+            "concept": "tool-making",
+            "context": "Activity"
+          },
+          {
+            "concept": "warfare",
+            "context": "Activity"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "aluminium_element_vs_material",
+      "fact": "Aluminium is the most abundant metal in Earth's crust, constituting 8% by weight, but was not isolated until 1825 by Oersted.",
+      "target_concept": "Aluminium",
+      "expected_original": "chemical element",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Aluminium is a chemical element but also a material used in manufacturing.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Aluminium",
+            "context": "chemical element"
+          },
+          {
+            "concept": "Earth's crust",
+            "context": "natural place"
+          },
+          {
+            "concept": "Oersted",
+            "context": "scientist"
+          }
+        ],
+        "target_match": "chemical element",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Aluminium",
+            "context": "Concept"
+          },
+          {
+            "concept": "Earth's crust",
+            "context": "Geographic feature"
+          },
+          {
+            "concept": "Oersted",
+            "context": "Scientist"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "carbon_element_vs_concept",
+      "fact": "Carbon forms the backbone of organic chemistry, with four valence electrons enabling covalent bonds with up to four other atoms.",
+      "target_concept": "Carbon",
+      "expected_original": "chemical element",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Carbon is a chemical element but also a scientific concept (carbon cycle, carbon footprint).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Carbon",
+            "context": "chemical element"
+          },
+          {
+            "concept": "organic chemistry",
+            "context": "academic subject"
+          },
+          {
+            "concept": "valence electrons",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "covalent bonds",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "chemical element",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Carbon",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "organic chemistry",
+            "context": "Concept"
+          },
+          {
+            "concept": "valence electrons",
+            "context": "Concept"
+          },
+          {
+            "concept": "covalent bonds",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "uranium_element_vs_substance",
+      "fact": "Uranium-235, making up 0.7% of natural uranium, is fissile and used as fuel in nuclear reactors worldwide.",
+      "target_concept": "Uranium",
+      "expected_original": "chemical element",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Uranium is a chemical element but also a chemical substance and a fuel.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Uranium-235",
+            "context": "chemical substance"
+          },
+          {
+            "concept": "uranium",
+            "context": "chemical element"
+          },
+          {
+            "concept": "nuclear reactors",
+            "context": "device"
+          }
+        ],
+        "target_match": "chemical element",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Uranium-235",
+            "context": "Concept"
+          },
+          {
+            "concept": "uranium",
+            "context": "Concept"
+          },
+          {
+            "concept": "nuclear reactors",
+            "context": "Infrastructure"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "ethanol_compound_vs_beverage",
+      "fact": "Ethanol, with the chemical formula C2H5OH, has been used as an antiseptic since ancient times, killing bacteria by denaturing proteins.",
+      "target_concept": "Ethanol",
+      "expected_original": "chemical compound",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Ethanol is a chemical compound but also the active ingredient in alcoholic beverages.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Ethanol",
+            "context": "chemical compound"
+          },
+          {
+            "concept": "antiseptic",
+            "context": "Medicine"
+          },
+          {
+            "concept": "bacteria",
+            "context": "bacteria"
+          },
+          {
+            "concept": "proteins",
+            "context": "protein"
+          }
+        ],
+        "target_match": "chemical compound",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Ethanol",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "antiseptic",
+            "context": "Concept"
+          },
+          {
+            "concept": "bacteria",
+            "context": "Microorganism"
+          },
+          {
+            "concept": "proteins",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "nicotine_compound_vs_drug",
+      "fact": "Nicotine, an alkaloid found in tobacco plants, binds to nicotinic acetylcholine receptors in the brain, causing addiction.",
+      "target_concept": "Nicotine",
+      "expected_original": "chemical compound",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Nicotine is a chemical compound but also a drug/medication.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Nicotine",
+            "context": "chemical compound"
+          },
+          {
+            "concept": "tobacco plants",
+            "context": "plant"
+          },
+          {
+            "concept": "nicotinic acetylcholine receptors",
+            "context": "protein"
+          },
+          {
+            "concept": "brain",
+            "context": "anatomical structure"
+          },
+          {
+            "concept": "addiction",
+            "context": "disease"
+          }
+        ],
+        "target_match": "chemical compound",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Nicotine",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "alkaloid",
+            "context": "Concept"
+          },
+          {
+            "concept": "tobacco plants",
+            "context": "Plant"
+          },
+          {
+            "concept": "nicotinic acetylcholine receptors",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "brain",
+            "context": "Anatomical structure"
+          },
+          {
+            "concept": "addiction",
+            "context": "Disease"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "caffeine_compound_vs_drug_vs_food",
+      "fact": "Caffeine, a purine alkaloid with formula C8H10N4O2, blocks adenosine receptors in the brain, reducing fatigue perception.",
+      "target_concept": "Caffeine",
+      "expected_original": "chemical compound",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Caffeine is a chemical compound, a drug, and a food/beverage component.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Caffeine",
+            "context": "chemical compound"
+          },
+          {
+            "concept": "purine alkaloid",
+            "context": "chemical substance"
+          },
+          {
+            "concept": "adenosine receptors",
+            "context": "protein"
+          },
+          {
+            "concept": "brain",
+            "context": "organ"
+          },
+          {
+            "concept": "fatigue perception",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "chemical compound",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Caffeine",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "purine alkaloid",
+            "context": "Concept"
+          },
+          {
+            "concept": "adenosine receptors",
+            "context": "Anatomical structure"
+          },
+          {
+            "concept": "brain",
+            "context": "Anatomical structure"
+          },
+          {
+            "concept": "fatigue perception",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "glucose_compound_vs_biomolecule",
+      "fact": "Glucose, with the molecular formula C6H12O6, is the primary energy source for cells, metabolized via glycolysis to produce ATP.",
+      "target_concept": "Glucose",
+      "expected_original": "chemical compound",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Glucose is a chemical compound but also a biomolecule and a nutrient.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Glucose",
+            "context": "chemical compound"
+          },
+          {
+            "concept": "glycolysis",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "ATP",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "chemical compound",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Glucose",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "glycolysis",
+            "context": "Concept"
+          },
+          {
+            "concept": "ATP",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "python_language_vs_animal",
+      "fact": "Python was created by Guido van Rossum in 1991, designed with a readable syntax that emphasizes code clarity.",
+      "target_concept": "Python",
+      "expected_original": "programming language",
+      "expected_candidate": "Software",
+      "ambiguity": "Python is a programming language but also a snake (animal) and a Greek myth.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Python",
+            "context": "programming language"
+          },
+          {
+            "concept": "Guido van Rossum",
+            "context": "person"
+          },
+          {
+            "concept": "1991",
+            "context": "year"
+          }
+        ],
+        "target_match": "programming language",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Python",
+            "context": "Software"
+          },
+          {
+            "concept": "Guido van Rossum",
+            "context": "Engineer"
+          }
+        ],
+        "target_match": "Software",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "java_language_vs_island_vs_coffee",
+      "fact": "Java was released by Sun Microsystems in 1995 with the promise of 'write once, run anywhere' portability.",
+      "target_concept": "Java",
+      "expected_original": "programming language",
+      "expected_candidate": "Software",
+      "ambiguity": "Java is a programming language, an island, and coffee slang. The fact is about the language.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Java",
+            "context": "programming language"
+          },
+          {
+            "concept": "Sun Microsystems",
+            "context": "company"
+          },
+          {
+            "concept": "1995",
+            "context": "year"
+          }
+        ],
+        "target_match": "programming language",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Java",
+            "context": "Software"
+          },
+          {
+            "concept": "Sun Microsystems",
+            "context": "Organisation"
+          }
+        ],
+        "target_match": "Software",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "linux_software_vs_person",
+      "fact": "Linux was created by Linus Torvalds in 1991 as a free Unix-like operating system kernel.",
+      "target_concept": "Linux",
+      "expected_original": "software",
+      "expected_candidate": "Software",
+      "ambiguity": "Linux is software but also associated with the person Linus Torvalds.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Linux",
+            "context": "software"
+          },
+          {
+            "concept": "Linus Torvalds",
+            "context": "person"
+          },
+          {
+            "concept": "Unix",
+            "context": "software"
+          }
+        ],
+        "target_match": "software",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Linux",
+            "context": "Software"
+          },
+          {
+            "concept": "Linus Torvalds",
+            "context": "Engineer"
+          },
+          {
+            "concept": "Unix",
+            "context": "Software"
+          },
+          {
+            "concept": "operating system kernel",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Software",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "internet_software_vs_infrastructure",
+      "fact": "The internet originated from ARPANET in 1969, with the first message sent between UCLA and Stanford on October 29.",
+      "target_concept": "Internet",
+      "expected_original": "software",
+      "expected_candidate": "Software",
+      "ambiguity": "Internet is both software/website and infrastructure.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "internet",
+            "context": "infrastructure"
+          },
+          {
+            "concept": "ARPANET",
+            "context": "infrastructure"
+          },
+          {
+            "concept": "UCLA",
+            "context": "university"
+          },
+          {
+            "concept": "Stanford",
+            "context": "university"
+          }
+        ],
+        "target_match": "infrastructure",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "internet",
+            "context": "Infrastructure"
+          },
+          {
+            "concept": "ARPANET",
+            "context": "Infrastructure"
+          },
+          {
+            "concept": "UCLA",
+            "context": "University"
+          },
+          {
+            "concept": "Stanford",
+            "context": "University"
+          }
+        ],
+        "target_match": "Infrastructure",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "facebook_company_vs_website",
+      "fact": "Facebook was founded by Mark Zuckerberg in 2004 from his Harvard dorm room and reached 1 billion users by 2012.",
+      "target_concept": "Facebook",
+      "expected_original": "company",
+      "expected_candidate": "Organisation",
+      "ambiguity": "Facebook is a company but also a website and software.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Facebook",
+            "context": "company"
+          },
+          {
+            "concept": "Mark Zuckerberg",
+            "context": "businessperson"
+          },
+          {
+            "concept": "Harvard",
+            "context": "educational institution"
+          }
+        ],
+        "target_match": "company",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Facebook",
+            "context": "Organisation"
+          },
+          {
+            "concept": "Mark Zuckerberg",
+            "context": "Businessperson"
+          },
+          {
+            "concept": "Harvard",
+            "context": "University"
+          }
+        ],
+        "target_match": "Organisation",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "google_company_vs_website_vs_concept",
+      "fact": "Google was incorporated on September 4, 1998, by Larry Page and Sergey Brin with a $100,000 investment from Andy Bechtolsheim.",
+      "target_concept": "Google",
+      "expected_original": "company",
+      "expected_candidate": "Organisation",
+      "ambiguity": "Google is a company but also a website and a verb (to google).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Google",
+            "context": "company"
+          },
+          {
+            "concept": "Larry Page",
+            "context": "businessperson"
+          },
+          {
+            "concept": "Sergey Brin",
+            "context": "businessperson"
+          },
+          {
+            "concept": "Andy Bechtolsheim",
+            "context": "businessperson"
+          }
+        ],
+        "target_match": "company",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Google",
+            "context": "Organisation"
+          },
+          {
+            "concept": "Larry Page",
+            "context": "Businessperson"
+          },
+          {
+            "concept": "Sergey Brin",
+            "context": "Businessperson"
+          },
+          {
+            "concept": "Andy Bechtolsheim",
+            "context": "Businessperson"
+          }
+        ],
+        "target_match": "Organisation",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "batman_character_vs_place",
+      "fact": "Batman first appeared in Detective Comics #27 in May 1939, created by Bob Kane and Bill Finger.",
+      "target_concept": "Batman",
+      "expected_original": "fictional character",
+      "expected_candidate": "Fictional character",
+      "ambiguity": "Batman is a fictional character but also a place (Batman, Turkey).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Batman",
+            "context": "fictional character"
+          },
+          {
+            "concept": "Detective Comics #27",
+            "context": "written work"
+          },
+          {
+            "concept": "Bob Kane",
+            "context": "comics creator"
+          },
+          {
+            "concept": "Bill Finger",
+            "context": "comics creator"
+          }
+        ],
+        "target_match": "fictional character",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Batman",
+            "context": "Fictional character"
+          },
+          {
+            "concept": "Detective Comics #27",
+            "context": "Media publication"
+          },
+          {
+            "concept": "Bob Kane",
+            "context": "Artist"
+          },
+          {
+            "concept": "Bill Finger",
+            "context": "Writer"
+          }
+        ],
+        "target_match": "Fictional character",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "superman_character_vs_person",
+      "fact": "Superman was created by Jerry Siegel and Joe Shuster in 1933, debuting in Action Comics #1 in 1938.",
+      "target_concept": "Superman",
+      "expected_original": "fictional character",
+      "expected_candidate": "Fictional character",
+      "ambiguity": "Superman is a fictional character but could be a person (nickname).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Superman",
+            "context": "fictional character"
+          },
+          {
+            "concept": "Jerry Siegel",
+            "context": "writer"
+          },
+          {
+            "concept": "Joe Shuster",
+            "context": "artist"
+          },
+          {
+            "concept": "Action Comics #1",
+            "context": "comic"
+          }
+        ],
+        "target_match": "fictional character",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Superman",
+            "context": "Fictional character"
+          },
+          {
+            "concept": "Jerry Siegel",
+            "context": "Writer"
+          },
+          {
+            "concept": "Joe Shuster",
+            "context": "Artist"
+          },
+          {
+            "concept": "Action Comics #1",
+            "context": "Book"
+          }
+        ],
+        "target_match": "Fictional character",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "homer_character_vs_writer",
+      "fact": "Homer is traditionally credited with composing the Iliad and the Odyssey, though his actual existence remains debated by scholars.",
+      "target_concept": "Homer",
+      "expected_original": "writer",
+      "expected_candidate": "Writer",
+      "ambiguity": "Homer is a writer (Greek poet) but also a fictional character (Homer Simpson).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Homer",
+            "context": "writer"
+          },
+          {
+            "concept": "Iliad",
+            "context": "work"
+          },
+          {
+            "concept": "Odyssey",
+            "context": "work"
+          }
+        ],
+        "target_match": "writer",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Homer",
+            "context": "Writer"
+          },
+          {
+            "concept": "Iliad",
+            "context": "Book"
+          },
+          {
+            "concept": "Odyssey",
+            "context": "Book"
+          }
+        ],
+        "target_match": "Writer",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "hamlet_character_vs_play_vs_person",
+      "fact": "Hamlet, Prince of Denmark, is Shakespeare's longest play at 4,042 lines, written between 1599 and 1601.",
+      "target_concept": "Hamlet",
+      "expected_original": "book",
+      "expected_candidate": "Book",
+      "ambiguity": "Hamlet is a play (book), a fictional character, and a village (settlement). The fact describes the play.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Hamlet",
+            "context": "play"
+          },
+          {
+            "concept": "Denmark",
+            "context": "country"
+          },
+          {
+            "concept": "Shakespeare",
+            "context": "writer"
+          }
+        ],
+        "target_match": "play",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Hamlet",
+            "context": "Film"
+          },
+          {
+            "concept": "Denmark",
+            "context": "Country"
+          },
+          {
+            "concept": "Shakespeare",
+            "context": "Writer"
+          }
+        ],
+        "target_match": "Film",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "jaws_film_vs_animal_vs_book",
+      "fact": "Jaws, directed by Steven Spielberg in 1975, was the first film to gross over $100 million at the box office.",
+      "target_concept": "Jaws",
+      "expected_original": "movie",
+      "expected_candidate": "Film",
+      "ambiguity": "Jaws is a film, an animal body part, and a book. The fact is about the film.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Jaws",
+            "context": "movie"
+          },
+          {
+            "concept": "Steven Spielberg",
+            "context": "Movie director"
+          }
+        ],
+        "target_match": "movie",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Jaws",
+            "context": "Film"
+          },
+          {
+            "concept": "Steven Spielberg",
+            "context": "Film director"
+          }
+        ],
+        "target_match": "Film",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "avatar_film_vs_concept_vs_game",
+      "fact": "Avatar, released in 2009, became the highest-grossing film of all time, earning $2.92 billion at the box office.",
+      "target_concept": "Avatar",
+      "expected_original": "movie",
+      "expected_candidate": "Film",
+      "ambiguity": "Avatar is a film, a concept (Hindu deity avatar), and a game.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Avatar",
+            "context": "movie"
+          }
+        ],
+        "target_match": "movie",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Avatar",
+            "context": "Film"
+          }
+        ],
+        "target_match": "Film",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "star_wars_film_vs_event_vs_game",
+      "fact": "Star Wars, released on May 25, 1977, by George Lucas, revolutionized science fiction cinema with its pioneering special effects.",
+      "target_concept": "Star Wars",
+      "expected_original": "movie",
+      "expected_candidate": "Film",
+      "ambiguity": "Star Wars is a film franchise, a cultural event, and a game series.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Star Wars",
+            "context": "movie"
+          },
+          {
+            "concept": "George Lucas",
+            "context": "Movie director"
+          },
+          {
+            "concept": "science fiction",
+            "context": "movie genre"
+          },
+          {
+            "concept": "special effects",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "movie",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Star Wars",
+            "context": "Film"
+          },
+          {
+            "concept": "George Lucas",
+            "context": "Film director"
+          },
+          {
+            "concept": "science fiction",
+            "context": "Genre"
+          },
+          {
+            "concept": "special effects",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Film",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "titanic_ship_vs_film_vs_event",
+      "fact": "The Titanic sank on April 15, 1912, after striking an iceberg, resulting in over 1,500 deaths in one of history's worst peacetime maritime disasters.",
+      "target_concept": "Titanic",
+      "expected_original": "ship",
+      "expected_candidate": "Transportation",
+      "ambiguity": "Titanic is a ship, a film, and an event. The fact is about the ship sinking.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Titanic",
+            "context": "ship"
+          },
+          {
+            "concept": "iceberg",
+            "context": "natural place"
+          }
+        ],
+        "target_match": "ship",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Titanic",
+            "context": "Transportation"
+          },
+          {
+            "concept": "iceberg",
+            "context": "Geographic feature"
+          }
+        ],
+        "target_match": "Transportation",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "chess_game_vs_person_vs_concept",
+      "fact": "Chess originated in India around the 6th century as Chaturanga, evolving into its modern form in 15th-century Europe.",
+      "target_concept": "Chess",
+      "expected_original": "game",
+      "expected_candidate": "Game",
+      "ambiguity": "Chess is a game but also a concept (chess strategy) and a music album.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Chess",
+            "context": "board game"
+          },
+          {
+            "concept": "India",
+            "context": "country"
+          },
+          {
+            "concept": "Chaturanga",
+            "context": "board game"
+          },
+          {
+            "concept": "Europe",
+            "context": "continent"
+          }
+        ],
+        "target_match": "board game",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Chess",
+            "context": "Game"
+          },
+          {
+            "concept": "India",
+            "context": "Country"
+          },
+          {
+            "concept": "Chaturanga",
+            "context": "Game"
+          },
+          {
+            "concept": "Europe",
+            "context": "Country"
+          }
+        ],
+        "target_match": "Game",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "olympics_event_vs_place_vs_organisation",
+      "fact": "The Olympics were held in Ancient Greece from 776 BC to 393 AD, held in Olympia every four years.",
+      "target_concept": "Olympics",
+      "expected_original": "olympics",
+      "expected_candidate": "Sports competition",
+      "ambiguity": "Olympics is an event, a place (Olympia), and an organisation (IOC).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Olympics",
+            "context": "olympics"
+          },
+          {
+            "concept": "Ancient Greece",
+            "context": "Historical region"
+          },
+          {
+            "concept": "Olympia",
+            "context": "place"
+          }
+        ],
+        "target_match": "olympics",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Olympics",
+            "context": "Sports competition"
+          },
+          {
+            "concept": "Ancient Greece",
+            "context": "Historical region"
+          },
+          {
+            "concept": "Olympia",
+            "context": "Settlement"
+          }
+        ],
+        "target_match": "Sports competition",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "nobel_prize_award_vs_person",
+      "fact": "The Nobel Prize was established by Alfred Nobel's will in 1895, first awarded in 1901 for physics, chemistry, medicine, literature, and peace.",
+      "target_concept": "Nobel Prize",
+      "expected_original": "Nobel Prize",
+      "expected_candidate": "Award",
+      "ambiguity": "Nobel Prize is an award but also associated with a person (Alfred Nobel).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Nobel Prize",
+            "context": "award"
+          },
+          {
+            "concept": "Alfred Nobel",
+            "context": "person"
+          },
+          {
+            "concept": "physics",
+            "context": "academic subject"
+          },
+          {
+            "concept": "chemistry",
+            "context": "academic subject"
+          },
+          {
+            "concept": "medicine",
+            "context": "medical specialty"
+          },
+          {
+            "concept": "literature",
+            "context": "academic subject"
+          },
+          {
+            "concept": "peace",
+            "context": "Political concept"
+          }
+        ],
+        "target_match": "award",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Nobel Prize",
+            "context": "Award"
+          },
+          {
+            "concept": "Alfred Nobel",
+            "context": "Person"
+          },
+          {
+            "concept": "physics",
+            "context": "Concept"
+          },
+          {
+            "concept": "chemistry",
+            "context": "Concept"
+          },
+          {
+            "concept": "medicine",
+            "context": "Concept"
+          },
+          {
+            "concept": "literature",
+            "context": "Concept"
+          },
+          {
+            "concept": "peace",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Award",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "black_sabbath_band_vs_event_vs_concept",
+      "fact": "Black Sabbath formed in Birmingham in 1968, with their self-titled debut album released on Friday the 13th, February 1970.",
+      "target_concept": "Black Sabbath",
+      "expected_original": "Band",
+      "expected_candidate": "Musician",
+      "ambiguity": "Black Sabbath is a band but also a religious concept and a day.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Black Sabbath",
+            "context": "Band"
+          },
+          {
+            "concept": "Birmingham",
+            "context": "city"
+          },
+          {
+            "concept": "Black Sabbath",
+            "context": "album"
+          }
+        ],
+        "target_match": "Band",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Black Sabbath",
+            "context": "Musician"
+          },
+          {
+            "concept": "Birmingham",
+            "context": "Settlement"
+          },
+          {
+            "concept": "Black Sabbath",
+            "context": "Music"
+          }
+        ],
+        "target_match": "Musician",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "rush_band_vs_drug_vs_action",
+      "fact": "Rush, the Canadian rock trio formed in 1968, released 19 studio albums and were inducted into the Rock and Roll Hall of Fame in 2013.",
+      "target_concept": "Rush",
+      "expected_original": "Band",
+      "expected_candidate": "Musician",
+      "ambiguity": "Rush is a band but also a drug (rush) and an action (to rush).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Rush",
+            "context": "Band"
+          },
+          {
+            "concept": "Rock and Roll Hall of Fame",
+            "context": "organisation"
+          }
+        ],
+        "target_match": "Band",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Rush",
+            "context": "Musician"
+          },
+          {
+            "concept": "Canadian",
+            "context": "Country"
+          },
+          {
+            "concept": "Rock and Roll Hall of Fame",
+            "context": "Organisation"
+          }
+        ],
+        "target_match": "Musician",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "wikipedia_software_vs_organisation",
+      "fact": "Wikipedia was launched on January 15, 2001, by Jimmy Wales and Larry Sanger, growing to over 55 million articles in 300 languages.",
+      "target_concept": "Wikipedia",
+      "expected_original": "website",
+      "expected_candidate": "Software",
+      "ambiguity": "Wikipedia is a website, software, and an organisation (Wikimedia Foundation).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Wikipedia",
+            "context": "website"
+          },
+          {
+            "concept": "Jimmy Wales",
+            "context": "person"
+          },
+          {
+            "concept": "Larry Sanger",
+            "context": "person"
+          }
+        ],
+        "target_match": "website",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Wikipedia",
+            "context": "Organisation"
+          },
+          {
+            "concept": "Jimmy Wales",
+            "context": "Person"
+          },
+          {
+            "concept": "Larry Sanger",
+            "context": "Person"
+          }
+        ],
+        "target_match": "Organisation",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "fentanyl_drug_vs_compound",
+      "fact": "Fentanyl is 50 to 100 times more potent than morphine, with a lethal dose as low as 2 milligrams in non-tolerant individuals.",
+      "target_concept": "Fentanyl",
+      "expected_original": "drug",
+      "expected_candidate": "Disease",
+      "ambiguity": "Fentanyl is a drug but also a chemical compound and a cause of death.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Fentanyl",
+            "context": "drug"
+          },
+          {
+            "concept": "morphine",
+            "context": "drug"
+          }
+        ],
+        "target_match": "drug",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Fentanyl",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "morphine",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "ibuprofen_drug_vs_compound",
+      "fact": "Ibuprofen was patented in 1961 by Stewart Adams at Boots UK, and works by inhibiting cyclooxygenase enzymes COX-1 and COX-2.",
+      "target_concept": "Ibuprofen",
+      "expected_original": "drug",
+      "expected_candidate": "Disease",
+      "ambiguity": "Ibuprofen is a drug but also a chemical compound.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Ibuprofen",
+            "context": "drug"
+          },
+          {
+            "concept": "Stewart Adams",
+            "context": "Academic Person"
+          },
+          {
+            "concept": "Boots UK",
+            "context": "company"
+          },
+          {
+            "concept": "cyclooxygenase enzymes",
+            "context": "enzyme"
+          },
+          {
+            "concept": "COX-1",
+            "context": "enzyme"
+          },
+          {
+            "concept": "COX-2",
+            "context": "enzyme"
+          }
+        ],
+        "target_match": "drug",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Ibuprofen",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "Stewart Adams",
+            "context": "Scientist"
+          },
+          {
+            "concept": "Boots UK",
+            "context": "Organisation"
+          },
+          {
+            "concept": "cyclooxygenase enzymes",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "COX-1",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "COX-2",
+            "context": "Biomolecule"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "viagra_drug_vs_brand",
+      "fact": "Viagra, containing the active ingredient sildenafil, was approved by the FDA on March 27, 1998, for treating erectile dysfunction.",
+      "target_concept": "Viagra",
+      "expected_original": "drug",
+      "expected_candidate": "Disease",
+      "ambiguity": "Viagra is a drug (brand name for sildenafil) but also a cultural phenomenon.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Viagra",
+            "context": "drug"
+          },
+          {
+            "concept": "sildenafil",
+            "context": "chemical compound"
+          },
+          {
+            "concept": "FDA",
+            "context": "government agency"
+          },
+          {
+            "concept": "erectile dysfunction",
+            "context": "disease"
+          }
+        ],
+        "target_match": "drug",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Viagra",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "sildenafil",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "FDA",
+            "context": "Government body"
+          },
+          {
+            "concept": "erectile dysfunction",
+            "context": "Disease"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "stem_cell_biomolecule_vs_concept",
+      "fact": "Stem cells were first identified in 1963 by McCulloch and Till, who found cells in mouse bone marrow that could regenerate blood tissue.",
+      "target_concept": "Stem Cells",
+      "expected_original": "Scientific concept",
+      "expected_candidate": "Concept",
+      "ambiguity": "Stem cells are biological entities but also a scientific concept and research field.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Stem cells",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "McCulloch",
+            "context": "Academic Person"
+          },
+          {
+            "concept": "Till",
+            "context": "Academic Person"
+          },
+          {
+            "concept": "mouse",
+            "context": "animal"
+          },
+          {
+            "concept": "bone marrow",
+            "context": "anatomical structure"
+          },
+          {
+            "concept": "blood tissue",
+            "context": "anatomical structure"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": false
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Stem cells",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "McCulloch",
+            "context": "Scientist"
+          },
+          {
+            "concept": "Till",
+            "context": "Scientist"
+          },
+          {
+            "concept": "mouse",
+            "context": "Animal"
+          },
+          {
+            "concept": "bone marrow",
+            "context": "Anatomical structure"
+          },
+          {
+            "concept": "blood tissue",
+            "context": "Anatomical structure"
+          }
+        ],
+        "target_match": "Biomolecule",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "prayer_activity_vs_concept",
+      "fact": "Christian prayer in the early church involved communal recitation of the Lord's Prayer three times daily, documented by Tertullian around 200 AD.",
+      "target_concept": "Christian Prayer",
+      "expected_original": "activity",
+      "expected_candidate": "Activity",
+      "ambiguity": "Christian Prayer is both an activity (the practice) and a Theological concept.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Christian prayer",
+            "context": "activity"
+          },
+          {
+            "concept": "early church",
+            "context": "historical period"
+          },
+          {
+            "concept": "Lord's Prayer",
+            "context": "written work"
+          },
+          {
+            "concept": "Tertullian",
+            "context": "Academic Person"
+          }
+        ],
+        "target_match": "activity",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Christian prayer",
+            "context": "Activity"
+          },
+          {
+            "concept": "early church",
+            "context": "Historical period"
+          },
+          {
+            "concept": "Lord's Prayer",
+            "context": "Music"
+          },
+          {
+            "concept": "Tertullian",
+            "context": "Writer"
+          }
+        ],
+        "target_match": "Activity",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "meditation_activity_vs_concept",
+      "fact": "Meditation, particularly mindfulness-based interventions, reduces cortisol levels by approximately 20% according to a 2014 meta-analysis of 47 trials.",
+      "target_concept": "Meditation",
+      "expected_original": "activity",
+      "expected_candidate": "Activity",
+      "ambiguity": "Meditation is both an activity (the practice) and a scientific concept (mindfulness).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Meditation",
+            "context": "activity"
+          },
+          {
+            "concept": "mindfulness-based interventions",
+            "context": "method"
+          },
+          {
+            "concept": "cortisol",
+            "context": "Hormone"
+          }
+        ],
+        "target_match": "activity",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Meditation",
+            "context": "Activity"
+          },
+          {
+            "concept": "mindfulness-based interventions",
+            "context": "Concept"
+          },
+          {
+            "concept": "cortisol",
+            "context": "Biomolecule"
+          },
+          {
+            "concept": "meta-analysis",
+            "context": "Algorithm"
+          }
+        ],
+        "target_match": "Activity",
+        "found": true,
+        "correct": true
+      }
+    },
+    {
+      "id": "compost_substance_vs_food_vs_concept",
+      "fact": "Compost is produced by decomposing organic matter at temperatures between 49-77 degrees Celsius, requiring a carbon-to-nitrogen ratio of 30:1.",
+      "target_concept": "Compost",
+      "expected_original": "chemical substance",
+      "expected_candidate": "Biomolecule",
+      "ambiguity": "Compost is a chemical substance, but also classified as Food (compost is organic matter) and a topical concept.",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Compost",
+            "context": "chemical substance"
+          },
+          {
+            "concept": "organic matter",
+            "context": "chemical substance"
+          },
+          {
+            "concept": "carbon",
+            "context": "chemical element"
+          },
+          {
+            "concept": "nitrogen",
+            "context": "chemical element"
+          }
+        ],
+        "target_match": "chemical substance",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Compost",
+            "context": "Concept"
+          },
+          {
+            "concept": "organic matter",
+            "context": "Concept"
+          },
+          {
+            "concept": "carbon-to-nitrogen ratio",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": false
+      }
+    },
+    {
+      "id": "gravity_concept_vs_person_vs_place",
+      "fact": "Gravity, as described by Newton's law of universal gravitation, is proportional to the product of masses and inversely proportional to the square of the distance between them.",
+      "target_concept": "Gravity",
+      "expected_original": "Scientific concept",
+      "expected_candidate": "Concept",
+      "ambiguity": "Gravity is a scientific concept but also a film title and a place name (Gravity, Colorado).",
+      "original": {
+        "all_concepts": [
+          {
+            "concept": "Gravity",
+            "context": "Scientific concept"
+          },
+          {
+            "concept": "Newton's law of universal gravitation",
+            "context": "Scientific concept"
+          }
+        ],
+        "target_match": "Scientific concept",
+        "found": true,
+        "correct": true
+      },
+      "candidate": {
+        "all_concepts": [
+          {
+            "concept": "Gravity",
+            "context": "Concept"
+          },
+          {
+            "concept": "Newton's law of universal gravitation",
+            "context": "Concept"
+          }
+        ],
+        "target_match": "Concept",
+        "found": true,
+        "correct": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,230 @@
+/**
+ * Any CSS included here will be global and applied to all pages.
+ */
+
+:root {
+  --ifm-color-primary: #4f46e5;
+  --ifm-color-primary-dark: #4338ca;
+  --ifm-color-primary-darker: #3730a3;
+  --ifm-color-primary-darkest: #312e81;
+  --ifm-color-primary-light: #6366f1;
+  --ifm-color-primary-lighter: #818cf8;
+  --ifm-color-primary-lightest: #a5b4fc;
+  --ifm-code-font-size: 95%;
+  --docusaurus-ceiling: #1b1b1d;
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #818cf8;
+  --ifm-color-primary-dark: #6366f1;
+  --ifm-color-primary-darker: #4f46e5;
+  --ifm-color-primary-darkest: #4338ca;
+  --ifm-color-primary-light: #a5b4fc;
+  --ifm-color-primary-lighter: #c7d2fe;
+  --ifm-color-primary-lightest: #e0e7ff;
+  --ifm-background-color: #0f0f12;
+  --ifm-background-surface-color: #1b1b1d;
+  --docusaurus-ceiling: #1b1b1d;
+}
+
+.pipelineHero {
+  padding: 2rem 0;
+}
+
+.pipelineRow {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: auto;
+  padding-bottom: 1rem;
+}
+
+.pipelineNode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 0 0;
+  min-width: 120px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.pipelineBox {
+  width: 100%;
+  border: 2px solid var(--ifm-color-primary);
+  border-radius: 12px;
+  padding: 1rem 0.5rem;
+  background: var(--ifm-background-surface-color);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pipelineNode:hover .pipelineBox {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+
+.pipelineNum {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.25rem;
+}
+
+.pipelineTitle {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.pipelineDesc {
+  font-size: 0.75rem;
+  color: var(--ifm-color-emphasis-600);
+  margin-top: 0.5rem;
+  line-height: 1.3;
+}
+
+.pipelineArrow {
+  display: flex;
+  align-items: center;
+  padding: 0 0.25rem;
+  font-size: 1.5rem;
+  color: var(--ifm-color-primary);
+}
+
+/* Agentic flow row — distinct accent color + bidirectional arrows */
+.agenticRow {
+  margin-top: 1.5rem;
+}
+
+.agenticBox {
+  border-color: var(--ifm-color-success);
+  border-style: dashed;
+}
+
+.agenticNum {
+  color: var(--ifm-color-success);
+}
+
+.agenticArrow {
+  color: var(--ifm-color-success);
+}
+
+@media (max-width: 996px) {
+  .pipelineRow {
+    flex-direction: column;
+  }
+  .pipelineArrow {
+    transform: rotate(90deg);
+    padding: 0.5rem 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * AnnotatedReport — interactive meta-synthesis example pages
+ * ------------------------------------------------------------------------- */
+
+.okt-annotated-report {
+  position: relative;
+}
+
+/* The rendered body should inherit Docusaurus markdown styles. */
+.okt-report-body.markdown {
+  /* tables can get wide in the syntheses */
+  overflow-x: auto;
+}
+
+/* Citation superscript — clickable. */
+.okt-report-body .okt-cite {
+  display: inline;
+  cursor: pointer;
+  padding: 0 0.1em 0 0.15em;
+  margin: 0 0.05em;
+  font-size: 0.7em;
+  font-weight: 700;
+  vertical-align: super;
+  line-height: 0;
+  color: var(--ifm-color-primary);
+  background: var(--ifm-color-primary-very-soft, rgba(79, 70, 229, 0.12));
+  border-radius: 4px;
+  transition: background 0.12s ease, color 0.12s ease;
+  user-select: none;
+}
+.okt-report-body .okt-cite:hover {
+  background: var(--ifm-color-primary);
+  color: #fff;
+}
+[data-theme="dark"] .okt-report-body .okt-cite {
+  background: rgba(129, 140, 248, 0.18);
+}
+[data-theme="dark"] .okt-report-body .okt-cite:hover {
+  background: var(--ifm-color-primary);
+  color: #0f0f12;
+}
+
+/* Popover — uses Docusaurus .card for the base surface. */
+.okt-cite-popover {
+  box-shadow: var(--ifm-global-shadow-l);
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-card-border-radius);
+  background: var(--ifm-card-background-color, var(--ifm-background-surface-color));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.okt-cite-popover__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  background: var(--ifm-color-emphasis-100);
+}
+.okt-cite-popover__num {
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: var(--ifm-color-primary);
+}
+.okt-cite-popover__close {
+  font-size: 0.85rem;
+  line-height: 1;
+  opacity: 0.65;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+}
+.okt-cite-popover__close:hover {
+  opacity: 1;
+  background: var(--ifm-color-emphasis-200);
+}
+
+.okt-cite-popover__text {
+  padding: 0.6rem 0.75rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--ifm-font-color-base);
+  max-height: 35vh;
+  overflow-y: auto;
+}
+
+.okt-cite-popover__sources {
+  padding: 0.4rem 0.75rem 0.6rem;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  font-size: 0.8rem;
+}
+.okt-cite-popover__sources-label {
+  font-weight: 700;
+  color: var(--ifm-color-emphasis-600);
+}
+.okt-cite-popover__sources ul {
+  margin: 0.25rem 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+.okt-cite-popover__sources li {
+  margin: 0.15rem 0;
+}
+.okt-cite-popover__sources a {
+  word-break: break-all;
+}
