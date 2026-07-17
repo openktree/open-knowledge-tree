@@ -7,16 +7,49 @@
 // {
 //   "title": string,            // first H1
 //   "body": string,             // markdown body WITHOUT the annex (citations [N] preserved inline)
+//   "bodyHtml": string,         // pre-rendered HTML with <sup class="okt-cite" ...> tags
 //   "facts": {                  // keyed by citation number as string
-//     "1": { "text": string, "sources": [string, ...] },
+//     "1": {
+//       "text": string,
+//       "sources": [string, ...],
+//       "posture"?: "supports" | "contradicts" | "related"  // present when the
+//                     // source file tagged this fact's relationship to the
+//                     // sentence it cites. Optional; older files have none.
+//     },
 //     ...
 //   },
-//   "citationsUsed": number[]    // distinct citation numbers actually appearing in body, sorted
+//   "citationsUsed": number[],  // distinct citation numbers actually appearing in body, sorted
+//   "factCount": number
 // }
 //
-// The body keeps the original [N] markers. The Docusaurus component is
-// responsible for rendering each [N] as a clickable superscript that opens a
-// popover showing facts[N].
+// Citation markers
+// ----------------
+// Two inline marker shapes are accepted, both emitted by the frontend's
+// "Copy with cites" feature (frontend/src/lib/citedCopy.js):
+//
+//   [N]            — no posture (legacy / classifier not configured)
+//   [N:supp]       — posture = supports   (short tag)
+//   [N:contr]      — posture = contradicts
+//   [N:rel]        — posture = related
+//
+// The short tags are mapped to the full posture words. Multiple markers may
+// appear in a row, e.g. `[1:supp][2:contr]`.
+//
+// In the annex, each fact entry may carry its posture as a parenthesized
+// label before the text:
+//
+//   [N] (supports) <fact text>
+//   [N] (contradicts) <fact text>
+//   [N] (related) <fact text>
+//
+// When both the inline marker and the annex declare a posture, the annex
+// wins (it is the canonical home for the relationship label). When only the
+// inline marker carries one, that posture is used.
+//
+// The Docusaurus component renders each [N] as a clickable superscript that
+// opens a popover showing facts[N]. When a posture is present, the
+// superscript and the popover header carry a colored badge so the reader
+// sees the relationship (supports / contradicts / related) at a glance.
 
 import fs from "node:fs/promises";
 
@@ -64,15 +97,27 @@ const body = bodyLines.join("\n").trim() + "\n";
 //        - <url>
 //        - <url>
 //    <blank>
+//
+//    The "Copy with cites" exporter also emits a parenthesized posture
+//    label between the [N] and the text:
+//
+//    [N] (supports) <fact text>
+//    [N] (contradicts) <fact text>
+//    [N] (related) <fact text>
+//
+//    Posture is optional; legacy files omit it. We capture it here so the
+//    rendered superscripts and popovers can show the relationship.
 const annexLines = lines.slice(annexIdx + 1);
 const facts = {};
 let i = 0;
-const annexEntryRe = /^\[(\d+)\]\s+(.*)$/;
+// [N] optionally followed by (posture) then the text.
+const annexEntryRe = /^\[(\d+)\]\s*(?:\((supports|contradicts|related)\)\s+)?(.*)$/;
 while (i < annexLines.length) {
   const m = annexLines[i].match(annexEntryRe);
   if (!m) { i++; continue; }
   const num = m[1];
-  const text = m[2].trim();
+  const posture = m[2] || null; // null when absent
+  const text = m[3].trim();
   i++;
   // Continuation lines until "Sources:" or blank line: fact text may wrap.
   // But in our files each fact is a single line; if a following non-blank,
@@ -100,22 +145,42 @@ while (i < annexLines.length) {
       i++;
     }
   }
-  facts[num] = { text, sources };
+  const entry = { text, sources };
+  if (posture) entry.posture = posture;
+  facts[num] = entry;
   // skip blank(s) between entries
   while (i < annexLines.length && annexLines[i].trim() === "") i++;
 }
 
-// 4. Distinct citation numbers actually used in the body.
-//    Citations look like [N] (possibly several in a row: [1][2][3]).
-//    Avoid matching markdown link syntax [text](url) — require N purely numeric
-//    AND not followed by "(" (which would make it a markdown link [text](url)).
-const citeRe = /\[(\d+)\](?!\()/g;
+// 4. Distinct citation numbers actually used in the body, and any inline
+//    posture tags. Citations look like [N] or [N:tag] where tag is one of
+//    supp / contr / rel (short forms emitted by citedCopy.js). Several
+//    markers may appear in a row: [1][2][3] or [1:supp][2:contr].
+//    Avoid matching markdown link syntax [text](url) — require N purely
+//    numeric AND not followed by "(" (which would make it a markdown link
+//    [text](url)).
+//
+//    Inline posture tags are only used to fill in a fact's posture when
+//    the annex didn't already declare one (the annex is canonical).
+const citeRe = /\[(\d+)(?::(supp|contr|rel))?\](?!\()/g;
 const used = new Set();
+const inlinePosture = new Map(); // num (string) -> posture word
+const tagToPosture = { supp: "supports", contr: "contradicts", rel: "related" };
 let cm;
 while ((cm = citeRe.exec(body)) !== null) {
-  used.add(parseInt(cm[1], 10));
+  const n = parseInt(cm[1], 10);
+  used.add(n);
+  if (cm[2]) {
+    const p = tagToPosture[cm[2]];
+    if (p && !inlinePosture.has(String(n))) inlinePosture.set(String(n), p);
+  }
 }
 const citationsUsed = Array.from(used).sort((a, b) => a - b);
+
+// Fold inline posture into facts only when the annex didn't set one.
+for (const [num, p] of inlinePosture) {
+  if (facts[num] && !facts[num].posture) facts[num].posture = p;
+}
 
 // 5. Sanity: every used citation should have a fact. Report missing ones.
 const missing = citationsUsed.filter((n) => !facts[String(n)]);
@@ -152,17 +217,37 @@ try {
 marked.setOptions({ gfm: true, breaks: false });
 let rawHtml = marked.parse(body);
 
-// Replace [N] (not followed by "(") with sup tags, but NOT inside code blocks.
-// Split on <pre>...</pre> and <code>...</code>, replace only in odd-indexed
-// (non-code) segments.
+// Replace [N] and [N:tag] (not followed by "(") with sup tags, but NOT
+// inside code blocks. Split on <pre>...</pre> and <code>...</code>,
+// replace only in odd-indexed (non-code) segments.
+//
+// The sup tag carries:
+//   class="okt-cite"            — base styling + click target
+//   class="okt-cite okt-cite--<posture>" — posture-colored variant
+//   data-n="N"                  — citation number (for popover lookup)
+//   data-posture="<posture>"    — present only when a posture is known
+//   data-tag="<short>"          — short inline label ("supp"/"contr"/"rel")
+//                                  shown as the visible text when posture
+//                                  is present; otherwise just the number
+//
+// The CSS + component decide how to render the posture (color + label).
 const codeSplitRe = /(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/gi;
 const parts = rawHtml.split(codeSplitRe);
-const citeReplaceRe = /\[(\d+)\](?!\()/g;
+const citeReplaceRe = /\[(\d+)(?::(supp|contr|rel))?\](?!\()/g;
 for (let j = 0; j < parts.length; j++) {
   if (j % 2 === 1) continue; // code block — skip
   parts[j] = parts[j].replace(
     citeReplaceRe,
-    (_m, n) => `<sup class="okt-cite" data-n="${n}">${n}</sup>`
+    (_m, n, tag) => {
+      const num = String(n);
+      const posture = facts[num]?.posture || (tag ? tagToPosture[tag] : null);
+      if (posture) {
+        const short = posture === "supports" ? "supp"
+          : posture === "contradicts" ? "contr" : "rel";
+        return `<sup class="okt-cite okt-cite--${posture}" data-n="${n}" data-posture="${posture}">${n}:${short}</sup>`;
+      }
+      return `<sup class="okt-cite" data-n="${n}">${n}</sup>`;
+    }
   );
 }
 const bodyHtml = parts.join("");

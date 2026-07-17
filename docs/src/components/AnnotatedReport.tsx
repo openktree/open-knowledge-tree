@@ -12,14 +12,17 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
  * Snapshot shape (see docs/docs/reference/examples/_parsed/*.json):
  *   {
  *     title: string,
- *     bodyHtml: string,            // pre-rendered HTML with <sup class="okt-cite" data-n="N"> tags
- *     facts: { "1": { text: string, sources: string[] }, ... },
+ *     bodyHtml: string,            // pre-rendered HTML with <sup class="okt-cite" ...> tags
+ *     facts: {
+ *       "1": { text: string, sources: string[], posture?: "supports"|"contradicts"|"related" },
+ *       ...
+ *     },
  *     citationsUsed: number[],
  *   }
  */
 
 /**
- * @typedef {{ title: string; bodyHtml: string; facts: Record<string, { text: string; sources: string[] }>; citationsUsed: number[]; }} Snapshot
+ * @typedef {{ title: string; bodyHtml: string; facts: Record<string, { text: string; sources: string[]; posture?: "supports" | "contradicts" | "related" }>; citationsUsed: number[]; }} Snapshot
  */
 
 /**
@@ -141,6 +144,14 @@ export default function AnnotatedReport({ snapshot }) {
         >
           <div className="okt-cite-popover__header">
             <span className="okt-cite-popover__num">[{popover.n}]</span>
+            {popover.fact.posture && (
+              <span
+                className={`okt-cite-posture okt-cite-posture--${popover.fact.posture}`}
+                title={`This fact ${popover.fact.posture} the sentence it cites.`}
+              >
+                {popover.fact.posture}
+              </span>
+            )}
             <button
               className="okt-cite-popover__close clean-btn button"
               onClick={closePopover}

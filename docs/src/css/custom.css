@@ -160,6 +160,95 @@
   color: #0f0f12;
 }
 
+/* Posture-colored citation superscripts. The base .okt-cite rules above
+   still apply; these layer a posture-specific color on top so a reader
+   can spot supports / contradicts / related at a glance without opening
+   the popover. */
+.okt-report-body .okt-cite--supports {
+  color: #15803d; /* green-700 */
+  background: rgba(22, 163, 74, 0.14);
+}
+.okt-report-body .okt-cite--supports:hover {
+  background: #15803d;
+  color: #fff;
+}
+.okt-report-body .okt-cite--contradicts {
+  color: #b91c1c; /* red-700 */
+  background: rgba(220, 38, 38, 0.14);
+}
+.okt-report-body .okt-cite--contradicts:hover {
+  background: #b91c1c;
+  color: #fff;
+}
+.okt-report-body .okt-cite--related {
+  color: #1d4ed8; /* blue-700 */
+  background: rgba(37, 99, 235, 0.14);
+}
+.okt-report-body .okt-cite--related:hover {
+  background: #1d4ed8;
+  color: #fff;
+}
+[data-theme="dark"] .okt-report-body .okt-cite--supports {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.18);
+}
+[data-theme="dark"] .okt-report-body .okt-cite--supports:hover {
+  background: #15803d;
+  color: #0f0f12;
+}
+[data-theme="dark"] .okt-report-body .okt-cite--contradicts {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.18);
+}
+[data-theme="dark"] .okt-report-body .okt-cite--contradicts:hover {
+  background: #b91c1c;
+  color: #fff;
+}
+[data-theme="dark"] .okt-report-body .okt-cite--related {
+  color: #60a5fa;
+  background: rgba(59, 130, 246, 0.18);
+}
+[data-theme="dark"] .okt-report-body .okt-cite--related:hover {
+  background: #1d4ed8;
+  color: #fff;
+}
+
+/* Posture badge in the popover header. Sits between the [N] label and
+   the close button, using the same posture palette as the inline sup. */
+.okt-cite-popover__header .okt-cite-posture {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.okt-cite-posture--supports {
+  color: #15803d;
+  background: rgba(22, 163, 74, 0.16);
+}
+.okt-cite-posture--contradicts {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.16);
+}
+.okt-cite-posture--related {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.16);
+}
+[data-theme="dark"] .okt-cite-posture--supports {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.2);
+}
+[data-theme="dark"] .okt-cite-posture--contradicts {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.2);
+}
+[data-theme="dark"] .okt-cite-posture--related {
+  color: #60a5fa;
+  background: rgba(59, 130, 246, 0.2);
+}
+
 /* Popover — uses Docusaurus .card for the base surface. */
 .okt-cite-popover {
   box-shadow: var(--ifm-global-shadow-l);
