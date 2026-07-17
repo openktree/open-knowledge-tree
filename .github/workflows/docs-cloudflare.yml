@@ -1,0 +1,56 @@
+# Deploys the Docusaurus docs site to Cloudflare Pages on every push
+# to main that touches docs/. Cloudflare builds the site natively
+# (Node 22, `npm ci && npm run build`, output dir docs/build) and
+# publishes to the production URL + a per-PR preview URL.
+#
+# This is the canonical docs host. The `release-docs.yml` workflow
+# builds a self-hostable nginx image for offline / mirrored installs.
+#
+# Prereq: create a Cloudflare Pages project named `okt-docs` (or
+# whatever you set in CLOUDFLARE_PROJECT_NAME below) and add the
+# following as a GitHub Actions secret in repo settings:
+#
+#   CLOUDFLARE_API_TOKEN   - API token with "Cloudflare Pages:Edit"
+#                            on the target account.
+#   CLOUDFLARE_ACCOUNT_ID  - The account ID owning the Pages project.
+#
+# Until those secrets exist this workflow skips (it will not fail
+# the CI gate) so the pipeline can ship before the CF project is
+# configured.
+name: docs-cloudflare
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', '.github/workflows/docs-cloudflare.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ vars.CLOUDFLARE_PROJECT_NAME != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install + build docs
+        working-directory: docs
+        run: |
+          npm ci
+          npm run build
+
+      - uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ vars.CLOUDFLARE_PROJECT_NAME }}
+          directory: docs/build

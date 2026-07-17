@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "5877dd1",
+  "release-type": "mixed",
+  "include-component-in-tag": true,
+  "tag-separator": "-v",
+  "separate-pull-requests": true,
+  "packages": {
+    "backend": {
+      "component": "api",
+      "release-type": "go",
+      "extra-files": ["Dockerfile"],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "registry": {
+      "component": "registry",
+      "release-type": "go",
+      "extra-files": ["Dockerfile.registry"],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "frontend": {
+      "component": "frontend",
+      "release-type": "node",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "docs": {
+      "component": "docs",
+      "release-type": "node",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

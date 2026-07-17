@@ -1,0 +1,49 @@
+# Builds and pushes the okt-frontend nginx Docker image to GHCR on
+# every `frontend-v*` tag push from release-please. linux/amd64 only
+# for now. Also tags `:latest`. The Dockerfile builds the SolidJS
+# app with Vite and serves the static bundle with nginx.
+name: release-frontend
+
+on:
+  push:
+    tags: ['frontend-v*']
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/openktree/frontend
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches service
+        run: scripts/release/verify-tag.sh frontend
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tag from git tag
+        id: tag
+        run: echo "version=${GITHUB_REF_NAME#frontend-v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

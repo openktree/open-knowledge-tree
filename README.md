@@ -70,6 +70,54 @@ just registry-logs    # okt-registry-dev
 
 See the `justfile` at the repo root for the full list of recipes.
 
+## Releases
+
+Releases are managed by [release-please](https://github.com/googleapis/release-please)
+from [Conventional Commits](https://www.conventionalcommits.org/). Each service in the
+monorepo has an **independent SemVer** and is released on its own cadence. Merge a
+service's release PR (auto-opened by release-please) and the matching release
+workflow builds + pushes the Docker image to GHCR.
+
+### Components and tags
+
+| Service | Scope | Tag | Image |
+|---------|-------|-----|-------|
+| API | `api` | `api-v1.2.0` | `ghcr.io/openktree/api:1.2.0` (+ `:latest`) |
+| Registry | `registry` | `registry-v0.4.1` | `ghcr.io/openktree/registry:0.4.1` (+ `:latest`) |
+| Frontend | `frontend` | `frontend-v1.0.3` | `ghcr.io/openktree/frontend:1.0.3` (+ `:latest`) |
+| Docs | `docs` | `docs-v0.1.0` | `ghcr.io/openktree/docs:0.1.0` (+ `:latest`) |
+
+### Commit scopes
+
+Use these scopes so release-please routes the change to the right service:
+
+```
+feat(api): add MCP tool for X
+fix(registry): correct context seeding order
+feat(frontend): add sources filter
+docs(docs): clarify deployment guide
+```
+
+Other scopes (`chore`, `ci`, `test`) don't trigger releases.
+
+### Release flow
+
+1. PRs merged to `main` with a conventional scope (`feat`/`fix`/`docs`/…).
+2. release-please opens a **per-service release PR** with the version bump and generated
+   changelog (`CHANGELOG.md` next to the service).
+3. Maintainer merges the release PR → release-please creates the tag `api-v1.2.0` (etc.).
+4. Tag push triggers `.github/workflows/release-<service>.yml`:
+   - `api`, `registry` → GoReleaser + Docker buildx → GHCR (`linux/amd64`).
+   - `frontend`, `docs` → Docker buildx → GHCR (`linux/amd64`).
+
+### Docs hosting
+
+The Docusaurus site is deployed to **Cloudflare Pages** on every push to `main`
+that touches `docs/` (see `.github/workflows/docs-cloudflare.yml`). The
+`ghcr.io/openktree/docs` image is a self-hostable nginx fallback for offline /
+mirrored installs. To enable Cloudflare Pages, set the `CLOUDFLARE_PROJECT_NAME`
+repo variable and the `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets.
+
 ## License
 
 See the repository for license information.

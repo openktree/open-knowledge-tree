@@ -1,0 +1,56 @@
+# GoReleaser config for the OKT API (backend/).
+#
+# The backend binary is CGo-only (go-fitz / MuPDF bindings), so we
+# don't use GoReleaser's cross-compile `builds` step. Instead the
+# multi-stage Dockerfile compiles the binary inside an Alpine builder
+# and the `dockers` section here uses buildx to build + push the final
+# image to GHCR. Only linux/amd64 for now; add amd64+arm64 later by
+# extending the platforms list.
+version: 2
+
+project-name: okt-api
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - skip: true
+
+dockers:
+  - use: buildx
+    goarch: amd64
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/openktree/api:{{ .Tag }}"
+      - "ghcr.io/openktree/api:latest"
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+      - "--label=org.opencontainers.image.version={{.Tag}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--platform=linux/amd64"
+
+release:
+  disable: true  # release-please owns the GitHub Release; GoReleaser only ships images
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Images only; no archives or checksums since we ship containers
+archives:
+  - format: binary
+    builds_info:
+      group: root
+      owner: root
+
+source:
+  enabled: false

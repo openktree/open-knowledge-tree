@@ -1,0 +1,28 @@
+# release-please: opens a release PR per component (api, registry,
+# frontend, docs) that has pending changes since the last release tag.
+# Merging a release PR creates the tag (e.g. api-v1.2.0) and a GitHub
+# Release, which triggers the matching release-<service>.yml workflow.
+#
+# Conventional commit scopes the release PRs:
+#   feat(api): ...        -> api release
+#   fix(registry): ...    -> registry release
+#   feat(frontend): ...   -> frontend release
+#   docs(docs): ...       -> docs release
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
