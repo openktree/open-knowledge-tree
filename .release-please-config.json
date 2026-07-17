@@ -3,7 +3,6 @@
   "bootstrap-sha": "5877dd1",
   "release-type": "mixed",
   "include-component-in-tag": true,
-  "tag-separator": "-v",
   "separate-pull-requests": true,
   "packages": {
     "backend": {
