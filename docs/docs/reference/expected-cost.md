@@ -38,19 +38,20 @@ Our reference run, on the `default` repository with the default models above, pr
 | Investigations | 16 |
 | Scopes synthesized | 4–9 per meta-synthesis |
 
-That run started from an empty repository and ran the full Agentic Flow: `research` → fetch → Knowledge Flow pipeline → `query` → `synthesizer` per scope → `super-synthesizer`. The $50 covers every chat and embedding call made by the OKT backend during that loop — nothing the driving agent itself spent.
+That run started from an empty repository and ran the full Agentic Flow: `research` → fetch → Knowledge Flow pipeline → `query` → `synthesizer` per scope → `super-synthesizer`. The $50 covers every chat and embedding call made by the OKT backend during that loop — nothing the driving agent itself spent. Wall-clock time was roughly **6 hours**, driven by the agent iterating through scopes; tighter user config (fewer scopes, lower dedup retries, fewer investigations) shortens that, and broader config lengthens it.
+
+A note on what "1,300 sources" means: because the agent chooses the queries, those 1,300 sources are the cream of a much larger literature. 1,300 curated sources is a **large** synthesis, not a small one — the scale table below reflects that.
 
 ## Estimated cost per scale
 
-Linear extrapolation from the baseline (~$50 / 1,300 sources, ~$50 / 200k facts). Real runs vary with source length, fact density, model pricing, and how many syntheses you produce; treat these as **order-of-magnitude planning numbers, not quotes**. A cheaper chat model or a corpus of short sources can move the real spend several multiples in either direction.
+Linear extrapolation from the baseline (~$50 / 1,300 sources, ~$50 / 200k facts). Real runs vary with source length, fact density, model pricing, and how many syntheses you produce; treat these as **order-of-magnitude planning numbers, not quotes**. A cheaper chat model or a corpus of short sources can move the real spend several multiples in either direction. Wall-clock time scales roughly with source count and is gated by your scope/investigation config; the baseline run took ~6h.
 
-| Scale | Sources | Facts (approx.) | Estimated AI spend |
-|---|---|---|---|
-| **Small** — a focused topic | 250 | ~38k | ~$10 |
-| **Baseline** — a multi-scope synthesis | 1,300 | ~200k | ~$50 |
-| **Medium** — several related syntheses | 2,600 | ~400k | ~$100 |
-| **Large** — a broad domain survey | 6,500 | ~1M | ~$250 |
-| **XLarge** — exhaustive coverage | 13,000 | ~2M | ~$500 |
+| Scale | Sources | Facts (approx.) | Estimated AI spend | Rough duration |
+|---|---|---|---|---|
+| **Small** — a single focused question | 50–150 | ~8k–23k | ~$2–$6 | ~30 min |
+| **Medium** — a topic with 2–3 scopes | 300–600 | ~46k–92k | ~$12–$25 | ~1.5–3 h |
+| **Large** — a full multi-scope meta-synthesis (baseline) | 1,300 | ~200k | ~$50 | ~6 h |
+| **XLarge** — several related meta-syntheses against the same graph | 3,000+ | ~460k+ | ~$120+ | ~12 h+ |
 
 ## What is and isn't included
 
@@ -66,11 +67,10 @@ Linear extrapolation from the baseline (~$50 / 1,300 sources, ~$50 / 200k facts)
 
 ## How to reduce cost
 
-- **Pick a cheaper chat model.** The default `google/gemma-4-31b-it` is already a mid-tier price point. Swapping to a smaller or open model (e.g. a self-hosted Ollama model) drops the chat bill dramatically, at the cost of fact and synthesis quality. See `providers.ai` in `configs/config.default.yaml`.
-- **Raise the similarity threshold** so the autocite posture classifier runs on fewer (sentence, fact) pairs — see `repository_settings.similarity_threshold`.
-- **Disable the posture classifier** (`posture_classifier_enabled: false`) when you don't need supports/contradicts/related labels on your report citations. That removes one LLM call per annotation pair.
 - **Reuse the graph.** The single biggest lever is not re-fetching. Once a repository has a fact base, new reports and new syntheses against it cost a fraction of building it from scratch — embeddings already exist, deduplication suppresses repeats, and syntheses read existing facts rather than re-extracting them.
-- **Bring your own embeddings.** A self-hosted embedding model (Ollama, `qwen3-embedding`, etc.) makes the embedding line item effectively free at the cost of GPU/CPU on your machine.
+- **Share graphs via the Knowledge Registry.** The registry (see [Registry](/docs/reference/registry)) catalogs OKT repositories across instances and routes push/pull/search between them. If a teammate or another OKT instance has already built a graph for a topic you care about, you can pull from it instead of re-researching. The registry is what makes a one-time research spend reusable across teams and deployments.
+
+More cost-reduction guidance (model selection, threshold tuning, posture classifier toggling) will be added here once we've measured each lever properly.
 
 ## Cost tracking
 
