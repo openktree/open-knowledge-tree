@@ -192,8 +192,42 @@ func hostOf(rawURL string) string {
 func (s *FetchStrategy) Resolve(ctx context.Context, resource Resource) (ResolvedContent, error) {
 	// SSRF gate. Runs before any provider so a hostile or
 	// malformed URL never reaches net/http.
+	//
+	// ErrDNSLookupFailed is a *transient* failure (the resolver
+	// was unreachable, not the URL is unsafe). It is recorded
+	// as a url_safety attempt in the audit trail but does NOT
+	// short-circuit the chain: the fetch providers run their
+	// own DNS resolution and will fail the same way if the host
+	// is truly unreachable, while a transient docker-DNS hiccup
+	// gets a second chance. This is the fix for the
+	// "K_ssrf_dns_fail" failure mode (~11 rows in the corpus
+	// where a 127.0.0.11:53 read timeout turned into a hard
+	// reject).
 	if s.urlValidator != nil && resource.Type == SourceURL {
 		if err := s.urlValidator(resource.Value); err != nil {
+			if errors.Is(err, ErrDNSLookupFailed) {
+				// Record the transient DNS failure in the audit
+				// trail so the UI shows why the first tier
+				// didn't run, then fall through to the chain.
+				// The chain providers will retry DNS themselves.
+				dnsAttempt := FetchAttempt{
+					Provider: "url_safety",
+					Success:  false,
+					Error:    err.Error(),
+				}
+				result, attempts, oaStatus, _, err2 := s.runChain(ctx, resource, "")
+				attempts = append([]FetchAttempt{dnsAttempt}, attempts...)
+				if err2 == nil {
+					result.Attempts = attempts
+					result.OAStatus = oaStatus
+					return result, nil
+				}
+				return ResolvedContent{Attempts: attempts, OAStatus: oaStatus}, &ResolveError{
+					Resource: string(resource.Type),
+					Errors:   []string{err.Error(), err2.Error()},
+					Attempts: attempts,
+				}
+			}
 			return ResolvedContent{Attempts: []FetchAttempt{{
 				Provider: "url_safety",
 				Success:  false,
@@ -241,6 +275,11 @@ func (s *FetchStrategy) Resolve(ctx context.Context, resource Resource) (Resolve
 
 	// SSRF-validate the OA redirect URL before the second
 	// pass. Unpaywall URLs are user-influenceable.
+	//
+	// As with the initial gate, ErrDNSLookupFailed is treated
+	// as a transient fall-through: the OA-URL pass runs the
+	// URL-capable providers, which retry DNS themselves. A
+	// hard ErrUnsafeURL still rejects.
 	if s.urlValidator != nil {
 		if err := s.urlValidator(oaRedirectURL); err != nil {
 			// If the first pass succeeded, keep its result
@@ -251,11 +290,21 @@ func (s *FetchStrategy) Resolve(ctx context.Context, resource Resource) (Resolve
 				result.OAStatus = oaStatus
 				return result, nil
 			}
-			return ResolvedContent{Attempts: attempts, OAStatus: oaStatus}, &ResolveError{
-				Resource: string(resource.Type),
-				Errors:   []string{fmt.Sprintf("OA redirect URL rejected by SSRF guard: %v", err)},
-				Attempts: attempts,
+			if !errors.Is(err, ErrDNSLookupFailed) {
+				// Hard reject. The OA URL is unsafe (private
+				// IP, forbidden scheme, etc.); don't run the
+				// second pass against it.
+				return ResolvedContent{Attempts: attempts, OAStatus: oaStatus}, &ResolveError{
+					Resource: string(resource.Type),
+					Errors:   []string{fmt.Sprintf("OA redirect URL rejected by SSRF guard: %v", err)},
+					Attempts: attempts,
+				}
 			}
+			// ErrDNSLookupFailed: fall through to the OA-URL
+			// pass. The chain providers will retry DNS
+			// themselves; if the host is truly unreachable
+			// they fail the same way, but a transient
+			// docker-DNS hiccup gets a second chance.
 		}
 	}
 

@@ -250,7 +250,7 @@ func (p *FetchResolutionProvider) doFetchAndParse(ctx context.Context, fetchURL 
 				if parseErr == nil {
 					resolved.Parsed = parsed
 					text := strings.TrimSpace(parsed.Text)
-					if len(text) < MinExtractedLength || IsJSBoilerplate(text) {
+					if len(text) < MinExtractedLength || IsJSBoilerplate(text) || IsHTMLLeakBoilerplate(text) {
 						return resolved, ErrInsufficientContent
 					}
 				} else {

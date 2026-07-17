@@ -3,11 +3,15 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
+	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
 // fetchProvider is the wire shape the /sources/providers
@@ -30,8 +34,18 @@ type fetchProvider struct {
 }
 
 type providersResponse struct {
-	Search     []map[string]interface{} `json:"search"`
-	Resolution []fetchProvider           `json:"resolution"`
+	Search               []map[string]interface{} `json:"search"`
+	Resolution           []fetchProvider           `json:"resolution"`
+	FlareSkipCandidates  []flareSkipCandidate      `json:"flare_skip_candidates"`
+}
+
+// flareSkipCandidate is the wire shape of one
+// flare_skip_candidates entry on /sources/providers.
+type flareSkipCandidate struct {
+	Host            string `json:"host"`
+	TotalAttempts   int64  `json:"total_attempts"`
+	FlareFailures   int64  `json:"flare_failures"`
+	FlareSuccesses  int64  `json:"flare_successes"`
 }
 
 // TestProvidersEndpointRequiresAuth asserts that
@@ -200,5 +214,125 @@ func TestProvidersEndpointUnpaywallConfigured(t *testing.T) {
 	}
 	if !out.Resolution[1].Configured {
 		t.Error("expected fetch Configured=true")
+	}
+}
+
+// TestProvidersEndpointFlareSkipCandidates verifies that
+// /sources/providers surfaces the per-host FlareSolverr
+// failure/success counts under flare_skip_candidates when the
+// X-Repository-ID header is present and the active repository
+// has sources with flaresolverr attempts in their
+// fetch_attempts audit trail. The handler scopes the query to
+// the active repo's per-repo pool; without the header the field
+// is nil (omitted).
+//
+// The test seeds two sources on the same host
+// (flare-fail.example.com): one with a failed flaresolverr
+// attempt, one with a successful flaresolverr attempt. The
+// response must list the host with flare_failures=1 and
+// flare_successes=1.
+func TestProvidersEndpointFlareSkipCandidates(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	client := newAuthClient(env.BaseURL)
+	client = registerTestUser(t, env, "flare@example.com", "password123", "Flare User")
+
+	// Grant sysadmin so the user can create a repository and
+	// hit /sources/providers.
+	_, meBody := client.do("GET", "/api/v1/users/me", nil)
+	var me struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(meBody, &me)
+	grantSourceProviderExecute(t, env, me.ID)
+	client.token = loginUser(client, "flare@example.com", "password123")
+
+	_, _, repoID := createRepository(t, client, "FlareSkip", "flare-skip", "desc")
+	if repoID == "" {
+		t.Fatal("expected repository id")
+	}
+
+	// Seed two sources with flaresolverr attempts in
+	// fetch_attempts. We use the sqlc-generated
+	// MarkSourceFetchAttempts to control the exact audit-trail
+	// shape.
+	queries := store.New(env.DB)
+	repoUUID := pgtype.UUID{}
+	if err := repoUUID.Scan(repoID); err != nil {
+		t.Fatalf("scan repo id: %v", err)
+	}
+	seedFlareSource(t, queries, repoUUID, "https://flare-fail.example.com/page-1",
+		`[{"provider":"flaresolverr","success":false,"error":"context deadline exceeded","elapsed_ms":60000}]`)
+	seedFlareSource(t, queries, repoUUID, "https://flare-fail.example.com/page-2",
+		`[{"provider":"flaresolverr","success":true,"elapsed_ms":5000}]`)
+
+	// With X-Repository-ID: the flare_skip_candidates field
+	// must list flare-fail.example.com with one failure and one
+	// success.
+	resp, raw := client.doWithHeaders("GET", "/api/v1/sources/providers", nil, map[string]string{
+		"X-Repository-ID": repoID,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+	var out providersResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	found := false
+	for _, c := range out.FlareSkipCandidates {
+		if c.Host == "flare-fail.example.com" {
+			found = true
+			if c.FlareFailures != 1 {
+				t.Errorf("expected flare_failures=1 for flare-fail.example.com, got %d", c.FlareFailures)
+			}
+			if c.FlareSuccesses != 1 {
+				t.Errorf("expected flare_successes=1 for flare-fail.example.com, got %d", c.FlareSuccesses)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected flare-fail.example.com in flare_skip_candidates, got %+v", out.FlareSkipCandidates)
+	}
+
+	// Without X-Repository-ID: the field must be nil/empty
+	// (the query is repo-scoped; no repo means no candidates).
+	resp, raw = client.do("GET", "/api/v1/sources/providers", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 (global), got %d: %s", resp.StatusCode, raw)
+	}
+	var global providersResponse
+	if err := json.Unmarshal(raw, &global); err != nil {
+		t.Fatalf("unmarshal global: %v: %s", err, raw)
+	}
+	if len(global.FlareSkipCandidates) > 0 {
+		t.Errorf("expected no flare_skip_candidates without X-Repository-ID, got %+v", global.FlareSkipCandidates)
+	}
+}
+
+// seedFlareSource inserts a source row with the given
+// fetch_attempts JSONB. Used by TestProvidersEndpointFlareSkipCandidates
+// to set up the per-host FlareSolverr audit trail the
+// flare_skip_candidates query reads.
+func seedFlareSource(t *testing.T, queries *store.Queries, repoID pgtype.UUID, url, attemptsJSON string) {
+	t.Helper()
+	ctx := context.Background()
+	srcID := pgtype.UUID{}
+	if err := srcID.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scan src id: %v", err)
+	}
+	if _, err := queries.CreateSource(ctx, store.CreateSourceParams{
+		ID:           srcID,
+		RepositoryID: repoID,
+		Url:          url,
+		Kind:         "homepage",
+		Status:       "failed",
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if _, err := queries.MarkSourceFetchAttempts(ctx, store.MarkSourceFetchAttemptsParams{
+		ID:            srcID,
+		FetchAttempts: []byte(attemptsJSON),
+	}); err != nil {
+		t.Fatalf("mark fetch attempts: %v", err)
 	}
 }

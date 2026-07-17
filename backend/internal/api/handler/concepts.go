@@ -274,6 +274,11 @@ func buildGroupWithAliases[T any](
 // endpoint does NOT union facts across the concept's sibling
 // contexts. Paginated; ordered by first_seen_at so the oldest link
 // is first (stable across pages). A cross-repo conceptID is a 404.
+//
+// Searchable via the optional `q` query param (websearch_to_tsquery
+// against facts.search_tsv, which covers facts.text); empty/absent
+// q = no filter. Useful for large concepts whose facts span many
+// pages. The response is a pageEnvelope: {data, total, limit, offset}.
 func (c *Concepts) ListConceptFacts(w http.ResponseWriter, r *http.Request) {
 	pool := appmw.PoolFromContext(r.Context())
 	if pool == nil {
@@ -311,9 +316,11 @@ func (c *Concepts) ListConceptFacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit, offset := parsePaging(r)
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	facts, err := queries.ListFactsByConcept(r.Context(), store.ListFactsByConceptParams{
 		ConceptID: conceptID,
+		Column2:   search,
 		Limit:     int32(limit),
 		Offset:    int32(offset),
 	})
@@ -322,7 +329,10 @@ func (c *Concepts) ListConceptFacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	total, err := queries.CountFactsByConcept(r.Context(), conceptID)
+	total, err := queries.CountFactsByConcept(r.Context(), store.CountFactsByConceptParams{
+		ConceptID: conceptID,
+		Column2:   search,
+	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to count facts for concept")
 		return

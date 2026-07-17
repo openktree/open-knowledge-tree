@@ -44,13 +44,26 @@ func NewS3Store(cfg S3Config) (*S3Store, error) {
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("s3 bucket is required")
 	}
+
+	// Parse the endpoint: accept both bare hostnames and full URLs.
+	// minio-go expects a bare "host:port" string, not "https://host".
+	secure := false
+	endpoint := cfg.Endpoint
+	if strings.HasPrefix(endpoint, "https://") {
+		secure = true
+		endpoint = strings.TrimPrefix(endpoint, "https://")
+	} else if strings.HasPrefix(endpoint, "http://") {
+		endpoint = strings.TrimPrefix(endpoint, "http://")
+	}
+	endpoint = strings.TrimRight(endpoint, "/")
+
 	lookup := minio.BucketLookupAuto
 	if cfg.PathStyle {
 		lookup = minio.BucketLookupPath
 	}
-	client, err := minio.New(cfg.Endpoint, &minio.Options{
+	client, err := minio.New(endpoint, &minio.Options{
 		Creds:        credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure:       false,
+		Secure:       secure,
 		Region:       cfg.Region,
 		BucketLookup: lookup,
 	})
@@ -80,9 +93,17 @@ func NewS3Store(cfg S3Config) (*S3Store, error) {
 	// callers should skip embedding presigned URLs in that case.
 	var presignClient *minio.Client
 	if cfg.PresignBaseURL != "" {
-		presignClient, err = minio.New(cfg.PresignBaseURL, &minio.Options{
+		presignSecure := strings.HasPrefix(cfg.PresignBaseURL, "https")
+		presignEndpoint := cfg.PresignBaseURL
+		if strings.HasPrefix(presignEndpoint, "https://") {
+			presignEndpoint = strings.TrimPrefix(presignEndpoint, "https://")
+		} else if strings.HasPrefix(presignEndpoint, "http://") {
+			presignEndpoint = strings.TrimPrefix(presignEndpoint, "http://")
+		}
+		presignEndpoint = strings.TrimRight(presignEndpoint, "/")
+		presignClient, err = minio.New(presignEndpoint, &minio.Options{
 			Creds:        credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-			Secure:       strings.HasPrefix(cfg.PresignBaseURL, "https"),
+			Secure:       presignSecure,
 			Region:       cfg.Region,
 			BucketLookup: lookup,
 		})

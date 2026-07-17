@@ -639,8 +639,9 @@ export const api = {
     return request(`/repositories/${slug}/concepts/${conceptID}/relations/${otherConceptID}`);
   },
 
-  listConceptFacts(slug, conceptID, { limit = 100, offset = 0 } = {}) {
+  listConceptFacts(slug, conceptID, { limit = 100, offset = 0, q = "" } = {}) {
     const qs = new URLSearchParams({ limit, offset });
+    if (q) qs.set("q", q);
     return request(`/repositories/${slug}/concepts/${conceptID}/facts?${qs.toString()}`);
   },
 

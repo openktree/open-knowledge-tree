@@ -251,6 +251,67 @@ func TestStrategyURLValidatorRejectsUnsafeURL(t *testing.T) {
 	}
 }
 
+// TestStrategyURLValidatorDNSFailureFallsThrough verifies the
+// SSRF gate does NOT short-circuit the chain when the validator
+// returns ErrDNSLookupFailed — the transient DNS error is a
+// retry signal, not a safety verdict. The chain providers run
+// their own DNS resolution and can still succeed (or fail
+// normally) when the resolver hiccup was transient. The audit
+// trail records the url_safety DNS failure as the first
+// attempt so the UI surfaces it, but the chain is not blocked.
+//
+// This is the regression test for the "K_ssrf_dns_fail" failure
+// mode in the corpus (~11 rows where a 127.0.0.11:53 read
+// timeout turned into a hard reject and the whole chain was
+// skipped).
+func TestStrategyURLValidatorDNSFailureFallsThrough(t *testing.T) {
+	called := false
+	p1 := &stubProvider{
+		id:      "p1",
+		support: []SourceType{SourceURL},
+		result:  ResolvedContent{StatusCode: 200, Body: []byte("ok after dns hiccup")},
+	}
+	strategy := NewFetchStrategy(p1).WithURLValidator(func(raw string) error {
+		return ErrDNSLookupFailed
+	})
+
+	// Patch the stub to record that it was called. The stub's
+	// Resolve doesn't take a callback, so we wrap via a custom
+	// provider inline.
+	chainRan := false
+	wrapped := &dnsFallthroughProvider{
+		stub:    p1,
+		onCall:  func() { chainRan = true },
+	}
+	strategy = NewFetchStrategy(wrapped).WithURLValidator(func(raw string) error {
+		return ErrDNSLookupFailed
+	})
+	_ = called
+
+	res, err := strategy.Resolve(context.Background(), Resource{Type: SourceURL, Value: "https://transient.example.com"})
+	if err != nil {
+		t.Fatalf("expected nil error (chain should fall through and succeed), got %v", err)
+	}
+	if !chainRan {
+		t.Error("expected chain provider to run after DNS-failure fall-through, but it was not called")
+	}
+	if string(res.Body) != "ok after dns hiccup" {
+		t.Errorf("expected body from chain provider, got %q", string(res.Body))
+	}
+	// The audit trail should start with the url_safety DNS
+	// failure attempt, followed by the successful chain
+	// provider.
+	if len(res.Attempts) < 2 {
+		t.Fatalf("expected at least 2 attempts (url_safety + chain), got %d", len(res.Attempts))
+	}
+	if res.Attempts[0].Provider != "url_safety" {
+		t.Errorf("expected first attempt to be url_safety, got %q", res.Attempts[0].Provider)
+	}
+	if res.Attempts[0].Success {
+		t.Error("expected url_safety attempt to be a failure (DNS lookup failed)")
+	}
+}
+
 // TestStrategyOARedirectSecondPass verifies the strategy
 // retries URL-capable providers with the direct OA URL when
 // Unpaywall discovered it but couldn't fetch it. The stub
@@ -289,4 +350,28 @@ func TestStrategyOARedirectSecondPass(t *testing.T) {
 	if len(res.Attempts) < 2 {
 		t.Fatalf("expected at least 2 attempts, got %d", len(res.Attempts))
 	}
+}
+
+// dnsFallthroughProvider wraps a stubProvider and fires a
+// callback the first time Resolve is called. Used by
+// TestStrategyURLValidatorDNSFailureFallsThrough to assert the
+// chain ran after the SSRF guard returned ErrDNSLookupFailed.
+type dnsFallthroughProvider struct {
+	stub   *stubProvider
+	onCall func()
+}
+
+func (d *dnsFallthroughProvider) Resolve(ctx context.Context, r Resource) (ResolvedContent, error) {
+	if d.onCall != nil {
+		d.onCall()
+	}
+	return d.stub.Resolve(ctx, r)
+}
+
+func (d *dnsFallthroughProvider) Supports(t SourceType) bool {
+	return d.stub.Supports(t)
+}
+
+func (d *dnsFallthroughProvider) Describe() ProviderDescription {
+	return d.stub.Describe()
 }

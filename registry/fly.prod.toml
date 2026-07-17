@@ -1,14 +1,16 @@
 # Fly.io config for the OKT Knowledge Registry (prod app: okt-registry-prod).
 #
 # Prod deployment: Postgres metadata (okt-registry-prod-db cluster)
-# + filesystem object storage on the mounted Fly volume. The Postgres
-# connection string is set as a Fly secret (REGISTRY_DATABASE_URL), NOT
-# in this file. Auth is closed in prod — set REGISTRY_AUTH_JWT_SECRET
-# and REGISTRY_AUTH_AUTH_MODE via flyctl secrets.
+# + Cloudflare R2 object storage. All secrets are set as Fly secrets,
+# never in this file. Auth is closed in prod.
 #
 # Secrets set via `flyctl secrets set -a okt-registry-prod`:
 #   REGISTRY_DATABASE_URL=postgres://postgres:<pw>@okt-registry-prod-db.flycast:5432
 #   REGISTRY_DATABASE_DRIVER=postgres
+#   REGISTRY_STORAGE_BACKEND=s3
+#   REGISTRY_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+#   REGISTRY_S3_BUCKET=okt-registry-prod
+#   REGISTRY_S3_ACCESS_KEY=... REGISTRY_S3_SECRET_KEY=...
 #   REGISTRY_AUTH_JWT_SECRET=<strong-random>
 #   REGISTRY_AUTH_AUTH_MODE=closed
 #
@@ -19,7 +21,7 @@ app = 'okt-registry-prod'
 primary_region = 'iad'
 
 [build]
-image = 'ghcr.io/openktree/registry:latest'
+dockerfile = 'Dockerfile.registry'
 
 [env]
 REGISTRY_STORAGE_BACKEND = 'filesystem'

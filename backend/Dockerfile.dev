@@ -28,7 +28,10 @@ ENV GOFLAGS=-tags=nocgo
 # with libmupdf.so. Without it, go-fitz defaults to "1.24.9"
 # (its build version), context creation fails, and every
 # PDF silently ends up with parse_status='unsupported'.
-ENV FZ_VERSION=1.26.11
+# Alpine 3.24's community repo ships mupdf-libs 1.27.2; bump
+# the env to match or go-fitz's fz_new_context_imp rejects
+# the header/library pair and every PDF parse is swallowed.
+ENV FZ_VERSION=1.27.2
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

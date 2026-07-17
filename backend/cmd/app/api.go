@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/api"
@@ -135,16 +136,55 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	resolutionProviders = append(resolutionProviders, fetchResolution)
 
 	// FlareSolverr / headless-browser tier (config-gated,
-	// self-disables when FLARESOLVERR_URL / flaresolverr.url
-	// is empty). Runs last so the cheaper tiers get a chance
-	// first; the host-preference store learns to skip them
-	// for hosts where FlareSolverr is the only working tier.
-	flareURL := cfg.Providers.Resolution.FlareSolverr.URL
+	// self-disables when no endpoint is configured). Runs
+	// last so the cheaper tiers get a chance first; the
+	// host-preference store learns to skip them for hosts
+	// where FlareSolverr is the only working tier.
+	//
+	// The tier supports a round-robin pool of endpoints so
+	// a single Byparr container is not saturated under burst
+	// load: one Chromium queues concurrent requests
+	// internally and every queued request burns its 60s
+	// timeout, so 50 retrieve_source workers all needing the
+	// heavy tier against one container is a timeout storm.
+	// Endpoints come from flaresolverr.endpoints (list); the
+	// single flaresolverr.url (or FLARESOLVERR_URL env) is
+	// appended for backward compatibility. max_concurrency
+	// caps in-flight Resolve calls across the pool so
+	// workers block cheaply on the semaphore instead of
+	// firing requests that just queue inside a container.
+	flareCfg := cfg.Providers.Resolution.FlareSolverr
+	flareEndpoints := make([]string, 0, len(flareCfg.Endpoints)+1)
+	flareEndpoints = append(flareEndpoints, flareCfg.Endpoints...)
+	// FLARESOLVERR_ENDPOINTS is a comma-separated env-var
+	// alias for flaresolverr.endpoints, mirroring the
+	// FLARESOLVERR_URL single-endpoint shorthand. Viper's
+	// AutomaticEnv would require the unwieldy
+	// PROVIDERS_RESOLUTION_FLARESOLVERR_ENDPOINTS, so we read
+	// the short form directly and split on comma. Duplicates
+	// and empty entries are filtered by the constructor.
+	if envEndpoints := os.Getenv("FLARESOLVERR_ENDPOINTS"); envEndpoints != "" {
+		for _, ep := range strings.Split(envEndpoints, ",") {
+			if ep = strings.TrimSpace(ep); ep != "" {
+				flareEndpoints = append(flareEndpoints, ep)
+			}
+		}
+	}
+	flareURL := flareCfg.URL
 	if flareURL == "" {
 		flareURL = os.Getenv("FLARESOLVERR_URL")
 	}
-	flareTimeout := cfg.Providers.Resolution.FlareSolverr.Timeout
-	if flareProvider := fetch.NewFlareSolverrProvider(flareURL, flareTimeout, cfg.Providers.Resolution.Fetch.UserAgent, parsers...); flareProvider != nil {
+	if flareURL != "" {
+		flareEndpoints = append(flareEndpoints, flareURL)
+	}
+	flareTimeout := flareCfg.Timeout
+	flareMaxConcurrency := flareCfg.MaxConcurrency
+	if envMax := os.Getenv("FLARESOLVERR_MAX_CONCURRENCY"); envMax != "" {
+		if n, err := strconv.Atoi(envMax); err == nil && n > 0 {
+			flareMaxConcurrency = n
+		}
+	}
+	if flareProvider := fetch.NewFlareSolverrProviderPool(flareEndpoints, flareTimeout, cfg.Providers.Resolution.Fetch.UserAgent, flareMaxConcurrency, parsers...); flareProvider != nil {
 		resolutionProviders = append(resolutionProviders, flareProvider)
 	}
 

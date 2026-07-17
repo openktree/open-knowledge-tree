@@ -16,17 +16,18 @@ import (
 
 func main() {
 	modeFlag := flag.String("mode", "", "api")
+	configPathFlag := flag.String("config", "", "path to a config file or directory; when empty, searches ./configs, ./, the binary's directory, and <binary-dir>/configs, falling back to the embedded default")
 	flag.Parse()
 
 	mode := *modeFlag
 	switch mode {
 	case "api":
 	default:
-		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s --mode=api\n", flag.CommandLine.Name())
+		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s --mode=api [--config=<path>]\n", flag.CommandLine.Name())
 		os.Exit(1)
 	}
 
-	cfg, err := config.Load()
+	cfg, err := config.Load(*configPathFlag)
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
 	}

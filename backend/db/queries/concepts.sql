@@ -369,16 +369,25 @@ WHERE is_join.investigation_id = @investigation_id;
 -- The "query DNA → 200 facts" view. Paginated; the caller passes
 -- the concept_id (resolved by the caller from the route param).
 -- Ordered by first_seen_at so the oldest link is first (stable
--- across pages).
+-- across pages). The optional search ($2) runs through
+-- websearch_to_tsquery against facts.search_tsv (covers facts.text);
+-- empty string = no filter. LIMIT $3 / OFFSET $4 apply on top.
 SELECT f.*, fc.first_seen_at
 FROM okt_repository.fact_concepts fc
 JOIN okt_repository.facts f ON f.id = fc.fact_id
 WHERE fc.concept_id = $1
+  AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2))
 ORDER BY fc.first_seen_at
-LIMIT $2 OFFSET $3;
+LIMIT $3 OFFSET $4;
 
 -- name: CountFactsByConcept :one
-SELECT COUNT(*) FROM okt_repository.fact_concepts WHERE concept_id = $1;
+-- Companion count for ListFactsByConcept. Same concept_id and
+-- search predicates, minus the ORDER BY / LIMIT / OFFSET, so the
+-- API envelope can report `total` without a window function.
+SELECT COUNT(*) FROM okt_repository.fact_concepts fc
+JOIN okt_repository.facts f ON f.id = fc.fact_id
+WHERE fc.concept_id = $1
+  AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2));
 
 -- name: ListConceptsByFact :many
 -- The inverse view: which concepts a fact links to. Used by the

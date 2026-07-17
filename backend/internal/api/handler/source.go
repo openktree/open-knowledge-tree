@@ -374,7 +374,55 @@ func (s *Source) ListProviders(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"search":     searchProviders,
 		"resolution": resolutionProviders,
+		"flare_skip_candidates": s.flareSkipCandidates(r),
 	})
+}
+
+// flareSkipCandidates returns the per-host FlareSolverr
+// failure/success counts for the active repository, used by the
+// Providers UI to surface "candidate hosts to pin out of
+// FlareSolverr". Today the strategy does NOT enforce a skip
+// list; this is the data-side preparation so the blacklist is
+// ready to wire. A host with flare_failures > 0 and
+// flare_successes = 0 is a strong skip candidate.
+//
+// Returns nil (omitted from the JSON response) when no
+// repository is in context (the global /sources/providers
+// route is usable outside a repo scope) or when the per-repo
+// pool can't be resolved. Best-effort: any query error is
+// logged and returns nil so the catalog endpoint never fails
+// on a diagnostic feature.
+func (s *Source) flareSkipCandidates(r *http.Request) []map[string]interface{} {
+	if s.repoPoolResolver == nil {
+		return nil
+	}
+	repoID := r.Header.Get("X-Repository-ID")
+	if repoID == "" {
+		return nil
+	}
+	pool, _, err := s.repoPoolResolver(r.Context(), repoID)
+	if err != nil || pool == nil {
+		if err != nil {
+			log.Printf("source: flare_skip_candidates pool resolve for repo %s: %v", repoID, err)
+		}
+		return nil
+	}
+	queries := store.New(pool)
+	rows, err := queries.ListFlareSolverrHostCandidates(r.Context())
+	if err != nil {
+		log.Printf("source: flare_skip_candidates query: %v", err)
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]interface{}{
+			"host":             row.Host,
+			"total_attempts":   row.TotalAttempts,
+			"flare_failures":   row.FlareFailures,
+			"flare_successes":  row.FlareSuccesses,
+		})
+	}
+	return out
 }
 
 // ListDecompositionProviders handles GET /decomposition/providers.

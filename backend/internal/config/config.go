@@ -1,14 +1,17 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/openktree/open-knowledge-tree/backend/configs"
 	"github.com/spf13/viper"
 )
 
@@ -1030,15 +1033,32 @@ type TLSImpersonationConfig struct {
 }
 
 // FlareSolverrConfig configures the headless-browser
-// resolution provider (Phase 3). When URL is empty the
-// provider self-disables and is not registered. URL is the
-// FlareSolverr / Byparr HTTP endpoint (e.g.
-// "http://flaresolverr:8191"). Timeout is the per-request
-// budget for the headless browser; defaults to 60s when
-// empty, parsed as a Go time.Duration string.
+// resolution provider (Phase 3). When URL is empty AND
+// Endpoints is empty the provider self-disables and is not
+// registered. URL is the FlareSolverr / Byparr HTTP endpoint
+// (e.g. "http://flaresolverr:8191") for a single-instance
+// deployment. Endpoints is a list of endpoints for a
+// horizontally-scaled deployment (one entry per Byparr
+// container); the provider round-robins across them. When
+// both are set, Endpoints takes precedence and URL is
+// appended to the pool. Timeout is the per-request budget
+// for the headless browser; defaults to 60s when empty,
+// parsed as a Go time.Duration string. MaxConcurrency caps
+// the number of in-flight Resolve calls across the whole
+// pool — a single Byparr container drives one headless
+// Chromium and queues concurrent requests internally, so
+// allowing more in-flight calls than containers just burns
+// the timeout budget waiting in the sidecar's queue. The
+// default of 0 means "no application-level cap" (the
+// sidecar's own HTTP server is the only limit); set it to
+// roughly the number of Byparr containers × the per-container
+// concurrency you want to allow (typically 1×containers for
+// challenge-heavy workloads, 2×containers for lighter pages).
 type FlareSolverrConfig struct {
-	URL     string        `mapstructure:"url"`
-	Timeout time.Duration `mapstructure:"timeout"`
+	URL            string        `mapstructure:"url"`
+	Endpoints      []string      `mapstructure:"endpoints"`
+	Timeout        time.Duration `mapstructure:"timeout"`
+	MaxConcurrency int           `mapstructure:"max_concurrency"`
 }
 
 type ServerConfig struct {
@@ -1184,25 +1204,76 @@ type AuthConfig struct {
 	TokenTTL  time.Duration `mapstructure:"token_ttl"`
 }
 
-func Load() (*Config, error) {
-	_ = godotenv.Load(".env")
+// Load reads the configuration from the layered set of sources
+// described below and returns the parsed *Config.
+//
+// configPath is the optional `--config` flag value. It may be:
+//
+//   - empty: the loader searches the standard on-disk paths (in
+//     order): `--config` is not set, so it is skipped; then
+//     `./configs`, `.`, `<binary_dir>/configs`, `<binary_dir>`.
+//   - a path to a file: that file is loaded directly as the default
+//     config; a sibling `config.local.yaml` (if present) is merged
+//     on top.
+//   - a path to a directory: that directory is searched first for
+//     `config.default.yaml` / `config.local.yaml`, ahead of the
+//     standard paths.
+//   - a path that does not exist: a warning is logged and the
+//     loader falls through to the standard search; the app still
+//     boots (via the embedded fallback if needed).
+//
+// If no on-disk `config.default.yaml` is found in any search path,
+// the loader falls back to the embedded copy bundled into the
+// binary (configs.DefaultConfigFS, see backend/configs/embed.go).
+// In that case, when the binary's directory is writable, the
+// embedded default is also written to
+// `<binary_dir>/configs/config.default.yaml` so an operator gets
+// an editable file on first run without having to copy one out.
+// The write is best-effort: a non-writable binary dir only disables
+// the auto-write, not the boot.
+//
+// `.env` files are searched in the CWD, the binary's directory,
+// and (when --config is a directory) the config directory; the
+// first existing one wins. Env vars always override YAML.
+func Load(configPath string) (*Config, error) {
+	binDir := resolveBinaryDir()
+
+	// `.env` discovery. Try CWD first (preserves the dev workflow),
+	// then the binary's directory (for shipped-alongside-binary
+	// deploys), then (when --config is a dir) the config dir.
+	loadDotEnv(".", binDir, configPath)
 
 	v := viper.New()
-
-	v.SetConfigName("config.default")
 	v.SetConfigType("yaml")
-	v.AddConfigPath("./configs")
-	v.AddConfigPath(".")
 
-	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("reading default config: %w", err)
+	_, usedEmbeddedDefault, err := loadDefaultConfig(v, configPath, binDir)
+	if err != nil {
+		return nil, err
 	}
 
-	v.SetConfigName("config.local")
-	if err := v.MergeInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			return nil, fmt.Errorf("reading local config: %w", err)
+	// Merge config.local.yaml on top, if present. The search
+	// reuses the AddConfigPath list already registered for the
+	// default; a config.local.yaml in any of those dirs wins
+	// (earliest path first). When the default came from the
+	// embedded fallback there is no local config to merge (the
+	// operator can add one by creating config.local.yaml in the
+	// binary's configs/ dir — the auto-write step below creates
+	// that dir, so subsequent boots will find it).
+	if !usedEmbeddedDefault {
+		v.SetConfigName("config.local")
+		if err := v.MergeInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				return nil, fmt.Errorf("reading local config: %w", err)
+			}
 		}
+	}
+
+	// First-run auto-write: when the default came from the
+	// embedded fallback, write it next to the binary so the
+	// operator gets an editable file. Best-effort; a non-writable
+	// binary dir is logged and ignored.
+	if usedEmbeddedDefault && binDir != "" {
+		writeEmbeddedDefaultToDisk(binDir)
 	}
 
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -1368,6 +1439,178 @@ func Load() (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// resolveBinaryDir returns the directory containing the running
+// binary, or "" if it cannot be determined (e.g. `go run`, which
+// puts the binary in a temp dir that may have been cleaned up).
+// Used as a search path and as the auto-write target for the
+// embedded default config.
+func resolveBinaryDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		// EvalSymlinks can fail on some platforms when the path
+		// is already canonical; fall back to the raw path.
+		exe, _ = filepath.Abs(exe)
+	}
+	return filepath.Dir(exe)
+}
+
+// loadDotEnv loads .env from the first location that has one. The
+// candidate dirs are: "." (CWD, the dev workflow default), binDir
+// (shipped-alongside-binary), and (when configPath is a dir) the
+// config dir. godotenv.Load errors when the file is missing, which
+// is the common case, so we swallow the not-found error and only
+// propagate parse errors from an existing file.
+func loadDotEnv(dirs ...string) {
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		p := filepath.Join(d, ".env")
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		// godotenv.Load merges into os.Environ without overwriting
+		// already-set vars; calling it repeatedly is safe.
+		if err := godotenv.Load(p); err != nil {
+			// A parse error in an existing .env is worth surfacing
+			// but not fatal — log and continue so a broken .env
+			// doesn't block boot when the YAML is fine.
+			log.Printf("config: ignoring %s: %v", p, err)
+		}
+	}
+}
+
+// loadDefaultConfig finds and reads config.default.yaml. It
+// returns:
+//   - defaultDir: the directory the default was loaded from, or ""
+//     when it came from the embedded fallback.
+//   - usedEmbeddedDefault: true when the on-disk search failed and
+//     the embedded copy was used instead.
+//   - err: any read/parse error from the default config.
+//
+// Search order when configPath is empty:
+//  1. ./configs
+//  2. .
+//  3. <binDir>/configs
+//  4. <binDir>
+//  5. embedded fallback
+//
+// When configPath is a file, that file is used directly. When
+// configPath is a directory, it is searched first (ahead of the
+// standard paths). When configPath does not exist, a warning is
+// logged and the standard search proceeds.
+func loadDefaultConfig(v *viper.Viper, configPath, binDir string) (defaultDir string, usedEmbedded bool, err error) {
+	// Explicit --config flag: file or directory, auto-detected.
+	if configPath != "" {
+		info, statErr := os.Stat(configPath)
+		if statErr != nil {
+			log.Printf("config: --config %q not found; falling back to standard search: %v", configPath, statErr)
+		} else if info.IsDir() {
+			v.SetConfigName("config.default")
+			v.AddConfigPath(configPath)
+			addStandardSearchPaths(v, binDir)
+			if rerr := v.ReadInConfig(); rerr != nil {
+				return "", false, fmt.Errorf("reading default config: %w", rerr)
+			}
+			return filepath.Dir(v.ConfigFileUsed()), false, nil
+		} else {
+			v.SetConfigFile(configPath)
+			if rerr := v.ReadInConfig(); rerr != nil {
+				return "", false, fmt.Errorf("reading default config: %w", rerr)
+			}
+			return filepath.Dir(configPath), false, nil
+		}
+	}
+
+	// Standard on-disk search.
+	v.SetConfigName("config.default")
+	addStandardSearchPaths(v, binDir)
+	if rerr := v.ReadInConfig(); rerr != nil {
+		// ConfigFileNotFoundError is the signal to fall back to
+		// the embedded default; anything else is a real parse
+		// error we should surface.
+		if _, ok := rerr.(viper.ConfigFileNotFoundError); !ok {
+			return "", false, fmt.Errorf("reading default config: %w", rerr)
+		}
+		// Fall through to the embedded default.
+	} else {
+		return filepath.Dir(v.ConfigFileUsed()), false, nil
+	}
+
+	// Embedded fallback: load the bundled config.default.yaml
+	// straight from the binary.
+	embedded, rerr := configs.DefaultConfigBytes()
+	if rerr != nil {
+		return "", false, fmt.Errorf("reading embedded default config: %w", rerr)
+	}
+	// viper.ReadConfig reads from the io.Reader into the current
+	// config state. We reset the config name/type so the later
+	// MergeInConfig call for config.local.yaml doesn't try to
+	// re-read the in-memory buffer.
+	v.SetConfigName("config.default")
+	v.SetConfigType("yaml")
+	if rerr := v.ReadConfig(bytes.NewReader(embedded)); rerr != nil {
+		return "", false, fmt.Errorf("parsing embedded default config: %w", rerr)
+	}
+	log.Println("config: no on-disk config.default.yaml found; using the embedded default")
+	return "", true, nil
+}
+
+// addStandardSearchPaths registers the on-disk search paths used
+// by both the empty-configPath path and the directory-configPath
+// path. Order matters: earlier paths win. The dev workflow
+// (./configs, .) is preserved first; the binary-relative paths
+// (for shipped-alongside-binary deploys) come last so a developer
+// with a configs/ dir in CWD isn't accidentally overridden by a
+// stale copy next to the binary.
+func addStandardSearchPaths(v *viper.Viper, binDir string) {
+	v.AddConfigPath("./configs")
+	v.AddConfigPath(".")
+	if binDir != "" {
+		v.AddConfigPath(filepath.Join(binDir, "configs"))
+		v.AddConfigPath(binDir)
+	}
+}
+
+// writeEmbeddedDefaultToDisk writes the embedded config.default.yaml
+// to <binDir>/configs/config.default.yaml so an operator gets an
+// editable file on first run. Best-effort: a non-writable binDir
+// only disables the auto-write, not the boot. Never overwrites an
+// existing file (respects operator edits).
+func writeEmbeddedDefaultToDisk(binDir string) {
+	targetDir := filepath.Join(binDir, "configs")
+	target := filepath.Join(targetDir, "config.default.yaml")
+	// Don't clobber an existing file — respect the operator's
+	// edits even when the on-disk search somehow missed it (e.g.
+	// race with a concurrent writer).
+	if _, err := os.Stat(target); err == nil {
+		return
+	} else if !os.IsNotExist(err) {
+		// A stat error other than NotExist is unusual; log and
+		// skip rather than guess.
+		log.Printf("config: skipping auto-write of default config to %s: stat: %v", target, err)
+		return
+	}
+	embedded, err := configs.DefaultConfigBytes()
+	if err != nil {
+		log.Printf("config: skipping auto-write of default config: %v", err)
+		return
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		log.Printf("config: could not create %s for auto-write of default config: %v (booting with the embedded copy)", targetDir, err)
+		return
+	}
+	if err := os.WriteFile(target, embedded, 0o644); err != nil {
+		log.Printf("config: could not auto-write default config to %s: %v (booting with the embedded copy)", target, err)
+		return
+	}
+	log.Printf("config: wrote default config to %s (edit it to customize; config.local.yaml in the same dir overrides it)", target)
 }
 
 func validate(cfg *Config) error {

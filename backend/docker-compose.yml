@@ -1,7 +1,32 @@
+# YAML anchor for the Byparr/FlareSolverr healthcheck, reused
+# by every flaresolverrN service below so the definition stays
+# in one place. Byparr's /health handler does synchronous work
+# (~10s per call on this host), so the probe timeout has to
+# comfortably exceed that or the container flips to unhealthy
+# and trips dependent services. 15s gives headroom;
+# start_period keeps the boot window quiet. Defined at the
+# top level (not under services:) so compose doesn't treat it
+# as a service.
+x-flaresolverr-health: &flaresolverr-health
+  test: ["CMD", "curl", "-fsS", "--max-time", "14", "http://127.0.0.1:8191/health"]
+  interval: 15s
+  timeout: 15s
+  retries: 5
+  start_period: 30s
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: okt-postgres
+    # max_connections=300: the dev stack runs every queue (LLM
+    # extraction/summarization/synthesis at 100 workers each)
+    # against one Postgres, so the default 100 saturates under
+    # burst load and even psql can't get a slot. 300 matches the
+    # config's max_conns: 200 for the app pool plus headroom for
+    # psql, healthchecks, and the task DB's separate pool. Prod
+    # deployments that split queues across instances can lower
+    # this.
+    command: postgres -c max_connections=300
     environment:
       POSTGRES_USER: okt
       POSTGRES_PASSWORD: okt_dev
@@ -57,40 +82,64 @@ services:
   # undetected-Chromium instance that solves JavaScript
   # challenges (Cloudflare "Checking your browser", Datadome,
   # PerimeterX) that no amount of TLS fingerprinting or header
-  # spoofing can bypass. The API container talks to it over
-  # HTTP on port 8191 (the FlareSolverr / Byparr protocol).
+  # spoofing can bypass. The API container talks to each
+  # instance over HTTP on port 8191 (the FlareSolverr / Byparr
+  # protocol).
   #
-  # The service is gated on the dev + prod profiles so `just
+  # The services are gated on the dev + prod profiles so `just
   # test-e2e` (which uses the `test` profile) does not boot a
   # real browser per test run. The API self-disables the
-  # FlareSolverr tier when FLARESOLVERR_URL is empty, so a
+  # FlareSolverr tier when no endpoint is configured, so a
   # deployment that doesn't need the heavy tier pays zero
   # cost. Byparr is the actively-maintained fork of
   # FlareSolverr; the image can be swapped via the
   # FLARESOLVERR_IMAGE env var if an operator prefers the
   # original.
+  #
+  # Horizontal scaling: a single Byparr container drives one
+  # headless Chromium and queues concurrent requests
+  # internally, so a burst of retrieve_source workers all
+  # needing the heavy tier saturates one container and every
+  # queued request burns its 60s timeout waiting. We run three
+  # instances by default (flaresolverr, flaresolverr2,
+  # flaresolverr3) and the API round-robins across them via
+  # flaresolverr.endpoints in config (or
+  # FLARESOLVERR_ENDPOINTS as a comma-separated env var). The
+  # FlareSolverrProvider also caps in-flight calls at
+  # max_concurrency so workers block cheaply on a semaphore
+  # instead of firing requests that just queue inside a
+  # container. Scale up by adding more flaresolverrN services
+  # and appending their URLs to the endpoints list.
+  #
+  # x-flaresolverr-health is a YAML anchor (defined at the
+  # top level above) reused by every Byparr instance so the
+  # healthcheck definition stays in one place.
   flaresolverr:
     image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
     container_name: okt-flaresolverr
     ports:
       - "8191:8191"
-    healthcheck:
-      # The Byparr/FlareSolverr image ships curl and exposes a
-      # /health endpoint that returns 200 once Uvicorn is up.
-      # The root path redirects (301), so we probe /health
-      # rather than "/". The qdrant service below can't use
-      # curl (distroless) and keeps the /dev/tcp form; Byparr
-      # can use the simpler, more robust curl-based check.
-      # Byparr's /health handler does synchronous work (~10s
-      # per call on this host), so the probe timeout has to
-      # comfortably exceed that or the container flips to
-      # unhealthy and trips dependent services. 15s gives
-      # headroom; start_period keeps the boot window quiet.
-      test: ["CMD", "curl", "-fsS", "--max-time", "14", "http://127.0.0.1:8191/health"]
-      interval: 15s
-      timeout: 15s
-      retries: 5
-      start_period: 30s
+    healthcheck: *flaresolverr-health
+    profiles:
+      - dev
+      - prod
+
+  flaresolverr2:
+    image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
+    container_name: okt-flaresolverr2
+    ports:
+      - "8192:8191"
+    healthcheck: *flaresolverr-health
+    profiles:
+      - dev
+      - prod
+
+  flaresolverr3:
+    image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
+    container_name: okt-flaresolverr3
+    ports:
+      - "8193:8191"
+    healthcheck: *flaresolverr-health
     profiles:
       - dev
       - prod
@@ -207,12 +256,35 @@ services:
       # dev/prod so the TLS-fingerprint WAF bypass is on
       # out of the box.
       OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_124}
-      # FLARESOLVERR_URL points at the headless-browser
-      # sidecar. Empty disables the tier. The dev/prod
-      # profiles boot the flaresolverr service alongside
+      # FLARESOLVERR_URL points at a single headless-browser
+      # sidecar (backward-compatible shorthand). Empty is
+      # fine when FLARESOLVERR_ENDPOINTS is set. The dev/prod
+      # profiles boot three flaresolverr services alongside
       # the API; the test profile does not, so e2e tests
       # that need it skip gracefully.
       FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      # FLARESOLVERR_ENDPOINTS is a comma-separated list of
+      # headless-browser sidecar URLs the FlareSolverr
+      # provider round-robins across. With three Byparr
+      # containers (flaresolverr, flaresolverr2,
+      # flaresolverr3) the burst of 50 retrieve_source
+      # workers spreads across three Chromium instances
+      # instead of saturating one. The config loader splits
+      # this env var into the flaresolverr.endpoints list;
+      # when both this and FLARESOLVERR_URL are set, both
+      # are added to the pool (endpoints first). Override to
+      # point at a different set of containers.
+      FLARESOLVERR_ENDPOINTS: ${FLARESOLVERR_ENDPOINTS:-http://flaresolverr:8191,http://flaresolverr2:8191,http://flaresolverr3:8191}
+      # FLARESOLVERR_MAX_CONCURRENCY caps the number of
+      # in-flight Resolve calls across the whole FlareSolverr
+      # pool. A single Byparr container drives one headless
+      # Chromium and queues concurrent requests internally,
+      # so allowing more in-flight calls than containers
+      # just burns the 60s timeout waiting in the sidecar's
+      # queue. 3 matches the default three-container pool
+      # (one in-flight call per container); raise to 6 for
+      # lighter pages, lower to 1 for challenge-heavy hosts.
+      FLARESOLVERR_MAX_CONCURRENCY: ${FLARESOLVERR_MAX_CONCURRENCY:-3}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       # Qdrant host/port for the embedding+dedup pipeline. The
@@ -224,11 +296,11 @@ services:
       # FZ_VERSION must match the system MuPDF library version.
       # go-fitz (the PDF parser binding) uses this to negotiate
       # the context version with libmupdf.so at init time. The
-      # Alpine 3.23 community repo ships mupdf 1.26.11; without
-      # this env var go-fitz defaults to "1.24.9" (its build
-      # version), the context creation fails, and every PDF
-      # silently ends up with parse_status='unsupported'.
-      FZ_VERSION: "1.26.11"
+      # Alpine 3.24 community repo ships mupdf-libs 1.27.2;
+      # without this env var go-fitz defaults to "1.24.9" (its
+      # build version), the context creation fails, and every
+      # PDF silently ends up with parse_status='unsupported'.
+      FZ_VERSION: "1.27.2"
     ports:
       - "8080:8080"
     volumes:
@@ -249,6 +321,10 @@ services:
       qdrant:
         condition: service_healthy
       flaresolverr:
+        condition: service_healthy
+      flaresolverr2:
+        condition: service_healthy
+      flaresolverr3:
         condition: service_healthy
     profiles:
       - prod
@@ -291,7 +367,13 @@ services:
       OPENALEX_EMAIL: ${OPENALEX_EMAIL:-carlosgomezsoza@gmail.com}
       UNPAYWALL_EMAIL: ${UNPAYWALL_EMAIL:-}
       OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_124}
+      # FlareSolverr pool — see `api` service. The dev profile
+      # boots three Byparr containers; the provider
+      # round-robins across them. FLARESOLVERR_URL is kept as
+      # a single-endpoint shorthand for backward compat.
       FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      FLARESOLVERR_ENDPOINTS: ${FLARESOLVERR_ENDPOINTS:-http://flaresolverr:8191,http://flaresolverr2:8191,http://flaresolverr3:8191}
+      FLARESOLVERR_MAX_CONCURRENCY: ${FLARESOLVERR_MAX_CONCURRENCY:-3}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       # Qdrant host/port — see `api` service.
@@ -300,7 +382,7 @@ services:
       # FZ_VERSION — see `api` service. Must match the
       # installed MuPDF library version so go-fitz can
       # create the context for PDF parsing.
-      FZ_VERSION: "1.26.11"
+      FZ_VERSION: "1.27.2"
       REGISTRY_URL: http://registry-dev:8081
     ports:
       - "8080:8080"
@@ -326,6 +408,10 @@ services:
       qdrant:
         condition: service_healthy
       flaresolverr:
+        condition: service_healthy
+      flaresolverr2:
+        condition: service_healthy
+      flaresolverr3:
         condition: service_healthy
     profiles:
       - dev

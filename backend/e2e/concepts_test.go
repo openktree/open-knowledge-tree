@@ -1282,6 +1282,146 @@ func TestConcepts_GetByIDReturnsGroupWithContexts(t *testing.T) {
 	}
 }
 
+// TestConcepts_ListFactsSearch verifies the optional `q` search
+// param on GET /concepts/{conceptID}/facts narrows the per-context
+// fact list via websearch_to_tsquery against facts.search_tsv. The
+// search is server-side and total-aware, so it reaches facts beyond
+// the current page — this is the backing query for the ContextPanel
+// search bar.
+func TestConcepts_ListFactsSearch(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "slugsearch@example.com")
+	const slug = "slug-search-repo"
+	_, _, repoID := createRepositoryWithDB(t, admin, "Slug Search Repo", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	queries := store.New(env.DB)
+
+	srcID := pgtype.UUID{}
+	if err := srcID.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scan src id: %v", err)
+	}
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: srcID, RepositoryID: pgRepo, Url: "https://example.com/slug-search", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	concept, err := queries.CreateConcept(context.Background(), store.CreateConceptParams{
+		RepositoryID: pgRepo, CanonicalName: "Photosynthesis", Context: "Biology",
+	})
+	if err != nil {
+		t.Fatalf("create concept: %v", err)
+	}
+
+	// Seed three facts under the concept with distinct searchable text.
+	// websearch_to_tsquery stems, so "chlorophyll" matches
+	// "chlorophyll" exactly and "sunlight" matches "sunlight".
+	seedTexts := []string{
+		"Plants convert sunlight into chemical energy during photosynthesis.",
+		"Chlorophyll absorbs red and blue light but reflects green.",
+		"Photosynthesis occurs in the chloroplasts of plant cells.",
+	}
+	factIDs := make([]string, 0, len(seedTexts))
+	for _, txt := range seedTexts {
+		fidStr := insertFactWithSource(t, env, pgRepo, srcID, txt, 0)
+		fid := pgtype.UUID{}
+		if err := fid.Scan(fidStr); err != nil {
+			t.Fatalf("scan fid: %v", err)
+		}
+		if _, err := queries.AddFactConcept(context.Background(), store.AddFactConceptParams{
+			FactID: fid, ConceptID: concept.ID,
+		}); err != nil {
+			t.Fatalf("link fact: %v", err)
+		}
+		factIDs = append(factIDs, fidStr)
+	}
+
+	conceptIDStr := pgUUIDString(concept.ID)
+	listURL := func(q string) string {
+		u := "/api/v1/repositories/" + slug + "/concepts/" + conceptIDStr + "/facts"
+		if q != "" {
+			u += "?q=" + q
+		}
+		return u
+	}
+
+	// No q → all 3 facts.
+	resp, raw := admin.do("GET", listURL(""), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET concept facts (no q): %d %s", resp.StatusCode, raw)
+	}
+	var all pageEnvelope
+	if err := json.Unmarshal(raw, &all); err != nil {
+		t.Fatalf("decode facts: %v", err)
+	}
+	if all.Total != 3 {
+		t.Errorf("no-q total = %d, want 3", all.Total)
+	}
+
+	// q="chlorophyll" → exactly 1 fact (the second seed). Confirms the
+	// search narrows the total AND the returned data, not just the
+	// visible page subset.
+	resp, raw = admin.do("GET", listURL("chlorophyll"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET concept facts (q=chlorophyll): %d %s", resp.StatusCode, raw)
+	}
+	var one pageEnvelope
+	if err := json.Unmarshal(raw, &one); err != nil {
+		t.Fatalf("decode facts: %v", err)
+	}
+	if one.Total != 1 {
+		t.Errorf("q=chlorophyll total = %d, want 1", one.Total)
+	}
+	if len(one.Data) != 1 {
+		t.Fatalf("q=chlorophyll data len = %d, want 1", len(one.Data))
+	}
+	var hit struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(one.Data[0], &hit); err != nil {
+		t.Fatalf("decode hit: %v", err)
+	}
+	if !strings.Contains(hit.Text, "Chlorophyll") {
+		t.Errorf("q=chlorophyll hit text = %q, want the chlorophyll fact", hit.Text)
+	}
+
+	// q="photosynthesis" → stems to "photosynth" which matches the two
+	// facts that contain the word "Photosynthesis". Confirms the
+	// search is full-text (stemmed), not a literal substring match.
+	resp, raw = admin.do("GET", listURL("photosynthesis"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET concept facts (q=photosynthesis): %d %s", resp.StatusCode, raw)
+	}
+	var two pageEnvelope
+	if err := json.Unmarshal(raw, &two); err != nil {
+		t.Fatalf("decode facts: %v", err)
+	}
+	if two.Total != 2 {
+		t.Errorf("q=photosynthesis total = %d, want 2", two.Total)
+	}
+
+	// q for a term not in any fact → total 0, empty data, 200 OK
+	// (not an error — empty result is a valid search outcome).
+	resp, raw = admin.do("GET", listURL("zzzznomatch"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET concept facts (q=zzzznomatch): %d %s", resp.StatusCode, raw)
+	}
+	var none pageEnvelope
+	if err := json.Unmarshal(raw, &none); err != nil {
+		t.Fatalf("decode facts: %v", err)
+	}
+	if none.Total != 0 {
+		t.Errorf("q=zzzznomatch total = %d, want 0", none.Total)
+	}
+	if len(none.Data) != 0 {
+		t.Errorf("q=zzzznomatch data len = %d, want 0", len(none.Data))
+	}
+
+	_ = factIDs
+}
+
 // TestConcepts_GetByIDNotFound verifies a conceptID with no matching
 // concept in the repo returns 404 (cross-repo isolation: a conceptID
 // from repo A is invisible from repo B because the ownership check

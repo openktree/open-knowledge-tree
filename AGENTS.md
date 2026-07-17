@@ -15,7 +15,7 @@
 - **sqlc**: Write SQL in `backend/db/queries/*.sql` → generated typesafe Go in `backend/internal/store`. Never hand-write store boilerplate.
 - **Provider Strategy**: Search and resolution use strategy/adapter patterns (`internal/providers/`). Register new providers in `cmd/app/api.go`.
 - **RBAC**: Casbin with a custom `pgx` adapter (`internal/rbac/adapter.go`). Policies are rows in PostgreSQL.
-- **Config**: Layered Viper loading: `configs/config.default.yaml` → `configs/config.local.yaml` → `.env` overrides.
+- **Config**: Layered Viper loading: `configs/config.default.yaml` → `configs/config.local.yaml` → `.env` overrides. The default is bundled into the binary (`backend/configs/embed.go`) and auto-written to `<binary_dir>/configs/config.default.yaml` on first run when no on-disk copy is found. Searched in `./configs`, `.`, the binary's directory, and `<binary-dir>/configs`; override the search with `--config <file|dir>`.
 - **Schema**: migrations live in `backend/db/migrations/NNNN_*.up.sql` / `.down.sql`, embedded as `backend.MigrationsFS` and applied by golang-migrate at boot (see `backend/internal/dbpool/registry.go`).
 
 **Frontend**

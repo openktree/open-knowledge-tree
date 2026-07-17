@@ -164,11 +164,22 @@ func (q *Queries) CountConceptsByRepo(ctx context.Context, repositoryID pgtype.U
 }
 
 const countFactsByConcept = `-- name: CountFactsByConcept :one
-SELECT COUNT(*) FROM okt_repository.fact_concepts WHERE concept_id = $1
+SELECT COUNT(*) FROM okt_repository.fact_concepts fc
+JOIN okt_repository.facts f ON f.id = fc.fact_id
+WHERE fc.concept_id = $1
+  AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2))
 `
 
-func (q *Queries) CountFactsByConcept(ctx context.Context, conceptID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countFactsByConcept, conceptID)
+type CountFactsByConceptParams struct {
+	ConceptID pgtype.UUID `json:"concept_id"`
+	Column2   string      `json:"column_2"`
+}
+
+// Companion count for ListFactsByConcept. Same concept_id and
+// search predicates, minus the ORDER BY / LIMIT / OFFSET, so the
+// API envelope can report `total` without a window function.
+func (q *Queries) CountFactsByConcept(ctx context.Context, arg CountFactsByConceptParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countFactsByConcept, arg.ConceptID, arg.Column2)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -1229,12 +1240,14 @@ SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.
 FROM okt_repository.fact_concepts fc
 JOIN okt_repository.facts f ON f.id = fc.fact_id
 WHERE fc.concept_id = $1
+  AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2))
 ORDER BY fc.first_seen_at
-LIMIT $2 OFFSET $3
+LIMIT $3 OFFSET $4
 `
 
 type ListFactsByConceptParams struct {
 	ConceptID pgtype.UUID `json:"concept_id"`
+	Column2   string      `json:"column_2"`
 	Limit     int32       `json:"limit"`
 	Offset    int32       `json:"offset"`
 }
@@ -1255,9 +1268,16 @@ type ListFactsByConceptRow struct {
 // The "query DNA → 200 facts" view. Paginated; the caller passes
 // the concept_id (resolved by the caller from the route param).
 // Ordered by first_seen_at so the oldest link is first (stable
-// across pages).
+// across pages). The optional search ($2) runs through
+// websearch_to_tsquery against facts.search_tsv (covers facts.text);
+// empty string = no filter. LIMIT $3 / OFFSET $4 apply on top.
 func (q *Queries) ListFactsByConcept(ctx context.Context, arg ListFactsByConceptParams) ([]ListFactsByConceptRow, error) {
-	rows, err := q.db.Query(ctx, listFactsByConcept, arg.ConceptID, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listFactsByConcept,
+		arg.ConceptID,
+		arg.Column2,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}

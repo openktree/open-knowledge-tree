@@ -1,26 +1,20 @@
 # Fly.io config for the OKT Knowledge Registry (dev app: okt-registry-dev).
 #
-# VM-only dev deployment: sqlite metadata + filesystem object storage,
-# both on the mounted Fly volume. No external DB or S3 backend is
-# required for the dev app to boot. When promoting to prod, switch
-# REGISTRY_STORAGE_BACKEND to s3 and provision Tigris (or another
-# S3) — see "Promote to prod" below.
+# Dev deployment: sqlite metadata + Cloudflare R2 object storage.
+# R2 credentials are set as Fly secrets (not in this file) so they
+# never land in version control.
 #
 # Secrets set via `flyctl secrets set -a okt-registry-dev`:
-#   REGISTRY_AUTH_JWT_SECRET=<random>  (defaults to a weak value)
-#
-# Promote to prod:
-#   flyctl apps create okt-registry-prod
-#   flyctl storage create --app okt-registry-prod --name okt-registry-prod-bucket
-#   flyctl secrets set -a okt-registry-prod \
-#     REGISTRY_STORAGE_BACKEND=s3 \
-#     REGISTRY_S3_ENDPOINT=... REGISTRY_S3_BUCKET=okt-registry-prod-bucket \
-#     REGISTRY_S3_ACCESS_KEY=... REGISTRY_S3_SECRET_KEY=...
+#   REGISTRY_STORAGE_BACKEND=s3
+#   REGISTRY_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+#   REGISTRY_S3_BUCKET=okt-registry-dev
+#   REGISTRY_S3_ACCESS_KEY=... REGISTRY_S3_SECRET_KEY=...
+#   REGISTRY_AUTH_JWT_SECRET=<random>
 app = 'okt-registry-dev'
 primary_region = 'iad'
 
 [build]
-image = 'ghcr.io/openktree/registry:latest'
+dockerfile = 'Dockerfile.registry'
 
 [env]
 REGISTRY_DATABASE_DRIVER = 'sqlite'

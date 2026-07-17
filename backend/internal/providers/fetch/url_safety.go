@@ -26,6 +26,25 @@ var AllowedFetchSchemes = map[string]bool{
 // transient failure worth retrying.
 var ErrUnsafeURL = errors.New("fetch: unsafe URL rejected by SSRF guard")
 
+// ErrDNSLookupFailed is returned by ValidateFetchURL when the
+// host's A/AAAA lookup fails. It is a *transient* error, not a
+// safety verdict: a DNS timeout does not mean the URL is unsafe,
+// it means the resolver was unreachable (the canonical case in
+// Docker Compose is the embedded DNS at 127.0.0.11:53 timing
+// out under load). The strategy treats it as a fall-through
+// sentinel so the fetch provider's own retry can re-resolve the
+// host; previously the guard conflated DNS-failure with
+// "unsafe URL" and short-circuited the whole chain, producing
+// the "K_ssrf_dns_fail" failure mode (~11 rows in the corpus).
+//
+// The resolved-IP check still runs on any IP that comes back —
+// only the "no IP at all" case changes from reject to retry.
+// Security-wise this is equivalent because there is no address
+// to fetch when DNS returns no address; the fetch provider will
+// hit its own DNS lookup and fail the same way if the host is
+// truly unreachable.
+var ErrDNSLookupFailed = errors.New("fetch: DNS lookup failed (transient)")
+
 // ValidateFetchURL returns nil when raw is an http(s) URL
 // whose host resolves to at least one public address and no
 // private / loopback / link-local / multicast / reserved /
@@ -70,12 +89,21 @@ func ValidateFetchURL(raw string) error {
 	// lookup because DNS rebinding can hand back a mix of
 	// public and private addresses; the safe behaviour is to
 	// reject if any address is in a forbidden range.
+	//
+	// A lookup *error* (resolver unreachable, query timed out)
+	// is returned as ErrDNSLookupFailed — a transient sentinel
+	// distinct from ErrUnsafeURL — so the strategy can fall
+	// through to the fetch providers' own retry instead of
+	// short-circuiting the whole chain. The resolved-IP check
+	// below only runs when the resolver returned at least one
+	// address; a "no IP at all" outcome carries no safety
+	// verdict, only a retry signal.
 	ips, err := lookupAllIPs(host)
 	if err != nil {
-		return fmt.Errorf("%w: DNS lookup failed for %q: %v", ErrUnsafeURL, host, err)
+		return fmt.Errorf("%w: lookup failed for %q: %v", ErrDNSLookupFailed, host, err)
 	}
 	if len(ips) == 0 {
-		return fmt.Errorf("%w: no addresses resolved for %q", ErrUnsafeURL, host)
+		return fmt.Errorf("%w: no addresses resolved for %q", ErrDNSLookupFailed, host)
 	}
 
 	for _, ip := range ips {

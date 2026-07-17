@@ -39,7 +39,7 @@ auth:
 		t.Fatal(err)
 	}
 
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -103,7 +103,7 @@ auth:
 	t.Setenv("DATABASE_HOST", "override.example")
 	t.Setenv("DATABASE_PORT", "6543")
 
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -158,7 +158,7 @@ auth:
 	t.Setenv("TASK_HOST", "tasks.example")
 	t.Setenv("TASK_NAME", "okt_tasks")
 
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -218,7 +218,7 @@ auth:
 	t.Setenv("TASK_HOST", "tasks.example")
 	t.Setenv("TASK_NAME", "okt_tasks")
 
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -263,7 +263,7 @@ task:
 		t.Fatal(err)
 	}
 
-	if _, err := Load(); err == nil {
+	if _, err := Load(""); err == nil {
 		t.Fatal("expected error for unknown task.database; got nil")
 	}
 }
@@ -290,7 +290,7 @@ auth:
 		t.Fatal(err)
 	}
 
-	if _, err := Load(); err == nil {
+	if _, err := Load(""); err == nil {
 		t.Fatal("expected error when no databases declared; got nil")
 	}
 }
@@ -338,7 +338,7 @@ bogus_section:
 		t.Fatal(err)
 	}
 
-	if _, err := Load(); err == nil {
+	if _, err := Load(""); err == nil {
 		t.Fatal("expected error for unknown top-level key `bogus_section`; got nil (UnmarshalExact should reject unused keys)")
 	}
 }
@@ -382,7 +382,7 @@ auth:
 		t.Fatal(err)
 	}
 
-	if _, err := Load(); err == nil {
+	if _, err := Load(""); err == nil {
 		t.Fatal("expected error for `isolation.task.*` (misplaced task block); got nil — UnmarshalExact should reject it")
 	}
 }

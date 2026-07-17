@@ -50,18 +50,66 @@ var (
 const MinExtractedLength = 200
 
 // jsBoilerplatePhrases are substrings that indicate the extracted
-// text is a <noscript> fallback or a JS-required challenge page
-// rather than real article content. When any of these appear in
+// text is a <noscript> fallback, a JS-required challenge page, a
+// WAF "Validate User" captcha interstitial, a cookies-disabled
+// publisher gate, or any other boilerplate that proves the
+// response was not the real article. When any of these appear in
 // Parsed.Text the fetch is treated as ErrInsufficientContent
 // regardless of text length, so the chain falls through to a
-// heavier tier (FlareSolverr) that can render the JavaScript.
-// The check is case-insensitive.
+// heavier tier (FlareSolverr) that can render the JavaScript —
+// or, when the heavier tier also fails, the row is marked failed
+// instead of silently persisting the boilerplate as if it were
+// the article body. The check is case-insensitive.
+//
+// The list is grown from the empirical "silent failure" set
+// surfaced by scripts/diagnose-sources against a real corpus.
+// Each phrase was chosen to be:
+//   - Specific enough not to fire on a legitimate article (e.g.
+//     "validate user" is the exact OUP title; a paper would not
+//     use that phrase in its body).
+//   - Stable across the publisher's variation of the interstitial
+//     (e.g. "could not validate captcha" is the body OUP renders
+//     on every retry, not a one-off).
+// Keep the bar high; a false positive drops a good source into
+// the failed bucket and forces a re-fetch.
 var jsBoilerplatePhrases = []string{
+	// <noscript> fallbacks (the original set).
 	"javascript is disabled",
 	"please enable javascript",
 	"enable it to continue",
 	"doesn't work properly without javascript",
 	"you need to enable javascript",
+	// OUP "Validate User" captcha interstitial. Title is
+	// "Validate User"; body starts with "We are sorry, but we
+	// are experiencing unusual traffic… Could not validate
+	// captcha." Either phrase is unique to the interstitial.
+	"validate user",
+	"could not validate captcha",
+	"experiencing unusual traffic",
+	// Wiley "Cookies disabled" gate. Body starts with
+	// "Cookies disabled Cookies are disabled for this browser.
+	// Wiley Online Library requires cookies for authentication…"
+	"cookies are disabled",
+	"requires cookies for authentication",
+	// Generic JS-bot-challenge phrases observed in the corpus.
+	"making sure you're not a bot",
+	"please verify you are a human",
+	"site protection: verifying your request",
+	// "Dear visitor" captcha landing (CyberPurify / similar).
+	// Paired with "fight cybercrime" to avoid a false positive
+	// on a legitimate letter-to-the-editor that opens with
+	// "Dear visitor".
+	"dear visitor",
+	"fight cybercrime",
+	// Cloudflare 5xx landing page ("Connection timed out Error
+	// code 522"). The origin server is down; the row should be
+	// failed, not stored as the article.
+	"connection timed out error code",
+	// Rails / Django "The page isn't redirecting properly"
+	// landing. Surfaces when a publisher's redirect chain is
+	// broken; the body is the framework error page, not the
+	// article.
+	"the page isn't redirecting properly",
 }
 
 // IsJSBoilerplate reports whether text contains any of the
@@ -76,6 +124,55 @@ func IsJSBoilerplate(text string) bool {
 	lower := strings.ToLower(text)
 	for _, phrase := range jsBoilerplatePhrases {
 		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// htmlLeakPrefixes are byte-sequences that, when found at the
+// start of Parsed.Text, indicate trafilatura returned raw HTML
+// verbatim instead of extracting text. The canonical case is a
+// PerimeterX / "Google Tag Manager" challenge page (seen on
+// jstor.org, sciencedirect.com): the response body is a JS
+// challenge whose <noscript> fallback is an <iframe> the
+// parser can't strip, so Parsed.Text starts with
+// `<iframe title="Google Tag Manager"…`. A real article's
+// extracted text never starts with an HTML tag — trafilatura
+// strips all markup — so this is a safe signal.
+//
+// The check is byte-based (no ToLower allocation) because it
+// runs on the hot path of every fetch; the prefixes are
+// already lowercased.
+var htmlLeakPrefixes = [][]byte{
+	[]byte(`<iframe title="google tag manager"`),
+	[]byte(`<iframe title='google tag manager'`),
+}
+
+// IsHTMLLeakBoilerplate reports whether text begins with a raw
+// HTML tag trafilatura failed to strip — the signature of a
+// PerimeterX / GTM challenge page that leaked through the
+// parser. The providers call it alongside IsJSBoilerplate so
+// the chain falls through to FlareSolverr instead of storing
+// the challenge iframe as the article body.
+//
+// The check only inspects the first 200 bytes: a real article
+// whose body happens to contain an <iframe> halfway through is
+// not flagged, because the prefix is what distinguishes a
+// challenge page (the iframe is the entire <noscript> body)
+// from a legitimate article (the iframe is inline content
+// surrounded by real text).
+func IsHTMLLeakBoilerplate(text string) bool {
+	if text == "" {
+		return false
+	}
+	head := text
+	if len(head) > 200 {
+		head = head[:200]
+	}
+	lower := strings.ToLower(head)
+	for _, prefix := range htmlLeakPrefixes {
+		if strings.HasPrefix(lower, string(prefix)) {
 			return true
 		}
 	}

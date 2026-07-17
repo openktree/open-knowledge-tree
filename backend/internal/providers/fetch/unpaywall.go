@@ -426,7 +426,7 @@ func (p *UnpaywallResolutionProvider) Resolve(ctx context.Context, resource Reso
 				if parseErr == nil {
 					resolved.Parsed = parsed
 					text := strings.TrimSpace(parsed.Text)
-					if len(text) < MinExtractedLength || IsJSBoilerplate(text) {
+					if len(text) < MinExtractedLength || IsJSBoilerplate(text) || IsHTMLLeakBoilerplate(text) {
 						return resolved, ErrInsufficientContent
 					}
 				} else {

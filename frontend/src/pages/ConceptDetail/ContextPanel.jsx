@@ -4,6 +4,7 @@ import Button from "../../components/Button";
 import Badge from "../../components/Badge";
 import EmptyState from "../../components/EmptyState";
 import Pagination from "../../components/Pagination";
+import SearchInput from "../../components/SearchInput";
 import FactRow from "../Facts/FactRow";
 import FactSourceBadge from "./FactSourceBadge";
 import SummaryPanel from "./SummaryPanel";
@@ -16,19 +17,26 @@ import { PAGE_SIZE } from "./constants";
 // scoped to THIS context only). Metadata and aliases for the
 // active context are rendered in the ConceptHeader card; this
 // panel focuses on summaries + facts.
+//
+// The SearchInput drives a server-side `q` filter against
+// facts.search_tsv (websearch_to_tsquery), so the search reaches
+// facts beyond the current page — important for large concepts
+// whose facts span many pages. Changing the query resets the
+// offset to 0 and re-fetches.
 export default function ContextPanel(props) {
   const slug = () => props.slug;
   const context = () => props.context;
   const conceptID = () => context()?.concept_id || "";
 
   const [offset, setOffset] = createSignal(0);
+  const [search, setSearch] = createSignal("");
   const [refreshKey, setRefreshKey] = createSignal(0);
   const [factData, { refetch }] = createResource(
-    () => ({ slug: slug(), conceptID: conceptID(), offset: offset(), key: refreshKey() }),
-    async ({ slug, conceptID, offset }) => {
+    () => ({ slug: slug(), conceptID: conceptID(), offset: offset(), q: search(), key: refreshKey() }),
+    async ({ slug, conceptID, offset, q }) => {
       if (!slug || !conceptID) return { data: [], total: 0, limit: PAGE_SIZE, offset: 0 };
       try {
-        return await api.listConceptFacts(slug, conceptID, { limit: PAGE_SIZE, offset });
+        return await api.listConceptFacts(slug, conceptID, { limit: PAGE_SIZE, offset, q });
       } catch {
         return { data: [], total: 0, limit: PAGE_SIZE, offset: 0 };
       }
@@ -44,6 +52,12 @@ export default function ContextPanel(props) {
     setRefreshKey((k) => k + 1);
   };
 
+  const handleSearch = (q) => {
+    setSearch(q);
+    setOffset(0);
+    setRefreshKey((k) => k + 1);
+  };
+
   return (
     <div class="space-y-6">
       <SummaryPanel slug={slug()} conceptID={conceptID()} />
@@ -54,9 +68,16 @@ export default function ContextPanel(props) {
             <h2 class="text-lg font-semibold dark:text-white">{context()?.context || "Context"}</h2>
             <Badge variant="gray">{total().toLocaleString()} fact{total() === 1 ? "" : "s"}</Badge>
           </div>
-          <Button variant="secondary" onClick={refetch} class="text-xs px-2 py-1">
-            Refresh
-          </Button>
+          <div class="flex items-center gap-2 flex-wrap">
+            <SearchInput
+              placeholder="Search fact text..."
+              initial={search()}
+              onSearch={handleSearch}
+            />
+            <Button variant="secondary" onClick={refetch} class="text-xs px-2 py-1">
+              Refresh
+            </Button>
+          </div>
         </div>
 
         <Show when={context()?.description}>
@@ -67,8 +88,8 @@ export default function ContextPanel(props) {
           when={facts().length > 0}
           fallback={
             <EmptyState
-              title="No facts linked to this context yet."
-              description="Once facts are processed and concepts extracted, the facts mentioning this concept under this context will appear here."
+              title={search() ? "No facts match your search." : "No facts linked to this context yet."}
+              description={search() ? "Try a different query, or clear the search box." : "Once facts are processed and concepts extracted, the facts mentioning this concept under this context will appear here."}
             />
           }
         >

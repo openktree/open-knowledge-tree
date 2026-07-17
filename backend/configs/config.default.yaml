@@ -156,7 +156,17 @@ task:
     # ingestion. Everything else (embedding, dedup, cleanup, refresh,
     # registry sync, reports, migration) gets 50, which is generous
     # for their lighter per-job cost.
-    retrieve_source: 50
+    #
+    # retrieve_source is capped at 20 (down from 50) because the
+    # real bottleneck is the FlareSolverr pool, not the worker count.
+    # The FlareSolverr provider's max_concurrency semaphore (default
+    # 3, one per Byparr container) gates the heavy tier regardless of
+    # how many workers are running, so extra workers beyond ~20 just
+    # pile up on the semaphore holding memory without increasing
+    # throughput. 20 keeps the cheap tiers (HTTP fetch, TLS
+    # impersonation) well-saturated for the majority of URLs that
+    # never reach FlareSolverr, while the heavy tier self-throttles.
+    retrieve_source: 20
     source_decomposition: 100
     embed_facts: 50
     deduplicate_facts: 50
@@ -284,15 +294,30 @@ providers:
       # HTTP client. Defaults to 30s when empty.
       timeout: 30s
     # FlareSolverr / Byparr headless-browser resolution
-    # provider (Phase 3). When url is empty the provider
-    # self-disables. url is the HTTP endpoint of the
-    # headless-browser sidecar (e.g.
-    # "http://flaresolverr:8191"). timeout defaults to 60s
-    # when empty. Can also be supplied via the
-    # FLARESOLVERR_URL env var.
+    # provider (Phase 3). When url is empty AND endpoints is
+    # empty the provider self-disables. url is the HTTP
+    # endpoint of a single headless-browser sidecar (e.g.
+    # "http://flaresolverr:8191"). endpoints is a list of
+    # endpoints for a horizontally-scaled deployment (one
+    # entry per Byparr container); the provider round-robins
+    # across them. When both are set, endpoints takes
+    # precedence and url is appended to the pool. timeout
+    # defaults to 60s when empty. Can also be supplied via the
+    # FLARESOLVERR_URL env var (single-endpoint shorthand).
+    # max_concurrency caps the number of in-flight Resolve
+    # calls across the whole pool — a single Byparr container
+    # drives one headless Chromium and queues concurrent
+    # requests internally, so allowing more in-flight calls
+    # than containers just burns the timeout budget waiting in
+    # the sidecar's queue. 0 (default) means no
+    # application-level cap; set it to roughly the number of
+    # Byparr containers (1×containers for challenge-heavy
+    # workloads, 2×containers for lighter pages).
     flaresolverr:
       url: ""
+      endpoints: []
       timeout: 60s
+      max_concurrency: 0
     # Static host → provider-id overrides. The strategy
     # consults this map before learning, so an operator can
     # pin "www.cell.com" → "tls" without waiting for the

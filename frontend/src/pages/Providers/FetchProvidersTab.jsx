@@ -2,10 +2,14 @@ import { For, Show } from "solid-js";
 import Alert from "../../components/Alert";
 import FetchProviderCard from "./FetchProviderCard";
 import ChainOverview from "./ChainOverview";
+import FlareSkipCandidates from "./FlareSkipCandidates";
 
 export default function FetchProvidersTab(props) {
   const fetchProviders = () =>
     (props.providers() && props.providers().resolution) || [];
+
+  const skipCandidates = () =>
+    (props.providers() && props.providers().flare_skip_candidates) || [];
 
   return (
     <div>
@@ -15,6 +19,8 @@ export default function FetchProvidersTab(props) {
       />
 
       <ChainOverview providers={fetchProviders} />
+
+      <FlareSkipCandidates candidates={skipCandidates} />
 
       <Show when={fetchProviders().length > 0}>
         <For each={fetchProviders()}>

@@ -281,3 +281,57 @@ SET oa_status   = $2,
     updated_at  = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: ListFlareSolverrHostCandidates :many
+-- Returns one row per host where FlareSolverr was attempted at
+-- least once, with the failure and success counts. Used by
+-- GET /sources/providers to surface "candidate hosts to pin
+-- out of FlareSolverr" — operators review the list and, when a
+-- host has many failures and zero successes, add it to a future
+-- host_skip_providers config key. Today the strategy does NOT
+-- enforce a skip list; this query is the data-side preparation
+-- so the blacklist is ready to wire.
+--
+-- The query reads fetch_attempts (JSONB array of
+-- {provider, success, error, elapsed_ms} objects, one per
+-- provider tried in chain order) and counts, per host, how
+-- many FlareSolverr attempts failed vs succeeded. A host with
+-- failures > 0 and successes = 0 is a strong skip candidate.
+-- The host is extracted from the url column with a regex
+-- substring; rows whose url doesn't parse are grouped under
+-- NULL (filtered out by the HAVING clause).
+--
+-- Scoped to the active repository's per-repo pool: the sources
+-- table lives in okt_repository, and on the shared tier-1 DB
+-- the query naturally covers every repo's rows. The handler
+-- passes the per-repo pool when X-Repository-ID is set; when
+-- no repo is in context the field is omitted from the
+-- /sources/providers response.
+SELECT
+    substring(url FROM 'https?://([^/]+)')::text AS host,
+    COUNT(*) AS total_attempts,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'flaresolverr'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS flare_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'flaresolverr'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS flare_successes
+FROM okt_repository.sources
+WHERE fetch_attempts IS NOT NULL
+GROUP BY 1
+HAVING COUNT(*) FILTER (
+    WHERE EXISTS (
+        SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+        WHERE a->>'provider' = 'flaresolverr'
+          AND (a->>'success')::boolean = false
+    )
+) > 0
+ORDER BY flare_failures DESC;

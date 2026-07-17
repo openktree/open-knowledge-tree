@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
@@ -22,8 +23,8 @@ import (
 // solve. The sidecar runs an undetected-Chromium instance
 // and exposes a simple JSON-over-HTTP protocol.
 //
-// The provider self-disables when URL is empty: the
-// constructor returns nil and the wiring layer skips
+// The provider self-disables when no endpoint is configured:
+// the constructor returns nil and the wiring layer skips
 // registration. It runs last in the chain so the cheaper
 // tiers get a chance first; the host-preference store will
 // learn to skip them for hosts where FlareSolverr is the
@@ -37,12 +38,36 @@ import (
 // the chain falls through to a byte-capable tier. This
 // matches the reference Python implementation's
 // flaresolverr_provider.py behaviour.
+//
+// Horizontal scaling: a single Byparr container drives one
+// headless Chromium and queues concurrent requests
+// internally, so a burst of 50 retrieve_source workers all
+// needing the heavy tier saturates one container and every
+// queued request burns its 60s timeout waiting. The
+// provider therefore supports a pool of endpoints
+// (round-robin) and an optional global concurrency cap
+// (MaxConcurrency). With N containers and
+// MaxConcurrency=N, at most N Resolve calls are in flight
+// at once; the rest block on the semaphore (cheap, no
+// timeout burn) until a slot frees. This keeps each
+// container's queue short enough that requests complete
+// within the per-request timeout.
 type FlareSolverrProvider struct {
-	endpoint  string
+	endpoints []string
 	timeout   time.Duration
 	userAgent string
 	parsers   []content_parsing.Parser
 	client    *http.Client
+	// robin is the round-robin cursor across endpoints. We
+	// use atomic so concurrent Resolve calls pick distinct
+	// endpoints without a mutex on the hot path.
+	robin uint32
+	// sem caps the number of in-flight Resolve calls across
+	// the whole pool. nil means no cap (the sidecar's own
+	// HTTP server is the only limit). The semaphore is
+	// buffered with MaxConcurrency slots; each Resolve
+	// acquires one on entry and releases on exit.
+	sem chan struct{}
 }
 
 // NewFlareSolverrProvider builds the provider. When endpoint
@@ -54,44 +79,108 @@ type FlareSolverrProvider struct {
 // used to parse the HTML the sidecar returns and to apply
 // the same insufficient-content guard as the other tiers.
 func NewFlareSolverrProvider(endpoint string, timeout time.Duration, userAgent string, parsers ...content_parsing.Parser) *FlareSolverrProvider {
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
-		return nil
+	return NewFlareSolverrProviderPool([]string{endpoint}, timeout, userAgent, 0, parsers...)
+}
+
+// NewFlareSolverrProviderPool builds a multi-endpoint
+// FlareSolverr provider. All non-empty entries in endpoints
+// are normalized to their /v1 URL and added to the
+// round-robin pool. When the resulting pool is empty the
+// constructor returns nil (self-disable). maxConcurrency
+// caps the number of in-flight Resolve calls across the
+// whole pool; 0 means no application-level cap. A typical
+// production setting is maxConcurrency = len(endpoints)
+// (one in-flight call per container) for challenge-heavy
+// workloads, or 2*len(endpoints) for lighter pages.
+func NewFlareSolverrProviderPool(endpoints []string, timeout time.Duration, userAgent string, maxConcurrency int, parsers ...content_parsing.Parser) *FlareSolverrProvider {
+	cleaned := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		ep = strings.TrimSpace(ep)
+		if ep == "" {
+			continue
+		}
+		// The FlareSolverr / Byparr protocol lives at /v1.
+		// The operator-supplied URL is the base (e.g.
+		// "http://flaresolverr:8191"); we append the path
+		// so the POST lands on the right handler. A root
+		// POST returns 405 (Method Not Allowed) which is
+		// the symptom of forgetting this.
+		if !strings.HasSuffix(ep, "/v1") {
+			ep = strings.TrimRight(ep, "/") + "/v1"
+		}
+		cleaned = append(cleaned, ep)
 	}
-	// The FlareSolverr / Byparr protocol lives at /v1. The
-	// operator-supplied URL is the base (e.g.
-	// "http://flaresolverr:8191"); we append the path so the
-	// POST lands on the right handler. A root POST returns
-	// 405 (Method Not Allowed) which is the symptom of
-	// forgetting this.
-	if !strings.HasSuffix(endpoint, "/v1") {
-		endpoint = strings.TrimRight(endpoint, "/") + "/v1"
+	if len(cleaned) == 0 {
+		return nil
 	}
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	cleaned := make([]content_parsing.Parser, 0, len(parsers))
+	parsedCleaned := make([]content_parsing.Parser, 0, len(parsers))
 	for _, p := range parsers {
 		if p != nil {
-			cleaned = append(cleaned, p)
+			parsedCleaned = append(parsedCleaned, p)
 		}
 	}
-	if len(cleaned) == 0 {
-		cleaned = append(cleaned, content_parsing.NewTrafilaturaParser())
+	if len(parsedCleaned) == 0 {
+		parsedCleaned = append(parsedCleaned, content_parsing.NewTrafilaturaParser())
 	}
 	ua := userAgent
 	if ua == "" {
 		ua = defaultUserAgent
 	}
-	return &FlareSolverrProvider{
-		endpoint:  endpoint,
+	p := &FlareSolverrProvider{
+		endpoints: cleaned,
 		timeout:   timeout,
 		userAgent: ua,
-		parsers:   cleaned,
+		parsers:   parsedCleaned,
 		client: &http.Client{
 			Timeout: timeout,
 		},
 	}
+	if maxConcurrency > 0 {
+		p.sem = make(chan struct{}, maxConcurrency)
+	}
+	return p
+}
+
+// acquireSem blocks until a pool-wide concurrency slot is
+// available, or returns immediately when no cap is
+// configured. The caller must release the slot via
+// defer release(). When the context is cancelled while
+// waiting, acquireSem returns the context error without
+// acquiring a slot, so a backed-up pool doesn't strand a
+// worker past its budget.
+func (p *FlareSolverrProvider) acquireSem(ctx context.Context) error {
+	if p.sem == nil {
+		return nil
+	}
+	select {
+	case p.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *FlareSolverrProvider) release() {
+	if p.sem == nil {
+		return
+	}
+	select {
+	case <-p.sem:
+	default:
+	}
+}
+
+// nextEndpoint returns the next endpoint in round-robin
+// order. The atomic add wraps modulo 2^32, and we then
+// index modulo the slice length — the rare wrap is
+// harmless because the index is always reduced to a valid
+// range.
+func (p *FlareSolverrProvider) nextEndpoint() string {
+	idx := atomic.AddUint32(&p.robin, 1)
+	return p.endpoints[int(idx-1)%len(p.endpoints)]
 }
 
 func (p *FlareSolverrProvider) Supports(sourceType SourceType) bool {
@@ -101,12 +190,12 @@ func (p *FlareSolverrProvider) Supports(sourceType SourceType) bool {
 func (p *FlareSolverrProvider) Describe() ProviderDescription {
 	return ProviderDescription{
 		Name:        "FlareSolverr (headless Chromium)",
-		Description: "Drives a FlareSolverr / Byparr headless-browser sidecar to solve JavaScript challenges (Cloudflare, Datadome, PerimeterX) that no amount of TLS fingerprinting or header spoofing can bypass. Returns HTML text only; PDF/image responses fall through to a byte-capable tier. The heaviest tier in the chain — config-gated and last-resort.",
+		Description: "Drives a FlareSolverr / Byparr headless-browser sidecar to solve JavaScript challenges (Cloudflare, Datadome, PerimeterX) that no amount of TLS fingerprinting or header spoofing can bypass. Returns HTML text only; PDF/image responses fall through to a byte-capable tier. The heaviest tier in the chain — config-gated and last-resort. Supports a round-robin pool of endpoints and an optional global concurrency cap so a single Byparr container is not saturated under burst load.",
 		Requires:    "FLARESOLVERR_URL",
-		Configured:  p.endpoint != "",
+		Configured:  len(p.endpoints) > 0,
 		Supports:    []string{"url", "doi"},
 		Timeout:     p.timeout.String(),
-		Notes:       "Self-disables when FLARESOLVERR_URL is empty. Runs last in the chain so cheaper tiers get a chance first. Static host_overrides can pin a known-bad host to this tier in YAML.",
+		Notes:       "Self-disables when no endpoint is configured. Runs last in the chain so cheaper tiers get a chance first. Static host_overrides can pin a known-bad host to this tier in YAML. When multiple endpoints are configured, requests are round-robined across them; max_concurrency caps in-flight calls to avoid saturating a single container's internal queue.",
 	}
 }
 
@@ -139,6 +228,19 @@ func (p *FlareSolverrProvider) Resolve(ctx context.Context, resource Resource) (
 		return ResolvedContent{}, err
 	}
 
+	// Acquire a pool-wide concurrency slot before building
+	// the request. When the pool is saturated this blocks
+	// (respecting ctx) instead of firing a request that
+	// would just queue inside the sidecar and burn the
+	// per-request timeout. A worker that blocks here is
+	// cheap — it holds no sidecar resources — so capping
+	// in-flight calls at the number of containers keeps
+	// each container's internal queue short.
+	if err := p.acquireSem(ctx); err != nil {
+		return ResolvedContent{}, fmt.Errorf("flaresolverr: acquiring concurrency slot: %w", err)
+	}
+	defer p.release()
+
 	// Build the FlareSolverr request body. maxTimeout is in
 	// milliseconds and is the budget the headless browser
 	// gets to navigate + solve any challenge + render.
@@ -151,7 +253,8 @@ func (p *FlareSolverrProvider) Resolve(ctx context.Context, resource Resource) (
 		return ResolvedContent{}, fmt.Errorf("flaresolverr: marshalling request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
+	endpoint := p.nextEndpoint()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return ResolvedContent{}, fmt.Errorf("flaresolverr: creating request: %w", err)
 	}
@@ -213,7 +316,7 @@ func (p *FlareSolverrProvider) Resolve(ctx context.Context, resource Resource) (
 			if parseErr == nil {
 				resolved.Parsed = parsed
 				text := strings.TrimSpace(parsed.Text)
-				if len(text) < MinExtractedLength || IsJSBoilerplate(text) {
+				if len(text) < MinExtractedLength || IsJSBoilerplate(text) || IsHTMLLeakBoilerplate(text) {
 					return resolved, ErrInsufficientContent
 				}
 			} else {
