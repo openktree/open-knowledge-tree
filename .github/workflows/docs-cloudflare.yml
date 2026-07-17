@@ -3,8 +3,11 @@
 # (Node 22, `npm ci && npm run build`, output dir docs/build) and
 # publishes to the production URL + a per-PR preview URL.
 #
-# This is the canonical docs host. The `release-docs.yml` workflow
-# builds a self-hostable nginx image for offline / mirrored installs.
+# This is the canonical docs host for BOTH dev and prod — Cloudflare
+# Pages builds every push to main and serves it at the production URL,
+# so docs has no separate dev/prod distinction. The `release-docs.yml`
+# workflow builds a self-hostable nginx image for offline / mirrored
+# installs.
 #
 # Prereq: create a Cloudflare Pages project named `okt-docs` (or
 # whatever you set in CLOUDFLARE_PROJECT_NAME below) and add the

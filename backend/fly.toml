@@ -1,0 +1,35 @@
+# Fly.io config for the OKT API (dev app: okt-api-dev).
+#
+# This file is a template. Real env values (secrets, DB URLs) are set
+# via `flyctl secrets set` on the Fly app, NOT in this file. Deploy
+# targets the prebuilt image from GHCR (ghcr.io/openktree/api:<tag>).
+#
+# Fly app to create:
+#   flyctl apps create okt-api-dev
+#   flyctl secrets set -a okt-api-dev \
+#     OKT_DATABASE_URL=... OKT_AUTH_JWT_SECRET=... \
+#     SERPER_API_KEY=... OPENROUTER_API_KEY=... OLLAMA_API_KEY=...
+#
+# The prod app is a separate Fly app (okt-api-prod) created the same
+# way with prod env values.
+app = 'okt-api-dev'
+primary_region = 'iad'
+
+[build]
+image = 'ghcr.io/openktree/api:latest'
+
+[http_service]
+internal_port = 8080
+force_https = true
+auto_stop_machines = false
+auto_start_machines = false
+min_machines_running = 1
+
+[http_service.concurrency]
+type = 'requests'
+hard_limit = 250
+soft_limit = 200
+
+[[vm]]
+size = 'shared-cpu-2x'
+memory = '1gb'

@@ -107,14 +107,54 @@ Other scopes (`chore`, `ci`, `test`) don't trigger releases.
    changelog (`CHANGELOG.md` next to the service).
 3. Maintainer merges the release PR → release-please creates the tag `api-v1.2.0` (etc.).
 4. Tag push triggers `.github/workflows/release-<service>.yml`:
-   - `api`, `registry` → GoReleaser + Docker buildx → GHCR (`linux/amd64`).
-   - `frontend`, `docs` → Docker buildx → GHCR (`linux/amd64`).
+   Docker buildx builds + pushes the image to GHCR (`linux/amd64`),
+   tagged with the SemVer and `:latest`.
+5. After the image lands in GHCR, the same workflow **auto-deploys it
+   to the dev Fly app** (`okt-api-dev`, `okt-registry-dev`,
+   `okt-frontend-dev`).
+
+### Environments and deployments
+
+| Env | Trigger | What deploys |
+|---|---|---|
+| **dev** | automatic, on release tag | release-`<svc>`.yml auto-deploys `:latest` to the `okt-<svc>-dev` Fly app |
+| **prod** | manual (`workflow_dispatch`) | `deploy-prod.yml` takes a `service` + `version` tag, pulls that specific image from GHCR, and deploys it to the `okt-<svc>-prod` Fly app |
+
+Dev runs on Fly.io for api, registry, and frontend. Docs deploys to
+Cloudflare Pages on every push to `main` (see below) — docs has no
+separate dev/prod distinction. Prod deploys are deliberate and
+versioned: re-running `deploy-prod.yml` with an older tag rolls back.
+
+### Fly.io prerequisites
+
+Create one Fly app per service per env, then set secrets:
+
+```bash
+# dev apps (auto-deployed by release-<svc>.yml)
+flyctl apps create okt-api-dev
+flyctl apps create okt-registry-dev
+flyctl apps create okt-frontend-dev
+
+# prod apps (manual deploy via deploy-prod.yml)
+flyctl apps create okt-api-prod
+flyctl apps create okt-registry-prod
+flyctl apps create okt-frontend-prod
+
+# secrets (per app; same keys as dev)
+flyctl secrets set -a okt-api-dev OKT_DATABASE_URL=... OKT_AUTH_JWT_SECRET=... SERPER_API_KEY=...
+flyctl secrets set -a okt-registry-dev REGISTRY_DATABASE_URL=... REGISTRY_S3_SECRET_KEY=...
+```
+
+Then set the `FLY_API_TOKEN` GitHub Actions secret in repo settings.
+Until it exists, the `deploy-dev` jobs in the release workflows are
+skipped (image still ships to GHCR).
 
 ### Docs hosting
 
 The Docusaurus site is deployed to **Cloudflare Pages** on every push to `main`
-that touches `docs/` (see `.github/workflows/docs-cloudflare.yml`). The
-`ghcr.io/openktree/docs` image is a self-hostable nginx fallback for offline /
+that touches `docs/` (see `.github/workflows/docs-cloudflare.yml`) — this is the
+canonical docs host for both dev and prod. The `ghcr.io/openktree/docs` image
+(built by `release-docs.yml`) is a self-hostable nginx fallback for offline /
 mirrored installs. To enable Cloudflare Pages, set the `CLOUDFLARE_PROJECT_NAME`
 repo variable and the `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets.
 

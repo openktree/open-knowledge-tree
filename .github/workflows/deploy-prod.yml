@@ -1,0 +1,87 @@
+# Manual production deployment to Fly.io.
+#
+# Triggered on demand (workflow_dispatch). Promotes a specific
+# already-released image version to the prod Fly app for any of the
+# three Fly-hosted services (api, registry, frontend). Docs is NOT
+# here — docs deploys to Cloudflare Pages automatically (see
+# docs-cloudflare.yml).
+#
+# Inputs:
+#   service   - one of api, registry, frontend
+#   version   - the release tag to promote (e.g. api-v1.2.0). Must
+#               match the chosen service. The image tag (1.2.0) is
+#               derived from the tag.
+#
+# Prereq: create the prod Fly apps and set their secrets:
+#   flyctl apps create okt-api-prod
+#   flyctl apps create okt-registry-prod
+#   flyctl apps create okt-frontend-prod
+#   # (secrets per app, same keys as the dev apps)
+#
+# Prereq: set FLY_API_TOKEN as a GitHub Actions secret in repo
+# settings. Until it exists this workflow fails at the deploy step.
+#
+# Run from the Actions tab:
+#   Actions → deploy-prod → Run workflow → service=api, version=api-v1.2.0
+name: deploy-prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options: [api, registry, frontend]
+      version:
+        description: 'Release tag to promote (e.g. api-v1.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    env:
+      SERVICE: ${{ github.event.inputs.service }}
+      VERSION: ${{ github.event.inputs.version }}
+      FLY_APP: okt-${{ github.event.inputs.service }}-prod
+      IMAGE: ghcr.io/openktree/${{ github.event.inputs.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches service
+        run: scripts/release/verify-tag.sh "$SERVICE"
+
+      - name: Derive image tag from release tag
+        id: tag
+        run: |
+          case "$VERSION" in
+            "${SERVICE}-v"*) echo "tag=${VERSION#${SERVICE}-v}" >> "$GITHUB_OUTPUT" ;;
+            *) echo "version '$VERSION' does not match service '$SERVICE'" >&2; exit 1 ;;
+          esac
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify image exists in GHCR
+        run: |
+          docker pull "$IMAGE:${{ steps.tag.outputs.tag }}"
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy ${{ env.VERSION }} to ${{ env.FLY_APP }}
+        working-directory: ${{ env.SERVICE }}
+        run: |
+          flyctl deploy --app "$FLY_APP" \
+            --image "$IMAGE:${{ steps.tag.outputs.tag }}" \
+            --strategy rolling \
+            --yes
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

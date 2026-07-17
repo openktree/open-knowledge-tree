@@ -1,0 +1,29 @@
+# Fly.io config for the OKT frontend (dev app: okt-frontend-dev).
+#
+# This is the nginx static-bundle image from GHCR. No secrets needed.
+#
+# Fly apps to create:
+#   flyctl apps create okt-frontend-dev
+#
+# For prod, create a separate app (okt-frontend-prod).
+app = 'okt-frontend-dev'
+primary_region = 'iad'
+
+[build]
+image = 'ghcr.io/openktree/frontend:latest'
+
+[http_service]
+internal_port = 80
+force_https = true
+auto_stop_machines = true
+auto_start_machines = true
+min_machines_running = 0
+
+[http_service.concurrency]
+type = 'requests'
+hard_limit = 250
+soft_limit = 200
+
+[[vm]]
+size = 'shared-cpu-1x'
+memory = '256mb'

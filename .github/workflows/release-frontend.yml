@@ -1,7 +1,13 @@
 # Builds and pushes the okt-frontend nginx Docker image to GHCR on
-# every `frontend-v*` tag push from release-please. linux/amd64 only
-# for now. Also tags `:latest`. The Dockerfile builds the SolidJS
-# app with Vite and serves the static bundle with nginx.
+# every `frontend-v*` tag push from release-please, then deploys it
+# to the `okt-frontend-dev` Fly app (automatic dev deploy).
+#
+# linux/amd64 only for now. Also tags `:latest`. The Dockerfile builds
+# the SolidJS app with Vite and serves the static bundle with nginx.
+#
+# Prod deploys are manual via deploy-prod.yml (workflow_dispatch),
+# which pulls a specific versioned image from GHCR and deploys it to
+# the `okt-frontend-prod` Fly app.
 name: release-frontend
 
 on:
@@ -14,6 +20,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/openktree/frontend
+  FLY_APP: okt-frontend-dev
 
 jobs:
   release:
@@ -47,3 +54,24 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy-dev:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ vars.FLY_API_TOKEN != '' }}
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy ${{ env.VERSION }} to ${{ env.FLY_APP }}
+        working-directory: frontend
+        run: |
+          flyctl deploy --app "$FLY_APP" \
+            --image "$IMAGE:latest" \
+            --strategy rolling \
+            --yes
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
