@@ -10,16 +10,18 @@
 # installs.
 #
 # Prereq: create a Cloudflare Pages project named `okt-docs` (or
-# whatever you set in CLOUDFLARE_PROJECT_NAME below) and add the
-# following as a GitHub Actions secret in repo settings:
+# whatever you set in CLOUDFLARE_PROJECT_NAME below) and configure the
+# following in GitHub repo settings (Secrets and variables → Actions):
 #
-#   CLOUDFLARE_API_TOKEN   - API token with "Cloudflare Pages:Edit"
-#                            on the target account.
-#   CLOUDFLARE_ACCOUNT_ID  - The account ID owning the Pages project.
+#   Secret:
+#     CLOUDFLARE_API_TOKEN   - API token with "Cloudflare Pages:Edit"
+#                              on the target account.
+#   Variables (not secrets — these are non-sensitive identifiers):
+#     CLOUDFLARE_ACCOUNT_ID  - The account ID owning the Pages project.
+#     CLOUDFLARE_PROJECT_NAME - The CF Pages project name to deploy to.
 #
-# Until those secrets exist this workflow skips (it will not fail
-# the CI gate) so the pipeline can ship before the CF project is
-# configured.
+# The workflow skips (without failing) until CLOUDFLARE_PROJECT_NAME is
+# set, so the pipeline can ship before the CF project is configured.
 name: docs-cloudflare
 
 on:
@@ -54,6 +56,6 @@ jobs:
       - uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           projectName: ${{ vars.CLOUDFLARE_PROJECT_NAME }}
           directory: docs/build
