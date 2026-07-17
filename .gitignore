@@ -132,3 +132,12 @@ tmp/
 docs/node_modules/
 docs/build/
 docs/.docusaurus/
+
+# -----------------------------------------------------------------------------
+# Local-only synthesis inputs for the examples parser
+# -----------------------------------------------------------------------------
+# The *.example.md files at the repo root are raw synthesis exports pasted
+# in for local runs of scripts/parse_examples/parse.mjs. Only the generated
+# JSON snapshots (docs/docs/reference/examples/_parsed/*.json) and the
+# *.mdx wrappers are committed; the source .example.md files stay local.
+/*.example.md

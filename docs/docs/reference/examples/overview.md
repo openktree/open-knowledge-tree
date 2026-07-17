@@ -20,8 +20,9 @@ On these pages the annotations are **frozen**: the fact text and source URLs are
 
 ## Examples
 
-1. [Miraculous Healing &amp; Spontaneous Disease](./healing) — a 9-scope meta-synthesis (254 sources) covering spontaneous remission, placebo/nocebo neuroscience, faith and prayer, energy healing, plant medicine, guru transmission, contemplative practice, vibrational therapy, and stress pathology.
-2. [A Highland Tropical Food Forest for Cartago, Costa Rica](./agroforestry) — a 5-scope meta-synthesis (~150 sources) on climate/soils, avocado, coffee, polyculture design, and regenerative practices for a food forest at ~1800 m on Andisol.
+1. [The Modular Tropical Agroforestry Recipe Book](./agroforestry) — a 4-scope meta-synthesis (~1,300 sources, 100,000+ facts) integrating tropical polyculture architecture, belowground mechanisms, mycorrhizal/microbial symbiosis, and mushroom & pest ecology into a modular recipe book. Citations carry a posture (supports / contradicts / related).
+2. [Human Alimentation: A Multidimensional Feeding Meta-Synthesis](./humanalimentation) — a 9-scope meta-synthesis integrating contemporary and global foodways, ancient and historical diets, protein sources, nutrient matrices, disease and lifespan, mood and cognition, life-stage physiology, lived and community evidence, and methods, governance, conflicts, and incentives. Citations carry a posture (supports / contradicts / related).
+3. [Miraculous Healing &amp; Spontaneous Disease](./healing) — a 9-scope meta-synthesis (254 sources) covering spontaneous remission, placebo/nocebo neuroscience, faith and prayer, energy healing, plant medicine, guru transmission, contemplative practice, vibrational therapy, and stress pathology.
 
 ## How to produce your own
 

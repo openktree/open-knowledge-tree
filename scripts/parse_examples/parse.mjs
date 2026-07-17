@@ -75,10 +75,11 @@ while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === "") bodyLi
 if (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === "---") bodyLines.pop();
 while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === "") bodyLines.pop();
 
-// 2. Title = first H1 in body, with trailing [N] citation markers stripped.
+// 2. Title = first H1 in body, with trailing [N] / [N:tag] citation
+//    markers stripped.
 const titleLine = bodyLines.find((l) => /^#\s+/.test(l));
 const title = titleLine
-  ? titleLine.replace(/^#\s+/, "").replace(/\s*\[\d+\](?:\[\d+\])*\s*$/, "").trim()
+  ? titleLine.replace(/^#\s+/, "").replace(/\s*\[\d+(?::[a-z]+)?\](?:\[\d+(?::[a-z]+)?\])*\s*$/, "").trim()
   : "Untitled Synthesis";
 
 // 2b. Strip the leading H1 from the body — Docusaurus renders the page title
