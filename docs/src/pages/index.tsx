@@ -32,6 +32,21 @@ const FEATURES = [
   },
 ];
 
+const EXAMPLES = [
+  {
+    title: "The Modular Tropical Agroforestry Recipe Book",
+    to: "/docs/reference/examples/agroforestry",
+    model: "GLM 5.2",
+    desc: "A 4-scope meta-synthesis (~1,300 sources, 100,000+ facts) integrating tropical polyculture architecture, belowground mechanisms, mycorrhizal networks, and mushroom & pest ecology. Every citation is clickable and carries a posture.",
+  },
+  {
+    title: "Human Alimentation: A Multidimensional Feeding Meta-Synthesis",
+    to: "/docs/reference/examples/humanalimentation",
+    model: "GPT 5.6 Sol",
+    desc: "A 9-scope meta-synthesis (499 facts) integrating global foodways, historical diets, protein sources, nutrient matrices, lifespan evidence, mood & cognition, life-stage physiology, lived evidence, and governance. Every citation is clickable and carries a posture.",
+  },
+];
+
 export default function Home(): React.ReactElement {
   const { siteConfig } = useDocusaurusContext();
   return (
@@ -59,6 +74,27 @@ export default function Home(): React.ReactElement {
         <section>
           <h2 style={{ textAlign: "center", marginBottom: "1.5rem" }}>The Data Pipeline at a Glance</h2>
           <PipelineDiagram />
+        </section>
+
+        <section style={{ padding: "2rem 0" }}>
+          <h2 style={{ textAlign: "center", marginBottom: "0.5rem" }}>Live Examples</h2>
+          <p style={{ textAlign: "center", color: "var(--ifm-color-emphasis-600)", maxWidth: 640, margin: "0 auto 1.5rem" }}>
+            Real meta-syntheses produced by OKT&apos;s agentic flow. Click any citation to see the supporting fact and its sources.
+            Each example header names the model that authored the synthesis.
+          </p>
+          <div className="grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "1.5rem" }}>
+            {EXAMPLES.map((ex) => (
+              <Link key={ex.to} to={ex.to} className="card" style={{ padding: "1.5rem", textDecoration: "none", display: "block" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "0.75rem", marginBottom: "0.5rem" }}>
+                  <h3 style={{ margin: 0 }}>{ex.title}</h3>
+                </div>
+                <span style={{ display: "inline-block", fontSize: "0.72rem", fontWeight: 700, padding: "0.1rem 0.5rem", borderRadius: 999, marginBottom: "0.6rem", background: "var(--ifm-color-primary-very-soft, rgba(79,70,229,0.12))", color: "var(--ifm-color-primary)" }}>
+                  Synthesis model: {ex.model}
+                </span>
+                <p style={{ color: "var(--ifm-color-emphasis-600)", fontSize: "0.9rem", margin: 0 }}>{ex.desc}</p>
+              </Link>
+            ))}
+          </div>
         </section>
 
         <section style={{ padding: "2rem 0" }}>

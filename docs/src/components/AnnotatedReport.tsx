@@ -26,9 +26,9 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
  */
 
 /**
- * @param {{ snapshot: Snapshot }} props
+ * @param {{ snapshot: Snapshot; generatorModel?: string }} props
  */
-export default function AnnotatedReport({ snapshot }) {
+export default function AnnotatedReport({ snapshot, generatorModel }) {
   const containerRef = useRef(/** @type {HTMLDivElement|null} */ (null));
   /** @type {[any, any]} */
   const [popover, setPopover] = useState(null); // { n, anchorRect, fact }
@@ -127,6 +127,12 @@ export default function AnnotatedReport({ snapshot }) {
 
   return (
     <div className="okt-annotated-report" ref={containerRef}>
+      {generatorModel && (
+        <div className="okt-report-generator" role="note">
+          <span className="okt-report-generator__label">Synthesis model:</span>{" "}
+          <span className="okt-report-generator__model">{generatorModel}</span>
+        </div>
+      )}
       <div
         className="okt-report-body markdown"
         // bodyHtml is produced by our own build-time parser from a trusted

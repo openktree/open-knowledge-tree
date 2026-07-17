@@ -132,6 +132,25 @@
   overflow-x: auto;
 }
 
+/* Generator-model banner shown above an example report. */
+.okt-report-generator {
+  margin: 0 0 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: var(--ifm-card-border-radius, 8px);
+  background: var(--ifm-color-emphasis-100);
+  font-size: 0.82rem;
+  color: var(--ifm-color-emphasis-700);
+}
+.okt-report-generator__label {
+  font-weight: 700;
+  color: var(--ifm-color-emphasis-600);
+}
+.okt-report-generator__model {
+  font-weight: 600;
+  color: var(--ifm-color-primary);
+}
+
 /* Citation superscript — clickable. */
 .okt-report-body .okt-cite {
   display: inline;
