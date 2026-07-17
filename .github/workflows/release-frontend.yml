@@ -58,7 +58,7 @@ jobs:
   deploy-dev:
     needs: release
     runs-on: ubuntu-latest
-    if: ${{ secrets.FLY_API_TOKEN != '' }}
+    if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
     env:
       VERSION: ${{ github.ref_name }}
     steps:
