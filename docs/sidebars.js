@@ -55,6 +55,7 @@ const sidebars = {
             "reference/examples/healing",
           ],
         },
+        "reference/expected-cost",
       ],
     },
   ],
