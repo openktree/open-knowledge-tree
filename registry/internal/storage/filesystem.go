@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -74,4 +75,21 @@ func (s *LocalStore) PresignedPUTURL(ctx context.Context, key string, ttl time.D
 
 func (s *LocalStore) ServeURL(key string) string {
 	return "/files/" + url.PathEscape(key)
+}
+
+func (s *LocalStore) ReadAll(ctx context.Context, key string) ([]byte, string, error) {
+	f, err := s.Get(ctx, key)
+	if err != nil {
+		return nil, "", err
+	}
+	defer f.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(f.Body, 100<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	return data, "", nil
+}
+
+func (s *LocalStore) StoreJSON(ctx context.Context, key string, data []byte) error {
+	return s.Store(ctx, key, data, "application/json")
 }

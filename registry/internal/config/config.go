@@ -30,7 +30,8 @@ type DatabaseConfig struct {
 }
 
 type StorageConfig struct {
-	Backend string `mapstructure:"backend"` // "s3" or "filesystem"
+	Backend        string `mapstructure:"backend"` // "s3" or "filesystem"
+	FilesystemRoot string `mapstructure:"filesystem_root"`
 }
 
 type S3Config struct {
@@ -52,6 +53,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.url", "registry.db")
 	v.SetDefault("storage.backend", "s3")
+	v.SetDefault("storage.filesystem_root", "/data/files")
 	v.SetDefault("s3.endpoint", "http://localhost:9000")
 	v.SetDefault("s3.region", "us-east-1")
 	v.SetDefault("s3.bucket", "okt-registry")

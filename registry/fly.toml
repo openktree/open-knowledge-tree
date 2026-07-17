@@ -1,22 +1,33 @@
 # Fly.io config for the OKT Knowledge Registry (dev app: okt-registry-dev).
 #
-# This file is a template. Real env values (S3 secrets) are set via
-# `flyctl secrets set` on the Fly app, NOT in this file. Deploy
-# targets the prebuilt image from GHCR (ghcr.io/openktree/registry:<tag>).
+# VM-only dev deployment: sqlite metadata + filesystem object storage,
+# both on the mounted Fly volume. No external DB or S3 backend is
+# required for the dev app to boot. When promoting to prod, switch
+# REGISTRY_STORAGE_BACKEND to s3 and provision Tigris (or another
+# S3) — see "Promote to prod" below.
 #
-# Fly apps to create:
-#   flyctl apps create okt-registry-dev
-#   flyctl secrets set -a okt-registry-dev \
-#     REGISTRY_DATABASE_DRIVER=sqlite REGISTRY_DATABASE_URL=/data/registry.db \
-#     REGISTRY_STORAGE_BACKEND=s3 REGISTRY_S3_ENDPOINT=... \
+# Secrets set via `flyctl secrets set -a okt-registry-dev`:
+#   REGISTRY_AUTH_JWT_SECRET=<random>  (defaults to a weak value)
+#
+# Promote to prod:
+#   flyctl apps create okt-registry-prod
+#   flyctl storage create --app okt-registry-prod --name okt-registry-prod-bucket
+#   flyctl secrets set -a okt-registry-prod \
+#     REGISTRY_STORAGE_BACKEND=s3 \
+#     REGISTRY_S3_ENDPOINT=... REGISTRY_S3_BUCKET=okt-registry-prod-bucket \
 #     REGISTRY_S3_ACCESS_KEY=... REGISTRY_S3_SECRET_KEY=...
-#
-# For prod, create a separate app (okt-registry-prod) with prod env.
 app = 'okt-registry-dev'
 primary_region = 'iad'
 
 [build]
 image = 'ghcr.io/openktree/registry:latest'
+
+[env]
+REGISTRY_DATABASE_DRIVER = 'sqlite'
+REGISTRY_DATABASE_URL = '/data/registry.db'
+REGISTRY_STORAGE_BACKEND = 'filesystem'
+REGISTRY_STORAGE_FILESYSTEM_ROOT = '/data/files'
+REGISTRY_AUTH_AUTH_MODE = 'open'
 
 [http_service]
 internal_port = 8080
@@ -34,6 +45,6 @@ soft_limit = 200
 size = 'shared-cpu-1x'
 memory = '512mb'
 
-[mounts]
+[[mounts]]
 source = 'registry_data'
 destination = '/data'

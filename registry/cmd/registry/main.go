@@ -59,14 +59,19 @@ func main() {
 
 	log.Printf("database: %s (%s)", cfg.Database.Driver, cfg.Database.URL)
 
-	var s3store *storage.S3Store
+	var fstore service.Storage
 	switch cfg.Storage.Backend {
+	case "filesystem":
+		fstore, err = storage.NewLocalStore(cfg.Storage.FilesystemRoot)
+		if err != nil {
+			log.Fatalf("setting up filesystem storage: %v", err)
+		}
 	case "s3", "":
-		s3store, err = storage.NewS3Store(storage.S3Config{
+		fstore, err = storage.NewS3Store(storage.S3Config{
 			Endpoint:       cfg.S3.Endpoint,
 			Region:         cfg.S3.Region,
 			Bucket:         cfg.S3.Bucket,
-			AccessKey:      cfg.S3.AccessKey,
+			AccessKey:       cfg.S3.AccessKey,
 			SecretKey:      cfg.S3.SecretKey,
 			PathStyle:      cfg.S3.PathStyle,
 			PresignTTL:     cfg.S3.PresignTTL,
@@ -79,7 +84,7 @@ func main() {
 		log.Fatalf("unknown storage backend: %s", cfg.Storage.Backend)
 	}
 
-	svc := service.New(mstore, s3store, cfg.S3.PresignTTL)
+	svc := service.New(mstore, fstore, cfg.S3.PresignTTL)
 	router := api.NewRouter(svc, mstore, cfg)
 
 	if err := svc.EnsureDefaultRepo(context.Background()); err != nil {
@@ -93,11 +98,14 @@ func main() {
 	}
 
 	log.Printf("starting knowledge-registry on :%d", cfg.Port)
-	log.Printf("  storage: %s (bucket=%s, endpoint=%s)", cfg.Storage.Backend, cfg.S3.Bucket, cfg.S3.Endpoint)
-	if cfg.S3.PresignBaseURL != "" {
-		log.Printf("  presign: enabled (base_url=%s)", cfg.S3.PresignBaseURL)
-	} else {
-		log.Printf("  presign: disabled (no presign_base_url; clients fall back to proxy)")
+	log.Printf("  storage: %s", cfg.Storage.Backend)
+	if cfg.Storage.Backend == "s3" {
+		log.Printf("    bucket=%s, endpoint=%s", cfg.S3.Bucket, cfg.S3.Endpoint)
+		if cfg.S3.PresignBaseURL != "" {
+			log.Printf("    presign: enabled (base_url=%s)", cfg.S3.PresignBaseURL)
+		} else {
+			log.Printf("    presign: disabled (no presign_base_url; clients fall back to proxy)")
+		}
 	}
 	log.Printf("  auth mode: %s", cfg.Auth.AuthMode)
 
