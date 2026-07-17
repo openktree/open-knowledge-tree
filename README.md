@@ -160,4 +160,8 @@ repo variable and the `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets.
 
 ## License
 
-See the repository for license information.
+MIT — see [LICENSE](./LICENSE).
+
+## Documentation
+
+User and reference docs are hosted at **<https://docs.openktree.com>**.
