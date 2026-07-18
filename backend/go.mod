@@ -7,7 +7,7 @@ require (
 	github.com/bogdanfinn/fhttp v0.6.8
 	github.com/bogdanfinn/tls-client v1.15.1
 	github.com/casbin/casbin/v2 v2.135.0
-	github.com/gen2brain/go-fitz v1.24.15
+	github.com/gen2brain/go-fitz v1.28.2
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -42,7 +42,7 @@ require (
 	github.com/bogdanfinn/websocket v1.5.5-barnius // indirect
 	github.com/casbin/govaluate v1.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/ebitengine/purego v0.10.0 // indirect
+	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/elliotchance/pie/v2 v2.9.0 // indirect
 	github.com/forPelevin/gomoji v1.2.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
@@ -57,7 +57,6 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jalaali/go-jalaali v0.0.0-20210801064154-80525e88d958 // indirect
-	github.com/jupiterrider/ffi v0.5.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/markusmobius/go-dateparser v1.2.3 // indirect
 	github.com/markusmobius/go-domdistiller v0.0.0-20240926050704-25b8d046ffb4 // indirect
