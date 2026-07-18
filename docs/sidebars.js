@@ -69,7 +69,6 @@ const sidebars = {
         "local-dev/getting-started-dev",
         "local-dev/docker-compose",
         "local-dev/services-overview",
-        "local-dev/development",
         {
           type: "category",
           label: "Tutorials",
