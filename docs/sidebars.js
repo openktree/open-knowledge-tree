@@ -63,12 +63,25 @@ const sidebars = {
     },
     {
       type: "category",
-      label: "Local Dev",
+      label: "Develop from Source",
       link: { type: "doc", id: "local-dev/overview" },
       items: [
+        "local-dev/getting-started-dev",
         "local-dev/docker-compose",
         "local-dev/services-overview",
         "local-dev/development",
+        {
+          type: "category",
+          label: "Tutorials",
+          items: [
+            "local-dev/tutorials/tutorial-search-provider",
+            "local-dev/tutorials/tutorial-resolution-provider",
+            "local-dev/tutorials/tutorial-mcp-tool",
+            "local-dev/tutorials/tutorial-frontend-page",
+            "local-dev/tutorials/tutorial-background-task",
+            "local-dev/tutorials/tutorial-repository-preset",
+          ],
+        },
         "local-dev/troubleshooting",
       ],
     },
