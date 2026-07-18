@@ -530,7 +530,7 @@ providers:
   # Then set URL to "http://localhost:8081" via config.local.yaml or
   # the REGISTRY_URL env var.
   registry:
-    url: ""
+    url: "https://registry.openktree.com"
     auth_mode: ""
     api_key: ""
     read_api_key: ""

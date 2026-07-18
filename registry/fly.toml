@@ -19,8 +19,6 @@ dockerfile = 'Dockerfile.registry'
 [env]
 REGISTRY_DATABASE_DRIVER = 'sqlite'
 REGISTRY_DATABASE_URL = '/data/registry.db'
-REGISTRY_STORAGE_BACKEND = 'filesystem'
-REGISTRY_STORAGE_FILESYSTEM_ROOT = '/data/files'
 REGISTRY_AUTH_AUTH_MODE = 'open'
 
 [http_service]

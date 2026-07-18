@@ -6,22 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// ErrPresignDisabled is returned by PresignedURL / PresignedPUTURL
-// when no presign client was configured (PresignBaseURL was empty).
-// Callers should treat this as "skip presigning" rather than a hard
-// error.
 var ErrPresignDisabled = errors.New("storage: presigning is disabled (no presign_base_url configured)")
 
 type S3Store struct {
-	client        *minio.Client
-	presignClient *minio.Client // nil when presigning is disabled (dev)
+	client        *s3.Client
+	presignClient *s3.PresignClient // nil when presigning is disabled (dev)
 	bucket        string
 	region        string
 }
@@ -34,7 +34,7 @@ type S3Config struct {
 	SecretKey      string
 	PathStyle      bool
 	PresignTTL     int
-	PresignBaseURL string // public-facing endpoint for presigned URLs; empty = don't presign
+	PresignBaseURL string
 }
 
 func NewS3Store(cfg S3Config) (*S3Store, error) {
@@ -45,128 +45,132 @@ func NewS3Store(cfg S3Config) (*S3Store, error) {
 		return nil, fmt.Errorf("s3 bucket is required")
 	}
 
-	// Parse the endpoint: accept both bare hostnames and full URLs.
-	// minio-go expects a bare "host:port" string, not "https://host".
-	secure := false
-	endpoint := cfg.Endpoint
-	if strings.HasPrefix(endpoint, "https://") {
-		secure = true
-		endpoint = strings.TrimPrefix(endpoint, "https://")
-	} else if strings.HasPrefix(endpoint, "http://") {
-		endpoint = strings.TrimPrefix(endpoint, "http://")
-	}
+	// Build a custom endpoint resolver that strips the scheme and uses
+	// path-style addressing (required for R2).
+	endpoint := strings.TrimPrefix(cfg.Endpoint, "https://")
+	endpoint = strings.TrimPrefix(endpoint, "http://")
 	endpoint = strings.TrimRight(endpoint, "/")
 
-	lookup := minio.BucketLookupAuto
-	if cfg.PathStyle {
-		lookup = minio.BucketLookupPath
+	usePathStyle := cfg.PathStyle
+
+	creds := credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")
+
+	// Determine the signing region. R2 uses "auto".
+	region := cfg.Region
+	if region == "" {
+		region = "auto"
 	}
-	client, err := minio.New(endpoint, &minio.Options{
-		Creds:        credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure:       secure,
-		Region:       cfg.Region,
-		BucketLookup: lookup,
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(creds),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading aws config: %w", err)
+	}
+
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String("https://" + endpoint)
+		o.UsePathStyle = usePathStyle
 	})
-	if err != nil {
-		return nil, fmt.Errorf("creating s3 client: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	// Ensure the bucket exists (create if not).
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	exists, err := client.BucketExists(ctx, cfg.Bucket)
+
+	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(cfg.Bucket)})
 	if err != nil {
-		return nil, fmt.Errorf("checking bucket %q: %w", cfg.Bucket, err)
-	}
-	if !exists {
-		if err := client.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{Region: cfg.Region}); err != nil {
-			return nil, fmt.Errorf("creating bucket %q: %w", cfg.Bucket, err)
-		}
-	}
-
-	// Build a separate presign client when a public-facing base
-	// URL is configured. This client points at the external
-	// endpoint (e.g. https://s3.example.com) so the presigned
-	// URLs it generates are reachable by browsers. The internal
-	// client above keeps using the Docker-network endpoint
-	// (e.g. minio:9000) for server-to-server operations.
-	// When PresignBaseURL is empty, presignClient stays nil and
-	// PresignedURL / PresignedPUTURL return ErrPresignDisabled —
-	// callers should skip embedding presigned URLs in that case.
-	var presignClient *minio.Client
-	if cfg.PresignBaseURL != "" {
-		presignSecure := strings.HasPrefix(cfg.PresignBaseURL, "https")
-		presignEndpoint := cfg.PresignBaseURL
-		if strings.HasPrefix(presignEndpoint, "https://") {
-			presignEndpoint = strings.TrimPrefix(presignEndpoint, "https://")
-		} else if strings.HasPrefix(presignEndpoint, "http://") {
-			presignEndpoint = strings.TrimPrefix(presignEndpoint, "http://")
-		}
-		presignEndpoint = strings.TrimRight(presignEndpoint, "/")
-		presignClient, err = minio.New(presignEndpoint, &minio.Options{
-			Creds:        credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-			Secure:       presignSecure,
-			Region:       cfg.Region,
-			BucketLookup: lookup,
+		// Try to create the bucket. If it already exists, HeadBucket may fail
+		// on R2 (returns 400), so treat any error as "maybe create it".
+		_, createErr := client.CreateBucket(ctx, &s3.CreateBucketInput{
+			Bucket: aws.String(cfg.Bucket),
 		})
-		if err != nil {
-			return nil, fmt.Errorf("creating presign s3 client: %w", err)
+		if createErr != nil {
+			// BucketAlreadyOwnedByYou or BucketAlreadyExists are fine.
+			var owned *s3types.BucketAlreadyOwnedByYou
+			var exists *s3types.BucketAlreadyExists
+			if !errors.As(createErr, &owned) && !errors.As(createErr, &exists) {
+				return nil, fmt.Errorf("creating bucket %q: %w", cfg.Bucket, createErr)
+			}
 		}
 	}
 
-	return &S3Store{client: client, presignClient: presignClient, bucket: cfg.Bucket, region: cfg.Region}, nil
-}
+	var presignClient *s3.PresignClient
+	if cfg.PresignBaseURL != "" {
+		presignClient = s3.NewPresignClient(client)
+	}
 
-func (s *S3Store) key(k string) string {
-	return k
+	return &S3Store{client: client, presignClient: presignClient, bucket: cfg.Bucket, region: region}, nil
 }
 
 func (s *S3Store) Store(ctx context.Context, key string, body []byte, contentType string) error {
-	_, err := s.client.PutObject(ctx, s.bucket, s.key(key),
-		bytes.NewReader(body), int64(len(body)),
-		minio.PutObjectOptions{ContentType: contentType})
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(body),
+		ContentType: aws.String(contentType),
+	})
 	return err
 }
 
 func (s *S3Store) Get(ctx context.Context, key string) (StoredFile, error) {
-	obj, err := s.client.GetObject(ctx, s.bucket, s.key(key), minio.GetObjectOptions{})
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
 	if err != nil {
 		return StoredFile{}, err
 	}
-	stat, err := obj.Stat()
-	if err != nil {
-		obj.Close()
-		return StoredFile{}, fmt.Errorf("stat %s: %w", key, err)
-	}
 	return StoredFile{
-		Body:        obj,
-		ContentType: stat.ContentType,
-		Size:        stat.Size,
+		Body:        out.Body,
+		ContentType: aws.ToString(out.ContentType),
+		Size:        aws.ToInt64(out.ContentLength),
 	}, nil
 }
 
 func (s *S3Store) Delete(ctx context.Context, key string) error {
-	return s.client.RemoveObject(ctx, s.bucket, s.key(key), minio.RemoveObjectOptions{})
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	return err
 }
 
 func (s *S3Store) PresignedURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	if s.presignClient == nil {
 		return "", ErrPresignDisabled
 	}
-	u, err := s.presignClient.PresignedGetObject(ctx, s.bucket, s.key(key), ttl, nil)
+	signed, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(o *s3.PresignOptions) {
+		o.Expires = ttl
+	})
 	if err != nil {
 		return "", fmt.Errorf("presigning %s: %w", key, err)
 	}
-	return u.String(), nil
+	return signed.URL, nil
 }
 
 func (s *S3Store) PresignedPUTURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	if s.presignClient == nil {
 		return "", ErrPresignDisabled
 	}
-	u, err := s.presignClient.PresignedPutObject(ctx, s.bucket, s.key(key), ttl)
+	signed, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		ContentType: aws.String("application/octet-stream"),
+	}, func(o *s3.PresignOptions) {
+		o.Expires = ttl
+	})
 	if err != nil {
 		return "", fmt.Errorf("presigning put %s: %w", key, err)
 	}
-	return u.String(), nil
+	return signed.URL, nil
+}
+
+func (s *S3Store) ServeURL(key string) string {
+	return "/files/" + url.PathEscape(key)
 }
 
 func (s *S3Store) ReadAll(ctx context.Context, key string) ([]byte, string, error) {

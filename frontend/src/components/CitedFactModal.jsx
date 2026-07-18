@@ -11,10 +11,17 @@ export default function CitedFactModal(props) {
       ? "Facts"
       : `Facts from sentence #${props.sentenceIndex + 1}`;
 
+  // The sentence text the clicked facts were matched against. The
+  // backend stores it on every report_annotation row (sentence_text),
+  // so all annotations for a given sentence_index share the same
+  // value — pick it off the first one. Showing it here lets the
+  // reader compare the original claim against its supporting facts
+  // without the modal covering the sentence in the report body.
+  const sentenceText = () => (props.facts || [])[0]?.sentence_text;
+
   return (
     <Modal open={props.open} onClose={props.onClose} title={title()}>
-      <Show
-        when={count() > 0}
+      <Show when={count() > 0}
         fallback={
           <p class="text-text-muted italic">
             No facts matched this sentence.
@@ -22,6 +29,11 @@ export default function CitedFactModal(props) {
         }
       >
         <div class="space-y-3">
+          <Show when={sentenceText()}>
+            <blockquote class="border-l-2 border-border pl-3 py-1 text-text-base italic">
+              {sentenceText()}
+            </blockquote>
+          </Show>
           <p class="text-xs text-text-muted">
             {count()} {count() === 1 ? "fact" : "facts"} matched:
           </p>

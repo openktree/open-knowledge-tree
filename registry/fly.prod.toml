@@ -24,8 +24,7 @@ primary_region = 'iad'
 dockerfile = 'Dockerfile.registry'
 
 [env]
-REGISTRY_STORAGE_BACKEND = 'filesystem'
-REGISTRY_STORAGE_FILESYSTEM_ROOT = '/data/files'
+# All runtime config (database, storage, auth) is set via Fly secrets.
 
 [http_service]
 internal_port = 8080
