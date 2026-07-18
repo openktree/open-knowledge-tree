@@ -34,7 +34,22 @@ RUN CGO_ENABLED=1 go build -tags "extlib pkgconfig" -o /app/bin/okt ./cmd/app/
 # libffi is needed by github.com/jupiterrider/ffi at
 # runtime (the package dlopen()s libffi.so.8 in its
 # init()) — install it explicitly to be safe.
-FROM alpine:3.21
+#
+# The runtime base MUST stay pinned to the same Alpine
+# release as the builder stage above. The go-fitz CGo
+# build links against the system libmupdf.so found via
+# pkg-config in the builder, so the binary encodes a
+# SONAME like libmupdf.so.27.2 (MuPDF 1.27.x on Alpine
+# 3.24). If the runtime stage ships a different MuPDF
+# (e.g. alpine:3.21 carries MuPDF 1.24.x →
+# libmupdf.so.24.10), the dynamic loader fails to
+# resolve the SONAME and the binary aborts at startup
+# with "Error loading shared library libmupdf.so.27.2:
+# No such file or directory" followed by a cascade of
+# "Error relocating ./okt: fz_*: symbol not found". The
+# build stage and the runtime stage therefore pull
+# mupdf-libs from the same Alpine version.
+FROM alpine:3.24
 RUN sed -i 's/^#\(.*community\)/\1/' /etc/apk/repositories
 RUN apk --no-cache add ca-certificates mupdf-libs libffi
 WORKDIR /app
