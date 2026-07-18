@@ -11,8 +11,8 @@
 name: release-registry
 
 on:
-  push:
-    tags: ['registry-v*']
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -39,9 +39,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive image tag from git tag
+      - name: Derive image tag from release tag
         id: tag
-        run: echo "version=${GITHUB_REF_NAME#registry-v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${TAG#registry-v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -68,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
 
