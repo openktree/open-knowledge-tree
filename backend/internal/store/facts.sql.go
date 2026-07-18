@@ -12,8 +12,8 @@ import (
 )
 
 const addFactReference = `-- name: AddFactReference :exec
-INSERT INTO okt_repository.fact_references (fact_id, source_id, sentence_index, chunk_index)
-VALUES ($1, $2, $3, $4)
+INSERT INTO okt_repository.fact_references (fact_id, source_id, sentence_index, chunk_index, promptset_hash)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (fact_id, source_id, sentence_index) DO NOTHING
 `
 
@@ -22,16 +22,21 @@ type AddFactReferenceParams struct {
 	SourceID      pgtype.UUID `json:"source_id"`
 	SentenceIndex int32       `json:"sentence_index"`
 	ChunkIndex    int32       `json:"chunk_index"`
+	PromptsetHash *string     `json:"promptset_hash"`
 }
 
 // One row per (fact, source, sentence_index). Idempotent on the PK
 // so re-processing a source doesn't double-count a citation.
+// promptset_hash tags the citation with the philosophy that produced
+// the fact, mirroring facts.promptset_hash so the junction stays
+// queryable by philosophy.
 func (q *Queries) AddFactReference(ctx context.Context, arg AddFactReferenceParams) error {
 	_, err := q.db.Exec(ctx, addFactReference,
 		arg.FactID,
 		arg.SourceID,
 		arg.SentenceIndex,
 		arg.ChunkIndex,
+		arg.PromptsetHash,
 	)
 	return err
 }
@@ -190,28 +195,35 @@ func (q *Queries) CountSharedFactsByConceptGroups(ctx context.Context, arg Count
 }
 
 const createFact = `-- name: CreateFact :one
-INSERT INTO okt_repository.facts (id, text, fact_kind, image_url)
-VALUES ($1, $2, $3, $4)
-RETURNING id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind
+INSERT INTO okt_repository.facts (id, text, fact_kind, image_url, promptset_hash)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind, promptset_hash
 `
 
 type CreateFactParams struct {
-	ID       pgtype.UUID `json:"id"`
-	Text     string      `json:"text"`
-	FactKind string      `json:"fact_kind"`
-	ImageUrl *string     `json:"image_url"`
+	ID            pgtype.UUID `json:"id"`
+	Text          string      `json:"text"`
+	FactKind      string      `json:"fact_kind"`
+	ImageUrl      *string     `json:"image_url"`
+	PromptsetHash *string     `json:"promptset_hash"`
 }
 
 // fact_kind defaults to 'text' (the column default) when the caller
 // does not specify it; image facts pass 'image' plus a non-null
 // image_url so the frontend can render the picture next to the fact
 // text. image_url is nullable so text facts leave it NULL.
+// promptset_hash tags the fact with the philosophy that produced it
+// so downstream queries (synthesis, registry pull) can filter to a
+// single promptset and decompositions from different promptsets do
+// not mix. The caller passes the repo's effective promptset hash;
+// NULL is allowed (legacy rows) and interpreted as the built-in.
 func (q *Queries) CreateFact(ctx context.Context, arg CreateFactParams) (OktRepositoryFact, error) {
 	row := q.db.QueryRow(ctx, createFact,
 		arg.ID,
 		arg.Text,
 		arg.FactKind,
 		arg.ImageUrl,
+		arg.PromptsetHash,
 	)
 	var i OktRepositoryFact
 	err := row.Scan(
@@ -224,6 +236,7 @@ func (q *Queries) CreateFact(ctx context.Context, arg CreateFactParams) (OktRepo
 		&i.SearchTsv,
 		&i.ImageUrl,
 		&i.FactKind,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
@@ -304,7 +317,7 @@ func (q *Queries) DeleteStaleFactsInDB(ctx context.Context, arg DeleteStaleFacts
 }
 
 const getFactByID = `-- name: GetFactByID :one
-SELECT id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind FROM okt_repository.facts WHERE id = $1
+SELECT id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind, promptset_hash FROM okt_repository.facts WHERE id = $1
 `
 
 func (q *Queries) GetFactByID(ctx context.Context, id pgtype.UUID) (OktRepositoryFact, error) {
@@ -320,12 +333,13 @@ func (q *Queries) GetFactByID(ctx context.Context, id pgtype.UUID) (OktRepositor
 		&i.SearchTsv,
 		&i.ImageUrl,
 		&i.FactKind,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
 
 const getFactByTextAndSource = `-- name: GetFactByTextAndSource :one
-SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind FROM okt_repository.facts f
+SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind, f.promptset_hash FROM okt_repository.facts f
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 WHERE f.text = $1 AND fs.source_id = $2
 LIMIT 1
@@ -358,12 +372,13 @@ func (q *Queries) GetFactByTextAndSource(ctx context.Context, arg GetFactByTextA
 		&i.SearchTsv,
 		&i.ImageUrl,
 		&i.FactKind,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
 
 const getFactsByIDs = `-- name: GetFactsByIDs :many
-SELECT id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind FROM okt_repository.facts WHERE id = ANY($1::uuid[])
+SELECT id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind, promptset_hash FROM okt_repository.facts WHERE id = ANY($1::uuid[])
 `
 
 // Batch lookup used by the annotate_report worker to fetch the text
@@ -390,6 +405,7 @@ func (q *Queries) GetFactsByIDs(ctx context.Context, dollar_1 []pgtype.UUID) ([]
 			&i.SearchTsv,
 			&i.ImageUrl,
 			&i.FactKind,
+			&i.PromptsetHash,
 		); err != nil {
 			return nil, err
 		}
@@ -402,7 +418,7 @@ func (q *Queries) GetFactsByIDs(ctx context.Context, dollar_1 []pgtype.UUID) ([]
 }
 
 const listFactReferencesByFact = `-- name: ListFactReferencesByFact :many
-SELECT fact_id, source_id, sentence_index, chunk_index, first_seen_at FROM okt_repository.fact_references WHERE fact_id = $1
+SELECT fact_id, source_id, sentence_index, chunk_index, first_seen_at, promptset_hash FROM okt_repository.fact_references WHERE fact_id = $1
 `
 
 // Raw fact_references rows for a fact (no source join). Used by the
@@ -422,6 +438,7 @@ func (q *Queries) ListFactReferencesByFact(ctx context.Context, factID pgtype.UU
 			&i.SentenceIndex,
 			&i.ChunkIndex,
 			&i.FirstSeenAt,
+			&i.PromptsetHash,
 		); err != nil {
 			return nil, err
 		}
@@ -853,7 +870,7 @@ func (q *Queries) ListFactsBySource(ctx context.Context, arg ListFactsBySourcePa
 }
 
 const listFactsForDedup = `-- name: ListFactsForDedup :many
-SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind FROM okt_repository.facts f
+SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind, f.promptset_hash FROM okt_repository.facts f
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 JOIN okt_repository.sources s ON fs.source_id = s.id
 WHERE s.repository_id = $1
@@ -883,6 +900,7 @@ func (q *Queries) ListFactsForDedup(ctx context.Context, repositoryID pgtype.UUI
 			&i.SearchTsv,
 			&i.ImageUrl,
 			&i.FactKind,
+			&i.PromptsetHash,
 		); err != nil {
 			return nil, err
 		}
@@ -967,8 +985,7 @@ func (q *Queries) ListFactsToDeleteBySource(ctx context.Context, arg ListFactsTo
 }
 
 const listNewFactsForSourceEmbedding = `-- name: ListNewFactsForSourceEmbedding :many
-SELECT DISTINCT ON (f.id) f.id, f.text, f.status, f.embedded_at,
-       f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind
+SELECT DISTINCT ON (f.id) f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind, f.promptset_hash
 FROM okt_repository.facts f
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 JOIN okt_repository.sources s ON fs.source_id = s.id
@@ -989,7 +1006,9 @@ type ListNewFactsForSourceEmbeddingParams struct {
 // complete in one embed pass so the dedup chain fires per source.
 // One row per fact; a fact linked to this source multiple times is
 // returned once (the JOIN can't expand it since fact_sources PK is
-// (fact_id, source_id)).
+// (fact_id, source_id)). Uses SELECT f.* (not an explicit column
+// list) so sqlc emits the row as store.OktRepositoryFact, which the
+// embed worker passes to embedFacts without a type conversion.
 func (q *Queries) ListNewFactsForSourceEmbedding(ctx context.Context, arg ListNewFactsForSourceEmbeddingParams) ([]OktRepositoryFact, error) {
 	rows, err := q.db.Query(ctx, listNewFactsForSourceEmbedding, arg.RepositoryID, arg.SourceID)
 	if err != nil {
@@ -1009,6 +1028,7 @@ func (q *Queries) ListNewFactsForSourceEmbedding(ctx context.Context, arg ListNe
 			&i.SearchTsv,
 			&i.ImageUrl,
 			&i.FactKind,
+			&i.PromptsetHash,
 		); err != nil {
 			return nil, err
 		}
@@ -1140,7 +1160,7 @@ UPDATE okt_repository.facts
 SET embedded_at = now(),
     embedded_model = $2
 WHERE id = $1
-RETURNING id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind
+RETURNING id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind, promptset_hash
 `
 
 type MarkFactEmbeddedParams struct {
@@ -1161,6 +1181,7 @@ func (q *Queries) MarkFactEmbedded(ctx context.Context, arg MarkFactEmbeddedPara
 		&i.SearchTsv,
 		&i.ImageUrl,
 		&i.FactKind,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
@@ -1169,7 +1190,7 @@ const markFactStatus = `-- name: MarkFactStatus :one
 UPDATE okt_repository.facts
 SET status = $2
 WHERE id = $1
-RETURNING id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind
+RETURNING id, text, status, embedded_at, embedded_model, created_at, search_tsv, image_url, fact_kind, promptset_hash
 `
 
 type MarkFactStatusParams struct {
@@ -1190,6 +1211,7 @@ func (q *Queries) MarkFactStatus(ctx context.Context, arg MarkFactStatusParams) 
 		&i.SearchTsv,
 		&i.ImageUrl,
 		&i.FactKind,
+		&i.PromptsetHash,
 	)
 	return i, err
 }

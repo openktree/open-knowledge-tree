@@ -333,7 +333,7 @@ func TestRetrieveSourceWorkerPersistsSourceRow(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -466,7 +466,7 @@ func TestRetrieveSourceWorkerLinksInvestigation(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -555,7 +555,7 @@ func TestRetrieveSourceWorkerInvestigationLinkCrossRepoSkipped(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -634,7 +634,7 @@ func TestRetrieveSourceWorkerPersistsDoiFromArgs(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -749,7 +749,7 @@ func TestRetrieveSourceWorkerAcceptsDoiOnly(t *testing.T) {
 
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -853,7 +853,7 @@ func TestRetrieveSourceWorkerRejectsEmptyURLAndDOI(t *testing.T) {
 	// when the args are empty (it returns before reaching
 	// persistSource), so nil is safe here.
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -912,13 +912,13 @@ func TestRetrieveSourceWorkerProcessFlagChainsDecompose(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 	// Register a stub decomposition worker alongside the
 	// retrieve worker so the River client on the test context
 	// accepts the chained source_decomposition insert. The
 	// stub's Work is never exercised here — we only assert the
 	// job was inserted.
-	decompWorker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, nil, config.DecompositionFactConfig{}, config.DecompositionImageConfig{Enabled: false}, registry, systemQueries, nil, nil)
+	decompWorker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, nil, config.DecompositionFactConfig{}, config.DecompositionImageConfig{Enabled: false}, registry, systemQueries, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1009,7 +1009,7 @@ func TestRetrieveSourceWorkerProcessFlagNoTextFails(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1065,7 +1065,7 @@ func TestRetrieveSourceWorkerProcessFlagFalseDoesNotChain(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1121,7 +1121,7 @@ func TestRetrieveSourceWorkerRecordsFailedFetch(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1203,7 +1203,7 @@ func TestSourcesHTTPRetryHappyPath(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1324,7 +1324,7 @@ func TestSourcesHTTPRetryRejectsNonFailed(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1416,7 +1416,7 @@ func TestSourcesHTTPListAfterWorkerRun(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1519,7 +1519,7 @@ func TestSourcesHTTPGetByID(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1621,7 +1621,7 @@ func TestSourcesHTTPDelete(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

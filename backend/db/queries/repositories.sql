@@ -105,6 +105,32 @@ WHERE id = $1;
 -- (migration 0044) so existing repos keep full sync behavior.
 SELECT registry_push_level, registry_pull_level FROM repositories WHERE id = $1;
 
+-- name: GetRepositoryPromptset :one
+-- Combined active_promptset_hash + accepted_promptset_hashes lookup
+-- in one round-trip. Read by the promptset resolver at Work() start
+-- to decide which promptset a repo's decompositions run under, and
+-- by the registry pull worker to filter remote decompositions to
+-- those whose promptset_hash is in the accepted set. active_hash is
+-- NULL when the repo inherits the global config default; the resolver
+-- falls back to cfg.Providers.PromptsetDefault then to the built-in
+-- hash. accepted_hashes defaults to '{}' meaning "only the active
+-- hash is accepted" (see migration 0047).
+SELECT active_promptset_hash, accepted_promptset_hashes FROM repositories WHERE id = $1;
+
+-- name: SetRepositoryPromptset :exec
+-- Update the per-repo promptset selection. Called by the
+-- SetPromptset handler (PUT .../settings/promptset). The handler
+-- validates active_hash against the resolver (built-in or a promptset
+-- the user owns / is public) and validates every entry in
+-- accepted_hashes the same way before this call. active_hash may be
+-- NULL (clear → inherit global default); accepted_hashes may be NULL
+-- (clear → only the active hash is accepted) or an array.
+UPDATE repositories
+SET active_promptset_hash = $2,
+    accepted_promptset_hashes = $3,
+    updated_at = now()
+WHERE id = $1;
+
 -- name: SetRepositorySyncLevels :exec
 -- Update the per-repo push/pull sync levels. Called by the
 -- SetSyncLevels handler (PUT .../settings/sync-levels). Each level is
@@ -113,6 +139,25 @@ SELECT registry_push_level, registry_pull_level FROM repositories WHERE id = $1;
 -- fail the constraint and surface as a 500.
 UPDATE repositories
 SET registry_push_level = $2, registry_pull_level = $3, updated_at = now()
+WHERE id = $1;
+
+-- name: GetRepositoryAllowedContentTypes :one
+-- Per-repo allowed content types gate (migration 0049). NULL means
+-- "allow all" (the default, backward compatible for existing repos);
+-- a non-NULL array restricts to the listed kinds ("document", "url",
+-- "doi"). Read by the CreateSource / UploadSource / EnqueueRetrieveSource
+-- handlers to 403-reject disallowed content types.
+SELECT allowed_content_types FROM repositories WHERE id = $1;
+
+-- name: SetRepositoryAllowedContentTypes :exec
+-- Upsert the per-repo allowed content types list. Called by the
+-- SetContentTypes handler (PUT .../settings/content-types). Pass NULL
+-- to clear the per-repo override (revert to allow-all); pass an array
+-- (e.g. ["doi"] or ["document","url","doi"]) to restrict. The handler
+-- validates each value against {"document","url","doi"} before this
+-- call; the CHECK constraint on the column is the defense-in-depth.
+UPDATE repositories
+SET allowed_content_types = $2, updated_at = now()
 WHERE id = $1;
 
 -- name: DeleteRepository :one

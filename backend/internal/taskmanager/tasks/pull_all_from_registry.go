@@ -38,29 +38,35 @@ type PullAllFromRegistryResult struct {
 type PullAllFromRegistryWorker struct {
 	river.WorkerDefaults[PullAllFromRegistryArgs]
 
-	registryClients *registry.ClientMap
-	registry        *dbpool.Registry
-	systemQueries   *store.Queries
-	qdrant          *qdrantstore.Store
-	reconciler      *CacheReconciler
-	dedupEnqueuer   handler.RemoteDedupEnqueuer
+	registryClients   *registry.ClientMap
+	registryCache     *registry.RegistryCacheProvider
+	registry          *dbpool.Registry
+	systemQueries     *store.Queries
+	qdrant            *qdrantstore.Store
+	reconciler        *CacheReconciler
+	dedupEnqueuer     handler.RemoteDedupEnqueuer
+	promptsetResolver *PromptsetResolver
 }
 
 func NewPullAllFromRegistryWorker(
 	registryClients *registry.ClientMap,
+	registryCache *registry.RegistryCacheProvider,
 	poolRegistry *dbpool.Registry,
 	systemQueries *store.Queries,
 	qdrant *qdrantstore.Store,
 	reconciler *CacheReconciler,
 	dedupEnqueuer handler.RemoteDedupEnqueuer,
+	promptsetResolver *PromptsetResolver,
 ) *PullAllFromRegistryWorker {
 	return &PullAllFromRegistryWorker{
-		registryClients: registryClients,
-		registry:        poolRegistry,
-		systemQueries:   systemQueries,
-		qdrant:          qdrant,
-		reconciler:      reconciler,
-		dedupEnqueuer:   dedupEnqueuer,
+		registryClients:   registryClients,
+		registryCache:     registryCache,
+		registry:          poolRegistry,
+		systemQueries:     systemQueries,
+		qdrant:            qdrant,
+		reconciler:        reconciler,
+		dedupEnqueuer:     dedupEnqueuer,
+		promptsetResolver: promptsetResolver,
 	}
 }
 
@@ -79,7 +85,7 @@ func (w *PullAllFromRegistryWorker) Work(ctx context.Context, job *river.Job[Pul
 	// configured registry is gone. The HTTP gate already rejects
 	// the enqueue; this is defense-in-depth for a job enqueued
 	// before a toggle-off.
-	rc, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID)
+	regID, rc, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID)
 	if err != nil {
 		logSkip("pull_all_from_registry", args.RepositoryID, err.Error())
 		return river.RecordOutput(ctx, &PullAllFromRegistryResult{
@@ -96,6 +102,21 @@ func (w *PullAllFromRegistryWorker) Work(ctx context.Context, job *river.Job[Pul
 		return fmt.Errorf("pull_all_from_registry: no pool for database %q", dbName)
 	}
 	queries := store.New(pool.Pool)
+
+	// Resolve the repo's effective promptset hash. Imported facts
+	// and concepts are tagged with this hash so they join the repo's
+	// active philosophy. (A future step can tag with the registry
+	// decomposition's own promptset_hash once the wire format
+	// carries it; for now the pull is gated on accepted hashes, so
+	// the imported decomposition is by definition from an accepted
+	// philosophy.)
+	var psHashPtr *string
+	var acceptedHashes []string
+	if w.promptsetResolver != nil {
+		h := w.promptsetResolver.EffectiveHash(ctx, repoID)
+		psHashPtr = &h
+		acceptedHashes = w.promptsetResolver.AcceptedHashes(ctx, repoID)
+	}
 
 	// Build the inbound context mapper once per repo. The mapper
 	// translates registry concept contexts to the repo's local
@@ -226,7 +247,7 @@ func (w *PullAllFromRegistryWorker) Work(ctx context.Context, job *river.Job[Pul
 			log.Printf("pull_all_from_registry: loading source %s: %v", uuidFromPgtype(src.ID), err)
 			continue
 		}
-		srcStats, err := w.tryPullOne(ctx, queries, *srcFull, args.RepositoryID, rc, mapper, pullFilter)
+		srcStats, err := w.tryPullOne(ctx, queries, *srcFull, args.RepositoryID, regID, rc, mapper, pullFilter, psHashPtr, acceptedHashes)
 		if err != nil {
 			log.Printf("pull_all_from_registry: pulling source %s (url=%q): %v", uuidFromPgtype(src.ID), sourceURL, err)
 			continue
@@ -267,9 +288,12 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 	queries *store.Queries,
 	src store.OktRepositorySource,
 	repoIDStr string,
+	regID string,
 	rc *registry.Client,
 	mapper *InboundContextMapper,
 	pullFilter *registry.SyncLevelFilter,
+	psHashPtr *string,
+	acceptedHashes []string,
 ) (ImportStats, error) {
 	var stats ImportStats
 	sourceURL := src.Url
@@ -277,49 +301,52 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 	if src.Doi != nil {
 		sourceDOI = *src.Doi
 	}
-	searchCtx, searchCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer searchCancel()
-	sr, err := rc.SearchSource(searchCtx, sourceURL, sourceDOI)
-	if err != nil {
-		return stats, fmt.Errorf("registry search: %w", err)
-	}
-	if sr == nil || !sr.Found {
-		return stats, nil
-	}
-
-	pullCtx, pullCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer pullCancel()
-	pkg, err := rc.PullSource(pullCtx, sr.SourceID)
-	if err != nil {
-		return stats, fmt.Errorf("registry pull source: %w", err)
-	}
 
 	var repoID pgtype.UUID
 	if err := repoID.Scan(repoIDStr); err != nil {
 		return stats, fmt.Errorf("invalid repository id: %w", err)
 	}
 
-	// Resolve the per-repo model whitelist (per-repo replaces global).
-	allowedModels := resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels())
+	// Build the per-repo RelevanceFilter the cache provider applies.
+	// The context mapper translates registry concept contexts to
+	// the repo's local vocabulary; the Service's applyContextFilter
+	// rewrites concept/link contexts (or drops them per the
+	// unmapped policy) so the import loop below uses c.Context
+	// directly — no re-mapping.
+	autoAdd := func(registryLabel string) {
+		if _, err := w.systemQueries.SeedRepositoryContext(ctx, store.SeedRepositoryContextParams{
+			RepositoryID: repoID,
+			Context:      registryLabel,
+			IsCustom:     true,
+			Description:  "",
+		}); err != nil {
+			log.Printf("pull_all_from_registry: auto-adding context %q: %v", registryLabel, err)
+		}
+	}
+	filter := &registry.RelevanceFilter{
+		AllowedModels:      resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels()),
+		AcceptedPromptsets: acceptedHashes,
+		SyncLevel:          pullFilter,
+		ContextMapper:      mapper,
+		AutoAdd:            autoAdd,
+	}
 
-	for _, dr := range pkg.Decompositions {
-		if !registry.IsAllowed(allowedModels, dr.ModelID) {
-			continue
-		}
-		decompCtx, decompCancel := context.WithTimeout(ctx, 30*time.Second)
-		decomp, err := rc.PullDecomposition(decompCtx, pkg.Source.ID, dr.ModelID)
-		decompCancel()
-		if err != nil {
-			log.Printf("pull_all_from_registry: pulling decomposition %s from registry: %v", dr.ModelID, err)
-			continue
-		}
-		// Strip concept-level fields when the repo's pull level is
-		// "facts". The concept/link/concept-embedding import loops
-		// below then iterate zero items, leaving fact_concepts empty
-		// so extract_concepts regenerates concepts from the stable
-		// facts. One line per pull path — the filter is the single
-		// source of truth for what each level includes.
-		decomp = pullFilter.FilterForPull(decomp)
+	// Inject the active registry id into the context so the
+	// ServiceMap resolves the right client.
+	cacheCtx := registry.WithRegistryID(ctx, regID)
+	hit, found, err := w.registryCache.LookupAndPull(cacheCtx, sourceURL, sourceDOI, filter)
+	if err != nil {
+		return stats, fmt.Errorf("registry cache lookup: %w", err)
+	}
+	if !found || hit == nil {
+		return stats, nil
+	}
+
+	// The decompositions in the hit are already filtered (model
+	// whitelist, promptset acceptance, sync level, context
+	// mapping). Iterate and persist — no re-filtering here.
+	for i := range hit.Decompositions {
+		decomp := &hit.Decompositions[i]
 
 		// Track fact content_hash → local fact_id for link resolution
 		// and Qdrant point mapping (local UUIDs, not remote).
@@ -358,10 +385,11 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 				factKind = "image"
 			}
 			if _, err := queries.CreateFact(ctx, store.CreateFactParams{
-				ID:       factID,
-				Text:     f.Content,
-				FactKind: factKind,
-				ImageUrl: strPtrOrNil(f.ImageURL),
+				ID:            factID,
+				Text:          f.Content,
+				FactKind:      factKind,
+				ImageUrl:      strPtrOrNil(f.ImageURL),
+				PromptsetHash: psHashPtr,
 			}); err != nil {
 				log.Printf("pull_all_from_registry: creating fact from registry: %v", err)
 				continue
@@ -379,39 +407,27 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 			stats.Created++
 		}
 
-		// Import concepts + aliases. The registry context is
-		// translated to the repo's local vocabulary via the inbound
-		// mapper; concepts whose context is skipped (policy=skip
-		// and unmapped) are dropped. The autoAdd callback seeds a
-		// repository_contexts row for the auto_add policy.
-		autoAdd := func(registryLabel string) {
-			if _, err := w.systemQueries.SeedRepositoryContext(ctx, store.SeedRepositoryContextParams{
-				RepositoryID: repoID,
-				Context:      registryLabel,
-				IsCustom:     true,
-				Description:  "",
-			}); err != nil {
-				log.Printf("pull_all_from_registry: auto-adding context %q: %v", registryLabel, err)
-			}
-		}
-		// Track which (name, registryContext) pairs were skipped so
-		// the link loop drops their links too (no dangling links).
-		skippedConcepts := map[string]bool{}
+		// Import concepts + aliases. The Service's
+		// applyContextFilter already translated c.Context to the
+		// repo's local vocabulary (and dropped concepts whose
+		// context maps to skip), so this loop persists directly —
+		// no per-concept mapper call.
 		for _, c := range decomp.Concepts {
 			if c.CanonicalName == "" {
 				continue
 			}
-			localContext, ok := mapper.MapContext(c.Context, autoAdd)
-			if !ok {
-				skippedConcepts[strings.ToLower(c.CanonicalName+"\x00"+c.Context)] = true
-				continue
-			}
+			// c.Context is already the local context (the filter
+			// translated it). auto_add was already invoked inside
+			// the filter for unmapped-but-accepted contexts, so the
+			// repository_contexts row exists by now.
+			localContext := c.Context
 			desc := strPtrOrNil(localContext)
 			if _, err := queries.CreateConcept(ctx, store.CreateConceptParams{
 				RepositoryID:  repoID,
 				CanonicalName: c.CanonicalName,
 				Context:       localContext,
 				Description:   desc,
+				PromptsetHash: psHashPtr,
 			}); err != nil {
 				log.Printf("pull_all_from_registry: creating concept from registry: %v", err)
 				continue
@@ -445,33 +461,28 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 			}
 		}
 
-		// Import fact_concept links. The link's concept_context is
-		// translated via the inbound mapper; links to skipped
-		// concepts are dropped.
+		// Import fact_concept links. The Service's
+		// applyContextFilter already translated link.ConceptContext
+		// to the local vocabulary and dropped links to skipped
+		// concepts, so this loop persists directly.
 		for _, link := range decomp.Links {
 			factID, ok := factIDByHash[link.FactContentHash]
-			if !ok {
-				continue
-			}
-			if skippedConcepts[strings.ToLower(link.ConceptName+"\x00"+link.ConceptContext)] {
-				continue
-			}
-			localContext, ok := mapper.MapContext(link.ConceptContext, autoAdd)
 			if !ok {
 				continue
 			}
 			concept, err := queries.GetConceptByNameContext(ctx, store.GetConceptByNameContextParams{
 				RepositoryID:  repoID,
 				CanonicalName: link.ConceptName,
-				Context:       localContext,
+				Context:       link.ConceptContext,
 			})
 			if err != nil {
-				log.Printf("pull_all_from_registry: resolving concept for link %q/%q: %v", link.ConceptName, localContext, err)
+				log.Printf("pull_all_from_registry: resolving concept for link %q/%q: %v", link.ConceptName, link.ConceptContext, err)
 				continue
 			}
 			if _, err := queries.AddFactConcept(ctx, store.AddFactConceptParams{
-				FactID:    factID,
-				ConceptID: concept.ID,
+				FactID:        factID,
+				ConceptID:     concept.ID,
+				PromptsetHash: psHashPtr,
 			}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				log.Printf("pull_all_from_registry: adding fact_concept link: %v", err)
 			}
@@ -553,11 +564,7 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 				if c.CanonicalName == "" {
 					continue
 				}
-				localContext, ok := mapper.MapContext(c.Context, autoAdd)
-				if !ok {
-					continue
-				}
-				conceptKey := c.CanonicalName + "\x00" + localContext
+				conceptKey := c.CanonicalName + "\x00" + c.Context
 				conceptID, ok := conceptIDByKey[conceptKey]
 				if !ok {
 					continue

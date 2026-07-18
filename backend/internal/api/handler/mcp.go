@@ -558,7 +558,7 @@ func (m *MCP) registerTools() {
 	// agent can find sources to feed into fetchAndProcessSource.
 	m.mcpServer.AddTool(
 		mcp.NewTool("searchSources",
-			mcp.WithDescription("Search for candidate source URLs via a registered search provider (serper = Google web search, openalex = academic works). Returns each hit's title, url, snippet, and (for OpenAlex) doi, openalex_id, and published_at, plus already_exists/existing_status flags for hits already ingested in this repository. Feed the returned url or doi straight into fetchAndProcessSource; skip hits where already_exists is true. Omit `provider` to use the configured default (typically serper); use `cursor` for pagination. Call listSearchProviders first to see which providers are available for this repository — repos can disable individual providers (e.g. a strict scientific repo may disable Serper). The repository argument accepts a UUID or slug."),
+			mcp.WithDescription("Search for candidate source URLs via a registered search provider (serper = Google web search, openalex = academic works, registry = OKT Knowledge Registry cached sources). Returns each hit's title, url, snippet, and (for OpenAlex) doi, openalex_id, and published_at, plus already_exists/existing_status flags for hits already ingested in this repository. Feed the returned url or doi straight into fetchAndProcessSource; skip hits where already_exists is true. Omit `provider` to use the configured default (typically serper); use `cursor` for pagination. Call listSearchProviders first to see which providers are available for this repository — repos can disable individual providers (e.g. a strict scientific repo may disable Serper). The repository argument accepts a UUID or slug."),
 			mcp.WithString("repository",
 				mcp.Required(),
 				mcp.Description("Repository UUID or slug (used for the already-exists tagging and the facts:read permission check)."),
@@ -568,7 +568,7 @@ func (m *MCP) registerTools() {
 				mcp.Description("Search query."),
 			),
 			mcp.WithString("provider",
-				mcp.Description("Search provider id: \"serper\" (web) or \"openalex\" (academic). Omit to use the configured default (typically serper). Call listSearchProviders to see which providers are available for this repository."),
+				mcp.Description("Search provider id: \"serper\" (web), \"openalex\" (academic), or \"registry\" (OKT Knowledge Registry cached sources). Omit to use the configured default (typically serper). Call listSearchProviders to see which providers are available for this repository."),
 			),
 			mcp.WithNumber("per_page",
 				mcp.Description("Page size (0 = provider default)."),
@@ -2991,6 +2991,7 @@ func (m *MCP) handleListSearchProviders(ctx context.Context, req mcp.CallToolReq
 	names := map[string]string{
 		"serper":   "Serper (Google Search)",
 		"openalex": "OpenAlex (Academic Works)",
+		"registry": "OKT Knowledge Registry",
 	}
 
 	type providerOut struct {

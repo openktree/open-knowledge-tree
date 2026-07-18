@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/summarization"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -66,11 +67,12 @@ type SummarizeConceptsResult struct {
 type SummarizeConceptsWorker struct {
 	river.WorkerDefaults[SummarizeConceptsArgs]
 
-	summarizer     summarization.SummarizationProvider
-	cfg            config.SummarizationConfig
-	registry       *dbpool.Registry
-	systemQueries  *store.Queries
-	modelResolver  *ModelResolver
+	summarizer         summarization.SummarizationProvider
+	cfg                config.SummarizationConfig
+	registry           *dbpool.Registry
+	systemQueries      *store.Queries
+	modelResolver      *ModelResolver
+	promptsetResolver  *PromptsetResolver
 	synthesizerEnabled bool
 }
 
@@ -81,6 +83,7 @@ func NewSummarizeConceptsWorker(
 	systemQueries *store.Queries,
 	synthesizerEnabled bool,
 	modelResolver *ModelResolver,
+	promptsetResolver *PromptsetResolver,
 ) *SummarizeConceptsWorker {
 	return &SummarizeConceptsWorker{
 		summarizer:         summarizer,
@@ -89,6 +92,7 @@ func NewSummarizeConceptsWorker(
 		systemQueries:      systemQueries,
 		synthesizerEnabled: synthesizerEnabled,
 		modelResolver:      modelResolver,
+		promptsetResolver:  promptsetResolver,
 	}
 }
 
@@ -143,6 +147,25 @@ func (w *SummarizeConceptsWorker) Work(ctx context.Context, job *river.Job[Summa
 	}
 	pool := w.registry.Get(dbName)
 
+	// Resolve the repo's effective promptset once at Work() start.
+	// The resolved Promptset is threaded into the summarizer via
+	// WithPromptset so the repo's philosophy runs, not the built-in
+	// default. Summarization reads facts (already tagged with
+	// promptset_hash by source_decomposition / extract_concepts);
+	// a future step can filter the loaded facts by the active hash
+	// to enforce isolation at the summary level too.
+	var ps promptset.Promptset
+	if w.promptsetResolver != nil {
+		ps = w.promptsetResolver.Effective(ctx, repoID)
+		w.promptsetResolver.LogEffective(ctx, repoID, "summarize_concepts")
+	} else {
+		ps = promptset.Default
+	}
+	summarizer := w.summarizer
+	if s, ok := summarizer.(*summarization.AISummarizationProvider); ok {
+		summarizer = s.WithPromptset(ps)
+	}
+
 	// Resolve per-repo model override for summarization. The
 	// summarization wrapper already honors a non-empty req.Model
 	// (ai_summarization.go: model := req.Model; if "" { model = p.model }),
@@ -152,6 +175,7 @@ func (w *SummarizeConceptsWorker) Work(ctx context.Context, job *river.Job[Summa
 	if w.modelResolver != nil {
 		if r := w.modelResolver.Resolve(ctx, repoID, TaskKindSummarization); r.Provider != nil {
 			summarizationModelOverride = r.ModelID
+			summarizer = summarization.NewAISummarizationProvider(r.Provider, r.ModelID).WithPromptset(ps)
 		}
 	}
 
@@ -184,7 +208,7 @@ func (w *SummarizeConceptsWorker) Work(ctx context.Context, job *river.Job[Summa
 			result.Errors++
 			continue
 		}
-		w.summarizeOneConcept(ctx, pool.Pool, conceptID, batchSize, staleness, maxTokens, args.RepositoryID, args.SourceID, taskID, &result, summarizationModelOverride)
+		w.summarizeOneConcept(ctx, pool.Pool, conceptID, batchSize, staleness, maxTokens, args.RepositoryID, args.SourceID, taskID, &result, summarizationModelOverride, summarizer)
 	}
 
 	log.Printf("summarize_concepts: repo %s processed %d pairs (%d created, %d updated, %d skipped no-delta, %d skipped locked, %d errors)",
@@ -206,6 +230,7 @@ func (w *SummarizeConceptsWorker) summarizeOneConcept(
 	repoIDStr, sourceIDStr, taskID string,
 	result *SummarizeConceptsResult,
 	modelOverride string,
+	summarizer summarization.SummarizationProvider,
 ) {
 	// 1. Claim the lock. Skip if held by a fresh worker.
 	claimCtx, claimCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -365,7 +390,7 @@ func (w *SummarizeConceptsWorker) summarizeOneConcept(
 			summarizationModel = modelOverride
 		}
 		llmCtx, llmCancel := context.WithTimeout(context.Background(), 120*time.Second)
-		content, err := w.summarizer.Summarize(llmCtx, pool, summarization.SummarizationRequest{
+		content, err := summarizer.Summarize(llmCtx, pool, summarization.SummarizationRequest{
 			ConceptCanonicalName: concept.CanonicalName,
 			Context:              concept.Context,
 			Facts:                facts,

@@ -16,6 +16,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/refinement"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
@@ -68,6 +69,7 @@ type RefineConceptsWorker struct {
 	registry          *dbpool.Registry
 	systemQueries     *store.Queries
 	modelResolver     *ModelResolver
+	promptsetResolver *PromptsetResolver
 	summarizerEnabled bool
 	concurrency       int
 	// embeddingProvider + qdrant power the per-fact embedding
@@ -87,6 +89,7 @@ func NewRefineConceptsWorker(
 	systemQueries *store.Queries,
 	summarizerEnabled bool,
 	modelResolver *ModelResolver,
+	promptsetResolver *PromptsetResolver,
 	embeddingProvider ai.EmbeddingProvider,
 	embeddingCfg config.EmbeddingConfig,
 	qdrant *qdrantstore.Store,
@@ -98,6 +101,7 @@ func NewRefineConceptsWorker(
 		systemQueries:     systemQueries,
 		summarizerEnabled: summarizerEnabled,
 		modelResolver:     modelResolver,
+		promptsetResolver: promptsetResolver,
 		concurrency:       cfg.MaxConcurrencyOr(5),
 		embeddingProvider: embeddingProvider,
 		embeddingCfg:      embeddingCfg,
@@ -158,12 +162,34 @@ func (w *RefineConceptsWorker) Work(ctx context.Context, job *river.Job[RefineCo
 		return fmt.Errorf("refine_concepts: no pool for database %q", dbName)
 	}
 
+	// Resolve the repo's effective promptset once at Work() start.
+	// The hash tags every concept + fact_concept link this job
+	// persists so decompositions from different promptsets do not
+	// mix. The resolved Promptset is threaded into the refiner via
+	// WithPromptset.
+	var ps promptset.Promptset
+	var psHash string
+	if w.promptsetResolver != nil {
+		ps = w.promptsetResolver.Effective(ctx, repoID)
+		psHash = ps.Hash
+		w.promptsetResolver.LogEffective(ctx, repoID, "refine_concepts")
+	} else {
+		ps = promptset.Default
+		psHash = promptset.DefaultHash
+	}
+	psHashPtr := &psHash
+
 	// Resolve per-repo model override for refinement.
 	var refinementModelOverride string
+	refiner := w.refiner
 	if w.modelResolver != nil {
 		if r := w.modelResolver.Resolve(ctx, repoID, TaskKindRefinement); r.Provider != nil {
 			refinementModelOverride = r.ModelID
+			refiner = refinement.NewAIRefineProvider(r.Provider, r.ModelID).WithPromptset(ps)
 		}
+	}
+	if rf, ok := refiner.(*refinement.AIRefineProvider); ok {
+		refiner = rf.WithPromptset(ps)
 	}
 
 	maxTokens := w.cfg.MaxTokensOr(400)
@@ -222,7 +248,7 @@ func (w *RefineConceptsWorker) Work(ctx context.Context, job *river.Job[RefineCo
 				log.Printf("refine_concepts: invalid candidate_id %q: %v", cidStr, err)
 				return nil
 			}
-			resolvedConceptID, rerr := w.refineOneCandidate(gctx, pool.Pool, repoID, candidateID, args.RepositoryID, args.SourceID, taskID, maxTokens, refinementModelOverride, &result)
+			resolvedConceptID, rerr := w.refineOneCandidate(gctx, pool.Pool, repoID, candidateID, args.RepositoryID, args.SourceID, taskID, maxTokens, refinementModelOverride, &result, refiner, psHashPtr)
 			if rerr != nil {
 				atomic.AddInt64(&result.Errors, 1)
 				log.Printf("refine_concepts: refining candidate %s: %v", cidStr, rerr)
@@ -261,6 +287,8 @@ func (w *RefineConceptsWorker) refineOneCandidate(
 	maxTokens int,
 	modelOverride string,
 	result *RefineConceptsResult,
+	refiner refinement.RefineProvider,
+	psHashPtr *string,
 ) (pgtype.UUID, error) {
 	queries := store.New(pool)
 
@@ -294,7 +322,7 @@ func (w *RefineConceptsWorker) refineOneCandidate(
 		}
 		return merged, nil
 	} else if len(matches) > 1 {
-		resolved, handled, err := w.tryRouteAliasAmbiguous(ctx, pool, queries, repoID, candidate, matches, nil, result)
+		resolved, handled, err := w.tryRouteAliasAmbiguous(ctx, pool, queries, repoID, candidate, matches, nil, result, psHashPtr)
 		if err != nil {
 			return pgtype.UUID{}, err
 		}
@@ -322,7 +350,7 @@ func (w *RefineConceptsWorker) refineOneCandidate(
 			}
 			return merged, nil
 		} else if len(matches) > 1 {
-			resolved, handled, err := w.tryRouteAliasAmbiguous(ctx, pool, queries, repoID, candidate, matches, nil, result)
+			resolved, handled, err := w.tryRouteAliasAmbiguous(ctx, pool, queries, repoID, candidate, matches, nil, result, psHashPtr)
 			if err != nil {
 				return pgtype.UUID{}, err
 			}
@@ -338,7 +366,7 @@ func (w *RefineConceptsWorker) refineOneCandidate(
 	if refineModel == "" {
 		refineModel = w.cfg.Model
 	}
-	refineResult, rerr := w.refiner.Refine(llmCtx, pool, refinement.RefinementRequest{
+	refineResult, rerr := refiner.Refine(llmCtx, pool, refinement.RefinementRequest{
 		Concept:         candidate.ConceptText,
 		Context:         candidate.Context,
 		ExistingAliases: nil, // new candidate has no aliases yet
@@ -412,7 +440,7 @@ func (w *RefineConceptsWorker) refineOneCandidate(
 			w.applyPruning(ctx, queries, matches[0].ID, refineResult.AliasesToPrune, result)
 			return merged, nil
 		} else if len(matches) > 1 {
-			resolved, handled, err := w.tryRouteAliasAmbiguous(ctx, pool, queries, repoID, candidate, matches, refineResult.AliasesToAdd, result)
+			resolved, handled, err := w.tryRouteAliasAmbiguous(ctx, pool, queries, repoID, candidate, matches, refineResult.AliasesToAdd, result, psHashPtr)
 			if err != nil {
 				return pgtype.UUID{}, err
 			}
@@ -431,6 +459,7 @@ func (w *RefineConceptsWorker) refineOneCandidate(
 		RepositoryID:  repoID,
 		CanonicalName: refineResult.CanonicalName,
 		Context:       candidate.Context,
+		PromptsetHash: psHashPtr,
 	})
 	if err != nil {
 		// ON CONFLICT DO NOTHING may return ErrNoRows if a racing insert
@@ -702,6 +731,7 @@ func (w *RefineConceptsWorker) tryRouteAliasAmbiguous(
 	matches []store.OktRepositoryConcept,
 	aiAliases []string,
 	result *RefineConceptsResult,
+	psHashPtr *string,
 ) (resolvedConceptID pgtype.UUID, handled bool, err error) {
 	if len(matches) <= 1 {
 		return pgtype.UUID{}, false, nil
@@ -729,8 +759,9 @@ func (w *RefineConceptsWorker) tryRouteAliasAmbiguous(
 		}
 		// Link this fact to its winner (idempotent).
 		if _, err := queries.AddFactConcept(ctx, store.AddFactConceptParams{
-			FactID:    factID,
-			ConceptID: winner.ID,
+			FactID:        factID,
+			ConceptID:     winner.ID,
+			PromptsetHash: psHashPtr,
 		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("refine_concepts: per-fact AddFactConcept (fact %s -> concept %s): %v",
 				pgUUIDToString(factID), pgUUIDToString(winner.ID), err)

@@ -134,7 +134,7 @@ func newSynthesizeTestEnv(t *testing.T, cfg config.SynthesisConfig) *synthesizeT
 	stub := &stubSynthesizer{}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewSynthesizeConceptsWorker(stub, cfg, registry, systemQueries, nil)
+	worker := tasks.NewSynthesizeConceptsWorker(stub, cfg, registry, systemQueries, nil, nil)
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
 	river.AddWorker(workers, worker)

@@ -59,7 +59,7 @@ func TestDedicatedTaskDB_RiverTablesLandInTasksDB(t *testing.T) {
 	tasksPool := env.TasksDB
 	registry := testutil.NewForTestPool(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	// Run River's bundled migrator against the `tasks` pool.
 	// In production this is what taskmanager.New does; we

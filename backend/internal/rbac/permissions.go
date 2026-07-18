@@ -44,6 +44,7 @@ var Objects = struct {
 	Reports         string
 	Databases       string
 	Remote          string
+	Promptset       string
 }{
 	Users:           "user",
 	Roles:           "role",
@@ -63,6 +64,7 @@ var Objects = struct {
 	Reports:         "report",
 	Databases:       "database",
 	Remote:          "remote",
+	Promptset:       "promptset",
 }
 
 // Actions are the typed action strings Casbin uses in
@@ -151,7 +153,8 @@ func IsValidObject(obj string) bool {
 		Objects.Tasks,
 		Objects.Reports,
 		Objects.Databases,
-		Objects.Remote:
+		Objects.Remote,
+		Objects.Promptset:
 		return true
 	}
 	return false

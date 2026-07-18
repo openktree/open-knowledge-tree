@@ -20,6 +20,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/oauth"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
@@ -53,6 +54,11 @@ func WireRepoSettings(h *api.Handler, searchProviders map[string]search.SearchPr
 		panic(fmt.Sprintf("testutil: embedded L3 source: %v", err))
 	}
 	h.SetOntologySource(onto)
+	// Wire the promptset resolver (built-in + DB over the system
+	// pool) so the promptsets CRUD endpoints and the per-repo
+	// promptset settings endpoints work in e2e tests. The resolver
+	// is the same one production wiring builds.
+	h.SetPromptsetResolver(promptset.NewResolver(promptset.NewDBProvider(h.Deps().Store)))
 }
 
 type TestEnv struct {

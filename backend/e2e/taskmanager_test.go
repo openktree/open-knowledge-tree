@@ -84,7 +84,7 @@ func TestRetrieveSourceWorkerClassifiesAndResolves(t *testing.T) {
 	// queries. The worker only consults them when the job
 	// carries a non-empty RepositoryID, which this test
 	// intentionally omits.
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(pool)
 

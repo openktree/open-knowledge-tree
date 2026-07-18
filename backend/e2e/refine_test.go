@@ -311,7 +311,7 @@ func TestRefineConcepts_AliasDisambiguationByEmbedding(t *testing.T) {
 	// embedding deps so the per-fact cosine tie-break works.
 	refiner := &failingRefiner{}
 	refineCfg := config.RefinementConfig{Enabled: true, Model: "stub", MaxTokens: 400}
-	refineWorker := tasks.NewRefineConceptsWorker(refiner, refineCfg, registry, systemQueries, false, nil, embProvider, embCfg, qStore)
+	refineWorker := tasks.NewRefineConceptsWorker(refiner, refineCfg, registry, systemQueries, false, nil, nil, embProvider, embCfg, qStore)
 	rworkers := river.NewWorkers()
 	river.AddWorker(rworkers, refineWorker)
 	testRefine := rivertest.NewWorker(t, driver, &river.Config{
@@ -537,7 +537,7 @@ func TestRefineConcepts_ConcurrentChunk(t *testing.T) {
 	}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	refineWorker := tasks.NewRefineConceptsWorker(refiner, refineCfg, registry, systemQueries, false, nil, nil, config.EmbeddingConfig{}, nil)
+	refineWorker := tasks.NewRefineConceptsWorker(refiner, refineCfg, registry, systemQueries, false, nil, nil, nil, config.EmbeddingConfig{}, nil)
 	driver := riverpgxv5.New(env.DB)
 	rworkers := river.NewWorkers()
 	river.AddWorker(rworkers, refineWorker)

@@ -13,8 +13,12 @@
 -- needs the id of the survivor. The conflict target matches the
 -- uq_concepts_repo_name_context unique index on
 -- (repository_id, lower(canonical_name), lower(context)).
-INSERT INTO okt_repository.concepts (repository_id, canonical_name, context, description)
-VALUES ($1, $2, $3, $4)
+-- promptset_hash tags the concept with the philosophy that produced
+-- it so downstream queries (synthesis, registry pull) can filter to
+-- a single promptset and decompositions from different promptsets do
+-- not mix.
+INSERT INTO okt_repository.concepts (repository_id, canonical_name, context, description, promptset_hash)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (repository_id, lower(canonical_name), lower(context)) DO NOTHING
 RETURNING *;
 
@@ -111,8 +115,12 @@ RETURNING *;
 -- name: AddFactConcept :one
 -- Idempotent junction link. ON CONFLICT DO NOTHING so a re-extract
 -- pass that re-links the same (fact, concept) pair is a no-op.
-INSERT INTO okt_repository.fact_concepts (fact_id, concept_id)
-VALUES ($1, $2)
+-- promptset_hash tags the link with the philosophy that produced
+-- the fact+concept pair so the junction stays queryable by
+-- philosophy (a fact and a concept derived under different
+-- promptsets must not be joined by a query that filters by hash).
+INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, promptset_hash)
+VALUES ($1, $2, $3)
 ON CONFLICT (fact_id, concept_id) DO NOTHING
 RETURNING *;
 
@@ -564,9 +572,11 @@ WHERE repository_id = @repository_id AND lower(context) = lower(@context);
 -- Re-link every fact_concepts row pointing at old_concept_id to
 -- new_concept_id, ignoring (fact_id, new_concept_id) pairs that
 -- already exist (ON CONFLICT DO NOTHING). Used by the migrate_context
--- merge path before deleting the old concept row.
-INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at)
-SELECT fc.fact_id, @new_concept_id, fc.first_seen_at
+-- merge path before deleting the old concept row. Preserves the
+-- promptset_hash of each link so a merge does not silently drop the
+-- philosophy tag.
+INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at, promptset_hash)
+SELECT fc.fact_id, @new_concept_id, fc.first_seen_at, fc.promptset_hash
 FROM okt_repository.fact_concepts fc
 WHERE fc.concept_id = @old_concept_id
 ON CONFLICT (fact_id, concept_id) DO NOTHING;
@@ -599,9 +609,11 @@ WHERE id = @id;
 -- ON CONFLICT DO NOTHING preserves the winner's existing links.
 -- Called by the dedup worker's mergeSources, alongside
 -- RelinkFactReferences, so a dedup merge preserves all concept
--- mappings from both the winner and the loser.
-INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at)
-SELECT @winner_id, fc.concept_id, fc.first_seen_at
+-- mappings from both the winner and the loser. Preserves the
+-- promptset_hash of each link so a dedup merge does not silently
+-- drop the philosophy tag.
+INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at, promptset_hash)
+SELECT @winner_id, fc.concept_id, fc.first_seen_at, fc.promptset_hash
 FROM okt_repository.fact_concepts fc
 WHERE fc.fact_id = @loser_id
 ON CONFLICT (fact_id, concept_id) DO NOTHING;

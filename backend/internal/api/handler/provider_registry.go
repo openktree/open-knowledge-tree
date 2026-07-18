@@ -16,6 +16,30 @@ const (
 	ProviderKindResolution = "resolution"
 )
 
+// ContentKind enumerates the source content types the per-repository
+// allowed_content_types gate distinguishes (migration 0049). The
+// string values are the only accepted members of the column's CHECK
+// constraint. "document" = uploaded files (UploadSource), "url" =
+// web URLs (CreateSource / EnqueueRetrieveSource with a URL),
+// "doi" = DOIs (EnqueueRetrieveSource with a DOI). A repo with a
+// non-NULL allowed_content_types array 403-rejects any source whose
+// classified type is not in the list; NULL = allow all (the default,
+// backward compatible for existing repos).
+const (
+	ContentKindDocument = "document"
+	ContentKindURL      = "url"
+	ContentKindDOI      = "doi"
+)
+
+// ValidContentKinds is the set of accepted content-type strings. Used
+// by the SetContentTypes handler to validate PUT .../settings/content-types
+// input before persisting. Mirrors the column's CHECK constraint.
+var ValidContentKinds = map[string]bool{
+	ContentKindDocument: true,
+	ContentKindURL:      true,
+	ContentKindDOI:      true,
+}
+
 // LiveProvider is one entry in the live provider catalog. ID is the
 // stable slug (e.g. "serper", "openalex", "fetch", "tls"); Kind is
 // "search" or "resolution"; Name is the human label the UI shows.
@@ -63,6 +87,7 @@ func NewProviderRegistry(searchProviders map[string]search.SearchProvider, strat
 		searchMeta: map[string]string{
 			"serper":   "Serper (Google Search)",
 			"openalex": "OpenAlex (Academic Works)",
+			"registry": "OKT Knowledge Registry",
 		},
 	}
 }

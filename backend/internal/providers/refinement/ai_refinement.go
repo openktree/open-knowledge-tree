@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -20,6 +21,10 @@ import (
 type AIRefineProvider struct {
 	aiProvider ai.AIProvider
 	model       string
+	// promptset is the prompt set this provider uses for the
+	// refinement phase. Defaults to promptset.Default; a worker
+	// swaps in the per-repo philosophy via WithPromptset.
+	promptset promptset.Promptset
 }
 
 // NewAIRefineProvider constructs the provider. aiProvider must be
@@ -27,7 +32,15 @@ type AIRefineProvider struct {
 // every Refine call (the worker may override per-call via
 // RefinementRequest.Model, but that path is unused today).
 func NewAIRefineProvider(aiProvider ai.AIProvider, model string) *AIRefineProvider {
-	return &AIRefineProvider{aiProvider: aiProvider, model: model}
+	return &AIRefineProvider{aiProvider: aiProvider, model: model, promptset: promptset.Default}
+}
+
+// WithPromptset returns a copy of the provider that uses the given
+// promptset's Refinement phase.
+func (p *AIRefineProvider) WithPromptset(ps promptset.Promptset) *AIRefineProvider {
+	clone := *p
+	clone.promptset = ps
+	return &clone
 }
 
 func (p *AIRefineProvider) Describe() ProviderDescription {
@@ -57,7 +70,7 @@ func (p *AIRefineProvider) Refine(ctx context.Context, db store.DBTX, req Refine
 		return RefinementResult{}, fmt.Errorf("refinement: concept is required")
 	}
 
-	userMsg := buildUserMessage(req.Concept, req.Context, req.ExistingAliases, req.SeedAliases)
+	userMsg := buildUserMessage(req.Concept, req.Context, req.ExistingAliases, req.SeedAliases, p.promptset)
 
 	model := req.Model
 	if model == "" {

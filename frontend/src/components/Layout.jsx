@@ -345,6 +345,7 @@ export default function Layout(props) {
               <Show when={showRemote()}>
                 <NavLink href="/remote">Remote</NavLink>
               </Show>
+              <NavLink href="/promptsets">Promptsets</NavLink>
               <Show when={showUsers()}>
                 <NavLink href="/users">Users</NavLink>
               </Show>

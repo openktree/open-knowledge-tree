@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -19,9 +20,13 @@ import (
 // usage into okt_system.ai_usage via the ai.Attribution the worker
 // passes through.
 type AISynthesisProvider struct {
-	aiProvider   ai.AIProvider
+	aiProvider  ai.AIProvider
 	model        string // synthesis model id
 	pickerModel  string // image-picker model id; defaults to model when empty
+	// promptset is the prompt set this provider uses for the
+	// synthesis + image-picker phases. Defaults to promptset.Default;
+	// a worker swaps in the per-repo philosophy via WithPromptset.
+	promptset promptset.Promptset
 }
 
 // NewAISynthesisProvider constructs the provider. aiProvider must be
@@ -31,7 +36,15 @@ type AISynthesisProvider struct {
 // is the model id for the PickImages call; when empty, Synthesize's
 // model is used.
 func NewAISynthesisProvider(aiProvider ai.AIProvider, model, pickerModel string) *AISynthesisProvider {
-	return &AISynthesisProvider{aiProvider: aiProvider, model: model, pickerModel: pickerModel}
+	return &AISynthesisProvider{aiProvider: aiProvider, model: model, pickerModel: pickerModel, promptset: promptset.Default}
+}
+
+// WithPromptset returns a copy of the provider that uses the given
+// promptset's Synthesis + ImagePicker phases.
+func (p *AISynthesisProvider) WithPromptset(ps promptset.Promptset) *AISynthesisProvider {
+	clone := *p
+	clone.promptset = ps
+	return &clone
 }
 
 func (p *AISynthesisProvider) Describe() ProviderDescription {
@@ -84,7 +97,7 @@ func (p *AISynthesisProvider) Synthesize(ctx context.Context, db store.DBTX, req
 
 	chatReq := ai.ChatRequest{
 		Model:    model,
-		Messages: []ai.ChatMessage{{Role: "system", Content: synthesisSystemPrompt}, {Role: "user", Content: userMsg}},
+		Messages: []ai.ChatMessage{{Role: "system", Content: p.promptset.Synthesis}, {Role: "user", Content: userMsg}},
 		TaskID:   taskID,
 		Attribution: ai.Attribution{
 			RepositoryID: req.Attribution.RepositoryID,
@@ -147,7 +160,7 @@ func (p *AISynthesisProvider) PickImages(ctx context.Context, db store.DBTX, req
 
 	chatReq := ai.ChatRequest{
 		Model:    model,
-		Messages: []ai.ChatMessage{{Role: "system", Content: imagePickerSystemPrompt}, {Role: "user", Content: userMsg}},
+		Messages: []ai.ChatMessage{{Role: "system", Content: p.promptset.ImagePicker}, {Role: "user", Content: userMsg}},
 		TaskID:   taskID,
 		Attribution: ai.Attribution{
 			RepositoryID: req.Attribution.RepositoryID,

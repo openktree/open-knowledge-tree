@@ -167,7 +167,7 @@ func TestSourceDecomposition_ImageFacts(t *testing.T) {
 		MaxImageBytes:      5 * 1024 * 1024,
 		MaxImagesPerSource: 20,
 	}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -385,7 +385,7 @@ func TestSourceDecomposition_ImageExtractionErrorIsSkipped(t *testing.T) {
 	imgExtractor := &stubImageExtractor{err: errors.New("model exploded")}
 	registry := testutil.NewForTestPool(env.DB)
 	imageCfg := config.DecompositionImageConfig{Enabled: true, Provider: "stub", Model: "stub", MaxImagesPerSource: 20, MaxImageBytes: 5 * 1024 * 1024}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -540,7 +540,7 @@ func TestSourceDecomposition_AllChunksFailedErrors(t *testing.T) {
 	errExtractor := &errFactExtractor{}
 	registry := testutil.NewForTestPool(env.DB)
 	imageCfg := config.DecompositionImageConfig{Enabled: false}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, errExtractor, nil, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, errExtractor, nil, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -663,7 +663,7 @@ func TestSourceDecomposition_ImageExtractionDisabled(t *testing.T) {
 	imgExtractor := &stubImageExtractor{facts: []string{"should not be produced"}}
 	registry := testutil.NewForTestPool(env.DB)
 	imageCfg := config.DecompositionImageConfig{Enabled: false, Provider: "stub", Model: "stub", MaxImagesPerSource: 20, MaxImageBytes: 5 * 1024 * 1024}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -799,7 +799,7 @@ func TestSourceDecomposition_ImageOnlyPDFProcesses(t *testing.T) {
 		MaxImageBytes:      5 * 1024 * 1024,
 		MaxImagesPerSource: 20,
 	}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -966,7 +966,7 @@ func TestSourceDecomposition_ImageOnlyPDFAllImagesFailedErrors(t *testing.T) {
 		MaxImageBytes:      5 * 1024 * 1024,
 		MaxImagesPerSource: 20,
 	}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1077,7 +1077,7 @@ func TestSourceDecomposition_ImageOnlyPDFSkippedWhenExtractionDisabled(t *testin
 	// must early-return with Processed=false and no facts.
 	registry := testutil.NewForTestPool(env.DB)
 	imageCfg := config.DecompositionImageConfig{Enabled: false}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, nil, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, nil, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1264,7 +1264,7 @@ func TestSourceDecomposition_PageImageFactHasSynthesizedURL(t *testing.T) {
 		MaxImageBytes:      5 * 1024 * 1024,
 		MaxImagesPerSource: 20,
 	}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), stor, nil)
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, stubFactExtractor{}, imgExtractor, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), stor, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -1436,7 +1436,7 @@ func TestSourceDecomposition_ParallelChunks(t *testing.T) {
 
 	factCfg := config.DecompositionFactConfig{Provider: "stub", Model: "stub", Concurrency: 4}
 	registry := testutil.NewForTestPool(env.DB)
-	worker := tasks.NewSourceDecompositionWorker(multiChunker{chunkSize: chunkSize}, indexAwareFactExtractor{}, nil, factCfg, config.DecompositionImageConfig{Enabled: false}, registry, store.New(env.DB), nil, nil)
+	worker := tasks.NewSourceDecompositionWorker(multiChunker{chunkSize: chunkSize}, indexAwareFactExtractor{}, nil, factCfg, config.DecompositionImageConfig{Enabled: false}, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

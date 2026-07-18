@@ -44,6 +44,7 @@ type OktRepositoryConcept struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	SummarizingAt    pgtype.Timestamptz `json:"summarizing_at"`
 	AliasesRefinedAt pgtype.Timestamptz `json:"aliases_refined_at"`
+	PromptsetHash    *string            `json:"promptset_hash"`
 }
 
 type OktRepositoryConceptAlias struct {
@@ -109,6 +110,7 @@ type OktRepositoryFact struct {
 	SearchTsv     interface{}        `json:"search_tsv"`
 	ImageUrl      *string            `json:"image_url"`
 	FactKind      string             `json:"fact_kind"`
+	PromptsetHash *string            `json:"promptset_hash"`
 }
 
 type OktRepositoryFactCandidate struct {
@@ -118,9 +120,10 @@ type OktRepositoryFactCandidate struct {
 }
 
 type OktRepositoryFactConcept struct {
-	FactID      pgtype.UUID        `json:"fact_id"`
-	ConceptID   pgtype.UUID        `json:"concept_id"`
-	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
+	FactID        pgtype.UUID        `json:"fact_id"`
+	ConceptID     pgtype.UUID        `json:"concept_id"`
+	FirstSeenAt   pgtype.Timestamptz `json:"first_seen_at"`
+	PromptsetHash *string            `json:"promptset_hash"`
 }
 
 type OktRepositoryFactConceptSkip struct {
@@ -135,6 +138,7 @@ type OktRepositoryFactReference struct {
 	SentenceIndex int32              `json:"sentence_index"`
 	ChunkIndex    int32              `json:"chunk_index"`
 	FirstSeenAt   pgtype.Timestamptz `json:"first_seen_at"`
+	PromptsetHash *string            `json:"promptset_hash"`
 }
 
 type OktRepositoryFactSource struct {
@@ -296,6 +300,22 @@ type OktSystemOktWorkerHeartbeat struct {
 	LastHeartbeat pgtype.Timestamptz `json:"last_heartbeat"`
 }
 
+type OktSystemPromptset struct {
+	Hash                string             `json:"hash"`
+	Name                string             `json:"name"`
+	OwnerID             pgtype.UUID        `json:"owner_id"`
+	FactExtraction      string             `json:"fact_extraction"`
+	ImageFactExtraction string             `json:"image_fact_extraction"`
+	ConceptExtraction   string             `json:"concept_extraction"`
+	Refinement          string             `json:"refinement"`
+	Synthesis           string             `json:"synthesis"`
+	ImagePicker         string             `json:"image_picker"`
+	Summarization       string             `json:"summarization"`
+	Posture             string             `json:"posture"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
 type OktSystemRepositoryContext struct {
 	RepositoryID pgtype.UUID        `json:"repository_id"`
 	Context      string             `json:"context"`
@@ -336,23 +356,26 @@ type OktSystemRepositoryReportSetting struct {
 }
 
 type Repository struct {
-	ID                    pgtype.UUID        `json:"id"`
-	Name                  string             `json:"name"`
-	Slug                  string             `json:"slug"`
-	Description           string             `json:"description"`
-	OwnerID               pgtype.UUID        `json:"owner_id"`
-	DatabaseName          string             `json:"database_name"`
-	Tier                  string             `json:"tier"`
-	CreatedAt             pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
-	RegistryID            *string            `json:"registry_id"`
-	AutoContribute        bool               `json:"auto_contribute"`
-	RegistryEnabled       bool               `json:"registry_enabled"`
-	UnmappedContextPolicy string             `json:"unmapped_context_policy"`
-	CatchAllContext       *string            `json:"catch_all_context"`
-	AllowedModels         []string           `json:"allowed_models"`
-	RegistryPushLevel     string             `json:"registry_push_level"`
-	RegistryPullLevel     string             `json:"registry_pull_level"`
+	ID                      pgtype.UUID        `json:"id"`
+	Name                    string             `json:"name"`
+	Slug                    string             `json:"slug"`
+	Description             string             `json:"description"`
+	OwnerID                 pgtype.UUID        `json:"owner_id"`
+	DatabaseName            string             `json:"database_name"`
+	Tier                    string             `json:"tier"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	RegistryID              *string            `json:"registry_id"`
+	AutoContribute          bool               `json:"auto_contribute"`
+	RegistryEnabled         bool               `json:"registry_enabled"`
+	UnmappedContextPolicy   string             `json:"unmapped_context_policy"`
+	CatchAllContext         *string            `json:"catch_all_context"`
+	AllowedModels           []string           `json:"allowed_models"`
+	RegistryPushLevel       string             `json:"registry_push_level"`
+	RegistryPullLevel       string             `json:"registry_pull_level"`
+	ActivePromptsetHash     *string            `json:"active_promptset_hash"`
+	AcceptedPromptsetHashes []string           `json:"accepted_promptset_hashes"`
+	AllowedContentTypes     []string           `json:"allowed_content_types"`
 }
 
 type Session struct {

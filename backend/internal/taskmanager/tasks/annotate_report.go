@@ -72,14 +72,15 @@ type AnnotateReportResult struct {
 type AnnotateReportWorker struct {
 	river.WorkerDefaults[AnnotateReportArgs]
 
-	embeddingProvider ai.EmbeddingProvider
-	embeddingCfg      config.EmbeddingConfig
-	reportsCfg        config.ReportsConfig
-	postureClassifier posture.Classifier
-	qdrant            *qdrantstore.Store
-	registry          *dbpool.Registry
-	systemQueries     *store.Queries
-	modelResolver     *ModelResolver
+	embeddingProvider  ai.EmbeddingProvider
+	embeddingCfg       config.EmbeddingConfig
+	reportsCfg         config.ReportsConfig
+	postureClassifier  posture.Classifier
+	qdrant             *qdrantstore.Store
+	registry           *dbpool.Registry
+	systemQueries      *store.Queries
+	modelResolver      *ModelResolver
+	promptsetResolver  *PromptsetResolver
 }
 
 func NewAnnotateReportWorker(
@@ -91,6 +92,7 @@ func NewAnnotateReportWorker(
 	registry *dbpool.Registry,
 	systemQueries *store.Queries,
 	modelResolver *ModelResolver,
+	promptsetResolver *PromptsetResolver,
 ) *AnnotateReportWorker {
 	return &AnnotateReportWorker{
 		embeddingProvider: embeddingProvider,
@@ -101,6 +103,7 @@ func NewAnnotateReportWorker(
 		registry:          registry,
 		systemQueries:     systemQueries,
 		modelResolver:     modelResolver,
+		promptsetResolver: promptsetResolver,
 	}
 }
 
@@ -167,11 +170,28 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 	// When the resolver returns a provider, use its ModelID for the
 	// classifier call (overriding the global default model). The
 	// classifier itself is still the global posture.Classifier
-	// instance (or nil); only the model id is overridden here.
+	// instance (or nil); only the model id is overridden here. The
+	// classifier's promptset is swapped to the repo's effective
+	// philosophy via WithPromptset so the posture phase runs under
+	// the same philosophy as the facts it is classifying.
 	var postureModelOverride string
+	postureClassifier := w.postureClassifier
+	if w.promptsetResolver != nil {
+		ps := w.promptsetResolver.Effective(ctx, repoID)
+		w.promptsetResolver.LogEffective(ctx, repoID, "annotate_report")
+		if c, ok := postureClassifier.(*posture.AIClassifier); ok {
+			postureClassifier = c.WithPromptset(ps)
+		}
+	}
 	if w.modelResolver != nil {
 		if r := w.modelResolver.Resolve(ctx, repoID, TaskKindReportAnnotation); r.Provider != nil {
 			postureModelOverride = r.ModelID
+			if w.promptsetResolver != nil {
+				ps := w.promptsetResolver.Effective(ctx, repoID)
+				postureClassifier = posture.NewAIClassifier(r.Provider, r.ModelID).WithPromptset(ps)
+			} else {
+				postureClassifier = posture.NewAIClassifier(r.Provider, r.ModelID)
+			}
 		}
 	}
 
@@ -272,7 +292,7 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 	// (c) a classifier instance is wired and configured with a
 	// model + provider. Otherwise we fall back to keep-all with
 	// posture = NULL.
-	classifierActive := postureEnabled && w.postureClassifier != nil && w.postureClassifier.Configured()
+	classifierActive := postureEnabled && postureClassifier != nil && postureClassifier.Configured()
 
 	// Persist annotations. The two branches share the same insert
 	// call; the difference is whether posture is set and whether
@@ -346,7 +366,7 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 			maxConc := w.reportsCfg.PostureClassifier.MaxConcurrentOr(4)
 			maxTokens := w.reportsCfg.PostureClassifier.MaxTokensOr(800)
 
-			classifications, dropCount, err := w.classifyBatches(ctx, pool.Pool, batches, postureModel, postureModelOverride, maxConc, maxTokens, jobIDStr, args)
+			classifications, dropCount, err := w.classifyBatches(ctx, pool.Pool, batches, postureModel, postureModelOverride, maxConc, maxTokens, jobIDStr, args, postureClassifier)
 			if err != nil {
 				log.Printf("annotate_report: posture classifier failed; falling back to keep-all for report %s: %v", args.ReportID, err)
 				classifierActive = false
@@ -486,6 +506,7 @@ func (w *AnnotateReportWorker) classifyBatches(
 	maxConc, maxTokens int,
 	jobIDStr string,
 	args AnnotateReportArgs,
+	postureClassifier posture.Classifier,
 ) ([]posture.Classification, int, error) {
 	totalPairs := 0
 	for _, b := range batches {
@@ -513,7 +534,7 @@ func (w *AnnotateReportWorker) classifyBatches(
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			res, err := w.postureClassifier.Classify(ctx, db, posture.ClassifyRequest{
+			res, err := postureClassifier.Classify(ctx, db, posture.ClassifyRequest{
 				Sentences: []posture.SentenceFacts{b},
 				Model:     modelOverride,
 				MaxTokens: maxTokens,

@@ -108,7 +108,7 @@ func newSummarizeTestEnv(t *testing.T, cfg config.SummarizationConfig) *summariz
 	stub := &stubSummarizer{}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewSummarizeConceptsWorker(stub, cfg, registry, systemQueries, false, nil)
+	worker := tasks.NewSummarizeConceptsWorker(stub, cfg, registry, systemQueries, false, nil, nil)
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
 	river.AddWorker(workers, worker)
@@ -203,7 +203,7 @@ func TestSummarizeConcepts_NotConfiguredIsNoop(t *testing.T) {
 	_, _, repoID := createRepositoryWithDB(t, bootstrapSysAdmin(t, env, "nosum@example.com"), "NoSum", "no-sum", "desc", "")
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewSummarizeConceptsWorker(nil, config.SummarizationConfig{Enabled: false}, registry, systemQueries, false, nil)
+	worker := tasks.NewSummarizeConceptsWorker(nil, config.SummarizationConfig{Enabled: false}, registry, systemQueries, false, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -627,7 +627,7 @@ func TestSummarizeConcepts_ExtractConceptsFanOuts(t *testing.T) {
 	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil, nil)
 	worker.SetSummarizationEnabled(true)
 
 	// A no-op summarize worker is registered alongside the extract
@@ -637,7 +637,7 @@ func TestSummarizeConcepts_ExtractConceptsFanOuts(t *testing.T) {
 	// not registered" and the fan-out assertion can't see the row.
 	summarizeWorker := tasks.NewSummarizeConceptsWorker(
 		&stubSummarizer{}, config.SummarizationConfig{Enabled: true, BatchSize: 20, Model: "stub"},
-		registry, systemQueries, false, nil,
+		registry, systemQueries, false, nil, nil,
 	)
 
 	driver := riverpgxv5.New(env.DB)

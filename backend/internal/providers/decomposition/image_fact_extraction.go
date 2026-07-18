@@ -7,73 +7,10 @@ import (
 	"strings"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
-// imageFactExtractionPrompt is the system prompt for the multimodal
-// image fact extractor. It is deliberately fact-oriented rather than
-// descriptive: the goal is to produce atomic, self-contained facts
-// that the image conveys and that are relevant to the source topic,
-// NOT generic image captions ("This image shows…"). The extracted
-// facts flow through the same embedding + dedup pipeline as text
-// facts, so they must be semantically comparable to text facts.
-//
-// The prompt mirrors the structure of the text fact-extraction
-// prompt (self-containedness rules, what to skip) but is scoped to
-// images. The model receives the source URL, source title, image alt
-// text, and the image bytes as a multimodal user message; the
-// returned strings become facts.text, and the worker sets
-// facts.image_url separately from the image row's URL.
-const imageFactExtractionPrompt = `You are a fact extraction and attribution system. Given an image from a knowledge source, extract ALL knowledge worth preserving.
-
-## Source context
-- Source URL: %s
-- Source title: %s
-- Image alt text (provided by the source page, may be empty): %s
-
-## What to extract
-
-Extract ONLY atomic, self-contained facts that the image conveys AND that are relevant to the source topic above. Each fact should be 1-4 sentences and verifiable from the image alone. Prefer fewer, more comprehensive facts over several short overlapping ones: when multiple candidate facts share the same subject or context, emit ONE descriptive fact that bundles them rather than one fact per datum.
-
-Extract:
-- **Specific data points from charts, graphs, tables, and diagrams** — with units, axis labels, time periods, and the named entity the data is about. "Revenue grew" is useless; "Acme Corp revenue grew 42% from 2020 to 2023 per the bar chart" is a fact.
-- **Named entities depicted** — people, organisations, places, products, species, devices, artworks. Include the identifying label, caption, or legend text that names them.
-- **Quantitative measurements shown** — dimensions, counts, percentages, rates, with units and the measured subject.
-- **Procedure steps illustrated** — ordered steps in a workflow, method, assembly, or process. Preserve order; name each step.
-- **Relationships or flows** — architecture diagrams, flowcharts, family trees, taxonomies. Name the nodes and the labelled edges.
-- **Quoted text rendered in the image** — verbatim, with attribution if the image provides it. Code blocks, equations, and labelled formulas count here; name what the formula represents before the expression.
-- **Definitions or classifications illustrated** — a taxonomy table, a named region on a map, a labelled cross-section. Name both the whole and the part.
-- **Illustrative / descriptive facts** — when the image is an example, illustration, or photograph OF a named topical subject, capture that as a fact so the image can later be grouped under that concept. State what the image depicts AND what it is an example of, naming the subject explicitly. "This image illustrates the process of photosynthesis in a green plant" and "The image depicts the frond (leaf) of a palm tree, an example of pinnate compound leaf structure" are valid facts. "This image shows a plant" is not (no named subject). Include the source-topic framing when relevant: "The image is an anatomical illustration of the human heart used to explain inflammation of the myocardium."
-- **Consolidation rule** — when several candidate facts concern the same subject, entity, chart, diagram, or process, merge them into a single comprehensive fact instead of emitting one fact per datum. Prefer a larger descriptive fact over multiple smaller overlapping facts, as long as every datum is verifiable from the image and the fact stays self-contained.
-  - Bad: ["Acme Corp revenue in 2020 was $10M per the bar chart", "Acme Corp revenue in 2023 was $14.2M per the bar chart", "Acme Corp revenue grew 42% from 2020 to 2023 per the bar chart"]
-  - Good: ["Acme Corp revenue grew 42% from $10M in 2020 to $14.2M in 2023 per the bar chart"]
-
-## CRITICAL: Every fact must be self-contained
-
-Each fact will be stored in a knowledge graph and read WITHOUT the original image or source. A reader seeing ONLY the fact text must understand it.
-
-- Resolve all pronouns and demonstratives ("this", "that", "it", "they") to the explicit entity the image names. The source title / alt text tell you the topic; substitute the actual name.
-- Name the subject. Never write "It reached 50%" — write "Acme Corp revenue reached 50% in 2023 according to the bar chart". Never write "The diagram shows the pipeline" — write "The diagram shows the data ingestion pipeline of the Acme Analytics platform". Never write "The image illustrates the process" — write "The image illustrates the process of photosynthesis in a green plant".
-- Include the topic and context. If a fact describes a relationship, name both endpoints. "Latency dropped 40%" is useless — "The Acme Analytics recommendation pipeline p99 latency dropped 40% after the 2023 cache redesign" is a fact.
-- Name specific events, places, methods, and entities the image provides. If the image does not name it, the fact cannot reference it.
-- Fold the image's own attribution (chart source, figure caption, study citation) into the fact text so the fact carries its provenance.
-- For illustrative / descriptive facts, name BOTH what the image depicts AND what concept it is an example of. "The image depicts the frond of a palm tree, an example of pinnate compound leaf structure" groups under both "palm tree" and "pinnate compound leaf". "The image illustrates photosynthesis" groups under "photosynthesis". A fact that names no concept ("a picture of a leaf") is worthless.
-
-## What to SKIP — do NOT extract
-
-- **Generic image descriptions** — "This image shows…", "A photo of…", "The image depicts…", "This is a chart of…". Never *only* describe the image; extract what the image SAYS. An illustrative fact that names the depicted subject ("The image illustrates the frond of a palm tree") is allowed; a bare caption ("A photo of a plant") is not.
-- **Aesthetic, quality, or composition observations** — "a colourful diagram", "a high-resolution photo", "centered composition". These are not knowledge.
-- **Layout, navigation, or UI chrome** — axis titles alone, legends alone, page numbers, watermarks, captions that name the figure number ("Figure 3") without content.
-- **Brand logos, decorative elements, stock photos** — unless the logo or decoration itself carries topical signal (e.g. a labelled diagram where the brand IS the subject).
-- **Decorative or non-topical images** — if the image is purely ornamental (a hero photo, a background pattern, a divider) and carries no signal about the source topic, return []. BUT if the image depicts, illustrates, or exemplifies a named topical subject (a plant part, an organ, a chemical structure, a piece of hardware, a step in a process), do NOT discard it — extract at least one illustrative fact naming the subject (see "Illustrative / descriptive facts" above).
-- **Restating the alt text** — the alt text is a hint, not a fact. Only extract what the image actually conveys; do not echo the alt text back unless it is itself a verifiable fact about the topic.
-- **Incomplete fragments** — bare noun phrases, prepositional phrases, labels without assertions.
-
-**Rule of thumb**: if a reader seeing the fact without the image would ask "which one?", "what is this about?", or "where?" — the fact is not self-contained. Resolve it using the image's labels and the source context, or skip it. For an illustrative image, the reader must at least know which concept the image exemplifies — "this image illustrates photosynthesis" is acceptable; "this image illustrates a process" is not.
-
-## Response format
-
-Respond with a JSON array of strings, like: ["fact one", "fact two"]. Prefer fewer, richer facts over many narrow ones; do not emit a fact whose information is fully contained in another fact you are also emitting. If no facts can be extracted (the image is decorative or carries no topical signal), return []. Respond with ONLY the JSON array, no other text.`
 
 // ImageFetcher is the contract the image fact extractor depends on
 // for resolving inline image URLs to bytes. It is a subset of
@@ -135,6 +72,10 @@ type AIImageFactExtractionProvider struct {
 	Model         string
 	ImageFetcher  ImageFetcher
 	MaxImageBytes int64
+	// promptset is the prompt set this provider uses for the
+	// image-fact-extraction phase. Defaults to promptset.Default; a
+	// worker swaps in the per-repo philosophy via WithPromptset.
+	promptset promptset.Promptset
 }
 
 // NewAIImageFactExtractionProvider constructs an AI-backed image
@@ -153,10 +94,21 @@ func NewAIImageFactExtractionProvider(
 	}
 	return &AIImageFactExtractionProvider{
 		AIProvider:    aiProvider,
-		Model:         model,
+		Model:          model,
 		ImageFetcher:  imageFetcher,
 		MaxImageBytes: maxImageBytes,
+		promptset:     promptset.Default,
 	}
+}
+
+// WithPromptset returns a copy of the provider that uses the given
+// promptset's ImageFactExtraction phase. Preserves the ImageFetcher
+// and MaxImageBytes from the receiver so a per-repo swap keeps the
+// same fetch config.
+func (p *AIImageFactExtractionProvider) WithPromptset(ps promptset.Promptset) *AIImageFactExtractionProvider {
+	clone := *p
+	clone.promptset = ps
+	return &clone
 }
 
 // Describe returns the static metadata for the AI-backed image fact
@@ -218,7 +170,7 @@ func (p *AIImageFactExtractionProvider) ExtractImageFacts(ctx context.Context, d
 	// text. We use strings.Replace (not fmt.Sprintf) because the
 	// prompt body contains literal '%' characters (e.g. "42%",
 	// "50%") that Sprintf would try to interpret as format verbs.
-	prompt := buildImageFactExtractionPrompt(req.SourceURL, req.SourceTitle, req.ImageAlt, req.SourceHasText)
+	prompt := buildImageFactExtractionPrompt(req.SourceURL, req.SourceTitle, req.ImageAlt, req.SourceHasText, p.promptset)
 
 	var taskID *string
 	if req.Attribution.TaskID != "" {
@@ -296,8 +248,8 @@ The text body of this source was already processed by a separate text-extraction
 // focus-figures scope note. Extracted as a pure function so it can
 // be unit-tested without constructing an AIImageFactExtractionProvider
 // or stubbing the AI client.
-func buildImageFactExtractionPrompt(sourceURL, sourceTitle, imageAlt string, sourceHasText bool) string {
-	prompt := imageFactExtractionPrompt
+func buildImageFactExtractionPrompt(sourceURL, sourceTitle, imageAlt string, sourceHasText bool, ps promptset.Promptset) string {
+	prompt := ps.ImageFactExtraction
 	prompt = strings.Replace(prompt, "%s", defaultIfEmpty(sourceURL, "(unknown)"), 1)
 	prompt = strings.Replace(prompt, "%s", defaultIfEmpty(sourceTitle, "(unknown)"), 1)
 	prompt = strings.Replace(prompt, "%s", defaultIfEmpty(imageAlt, "(none)"), 1)

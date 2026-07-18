@@ -33,6 +33,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/summarization"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/synthesis"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 	"github.com/riverqueue/river"
@@ -151,6 +152,7 @@ func New(
 	synthesizer synthesis.SynthesisProvider,
 	postureClassifier posture.Classifier,
 	modelResolver *tasks.ModelResolver,
+	promptsetResolver *promptset.Resolver,
 ) (*Manager, error) {
 	pool := taskPool.Pool
 
@@ -209,9 +211,18 @@ func New(
 
 	workers := river.NewWorkers()
 	registryClients := registryclient.NewClientMap(cfg.Providers)
+	registryServices := registryclient.NewServiceMap(registryClients)
+	registryCacheProvider := registryclient.NewRegistryCacheProvider(registryServices)
 	reconciler := tasks.NewCacheReconciler(cfg.Providers.Embedding)
-	river.AddWorker(workers, tasks.NewRetrieveSourceWorker(searchProviders, fetchStrategy, registry, systemQueries, storageBackend, registryClients, qdrantStore, reconciler))
-	river.AddWorker(workers, tasks.NewSourceDecompositionWorker(chunkingProvider, factExtractor, imageExtractor, cfg.Providers.Decomposition.FactExtraction, cfg.Providers.Decomposition.ImageExtraction, registry, systemQueries, storageBackend, modelResolver))
+	// Build the per-repo promptset resolver from the chained
+	// promptset.Resolver (built-in + DB providers). The resolver is
+	// nil-safe: a nil promptsetResolver in a worker falls back to
+	// promptset.Default, so a deployment that hasn't wired the
+	// system pool still runs (every repo inherits the built-in
+	// philosophy).
+	psResolver := tasks.NewPromptsetResolver(cfg, systemQueries, promptsetResolver)
+	river.AddWorker(workers, tasks.NewRetrieveSourceWorker(searchProviders, fetchStrategy, registry, systemQueries, storageBackend, registryClients, registryCacheProvider, qdrantStore, reconciler, psResolver))
+	river.AddWorker(workers, tasks.NewSourceDecompositionWorker(chunkingProvider, factExtractor, imageExtractor, cfg.Providers.Decomposition.FactExtraction, cfg.Providers.Decomposition.ImageExtraction, registry, systemQueries, storageBackend, modelResolver, psResolver))
 	// Embedding + dedup + concept-extraction + cleanup chain. Each is
 	// a no-op when its dependency (embeddingProvider / qdrantStore /
 	// conceptExtractor) is nil, so a deployment that hasn't wired
@@ -219,7 +230,7 @@ func New(
 	// "skipped" on the job row and moves on.
 	river.AddWorker(workers, tasks.NewEmbedFactsWorker(embeddingProvider, cfg.Providers.Embedding, qdrantStore, registry, systemQueries))
 	river.AddWorker(workers, tasks.NewDeduplicateFactsWorker(cfg.Providers.Dedup, qdrantStore, registry, systemQueries))
-	extractWorker := tasks.NewExtractConceptsWorker(conceptExtractor, cfg.Providers.Decomposition.ConceptExtraction, registry, systemQueries, modelResolver)
+	extractWorker := tasks.NewExtractConceptsWorker(conceptExtractor, cfg.Providers.Decomposition.ConceptExtraction, registry, systemQueries, modelResolver, psResolver)
 	// Tell the extract_concepts worker whether to fan out
 	// summarize_concepts jobs. Gated on the summarization config so
 	// a deployment that hasn't enabled summarization doesn't enqueue
@@ -239,7 +250,7 @@ func New(
 	// unused on that path; nil-safe when Qdrant/embeddings are off.
 	extractWorker.SetEmbeddingDeps(embeddingProvider, cfg.Providers.Embedding, qdrantStore)
 	river.AddWorker(workers, extractWorker)
-	river.AddWorker(workers, tasks.NewRefineConceptsWorker(refiner, cfg.Providers.Refinement, registry, systemQueries, summarizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver, embeddingProvider, cfg.Providers.Embedding, qdrantStore))
+	river.AddWorker(workers, tasks.NewRefineConceptsWorker(refiner, cfg.Providers.Refinement, registry, systemQueries, summarizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver, psResolver, embeddingProvider, cfg.Providers.Embedding, qdrantStore))
 	river.AddWorker(workers, tasks.NewEmbedConceptsWorker(embeddingProvider, cfg.Providers.Embedding, qdrantStore, registry, systemQueries))
 	river.AddWorker(workers, tasks.NewCleanupFactsWorker(qdrantStore, registry, systemQueries))
 	// Contribute_source is chained from cleanup_facts (source-scoped
@@ -247,7 +258,7 @@ func New(
 	// embeddings) to the knowledge registry. A no-op when the registry
 	// client is disabled (no URL configured), which is the default for
 	// standalone OKT installations.
-	river.AddWorker(workers, tasks.NewContributeSourceWorker(registryClients, qdrantStore, registry, systemQueries, modelResolver, cfg.Providers.Decomposition.FactExtraction.Model))
+	river.AddWorker(workers, tasks.NewContributeSourceWorker(registryClients, qdrantStore, registry, systemQueries, modelResolver, psResolver, cfg.Providers.Decomposition.FactExtraction.Model))
 	// Contribute_all is the batch variant: enqueues a contribute_source
 	// job for every processed source in the repo. Registered on the same
 	// queue so workers are consumed from a shared pool.
@@ -261,19 +272,19 @@ func New(
 	// that doesn't already exist locally, then delta-checks existing
 	// local sources for new decompositions. A no-op when the registry
 	// client is disabled.
-	river.AddWorker(workers, tasks.NewPullAllFromRegistryWorker(registryClients, registry, systemQueries, qdrantStore, reconciler, pullRemoteBatchDedup))
+	river.AddWorker(workers, tasks.NewPullAllFromRegistryWorker(registryClients, registryCacheProvider, registry, systemQueries, qdrantStore, reconciler, pullRemoteBatchDedup, psResolver))
 	// Pull_remote_batch pulls a list of remote registry source IDs
 	// (the "Pull page" / "Pull all results" buttons on the Remote
 	// page). It reuses handler.PullOneRemoteSource + the inbound
 	// context mapper so bulk pulls honor the repo's unmapped-context
 	// policy.
-	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registry, systemQueries, pullRemoteBatchDedup))
+	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup))
 	river.AddWorker(workers, tasks.NewFactCatchupWorker(cfg.Providers.Dedup, qdrantStore, registry, systemQueries))
 	// Concept summarization is a sibling of embed_concepts (both
 	// fan out from extract_concepts). It is a no-op when summarizer
 	// is nil or summarization.enabled is false, so a deployment that
 	// hasn't wired a summarization model still boots.
-	river.AddWorker(workers, tasks.NewSummarizeConceptsWorker(summarizer, cfg.Providers.Summarization, registry, systemQueries, synthesizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver))
+	river.AddWorker(workers, tasks.NewSummarizeConceptsWorker(summarizer, cfg.Providers.Summarization, registry, systemQueries, synthesizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver, psResolver))
 
 	// Concept synthesis is chained from summarize_concepts: every
 	// time a slice is written/updated, summarize_concepts enqueues one
@@ -283,7 +294,7 @@ func New(
 	// and upserts concept_syntheses. It is a no-op when synthesizer is
 	// nil or synthesis.enabled is false, so a deployment that hasn't
 	// wired a synthesis model still boots.
-	river.AddWorker(workers, tasks.NewSynthesizeConceptsWorker(synthesizer, cfg.Providers.Synthesis, registry, systemQueries, modelResolver))
+	river.AddWorker(workers, tasks.NewSynthesizeConceptsWorker(synthesizer, cfg.Providers.Synthesis, registry, systemQueries, modelResolver, psResolver))
 	// Concept-relations matview refresh. Sibling of
 	// embed_concepts/summarize_concepts (also fanned out from
 	// extract_concepts). Refreshes the okt_repository.concept_relations
@@ -306,7 +317,7 @@ func New(
 	// provider / qdrant is nil or reports.enabled is false, so a
 	// deployment that hasn't wired the embedding pipeline still
 	// boots — reports stay in `pending` until annotation is enabled.
-	river.AddWorker(workers, tasks.NewAnnotateReportWorker(embeddingProvider, cfg.Providers.Embedding, cfg.Providers.Reports, postureClassifier, qdrantStore, registry, systemQueries, modelResolver))
+	river.AddWorker(workers, tasks.NewAnnotateReportWorker(embeddingProvider, cfg.Providers.Embedding, cfg.Providers.Reports, postureClassifier, qdrantStore, registry, systemQueries, modelResolver, psResolver))
 
 	queueConfigs := buildQueueConfigs(cfg)
 

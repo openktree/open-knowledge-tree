@@ -208,6 +208,13 @@ type RepositoryPreset struct {
 	Contexts    []string `mapstructure:"contexts"`
 	CustomContexts            []string            `mapstructure:"custom_contexts"`
 	CustomContextDescriptions map[string]string   `mapstructure:"custom_context_descriptions"`
+	// AllowedContentTypes is the per-repo content-type gate a preset
+	// seeds (migration 0049). nil/absent = allow all (the default);
+	// a non-empty array restricts to the listed kinds ("document",
+	// "url", "doi"). The "scientific" preset ships ["doi"] so a
+	// scientific repo only accepts DOI-identified sources out of the
+	// box. An admin can change it after creation via the settings UI.
+	AllowedContentTypes []string `mapstructure:"allowed_content_types"`
 }
 
 // PresetByID returns the preset with the given id, or nil when no
@@ -234,20 +241,29 @@ func (c *Config) DefaultPreset() *RepositoryPreset {
 }
 
 type ProvidersConfig struct {
-	Search        SearchProvidersConfig        `mapstructure:"search"`
-	Resolution    ResolutionProvidersConfig    `mapstructure:"resolution"`
-	AI            AIProvidersConfig            `mapstructure:"ai"`
-	Decomposition DecompositionProvidersConfig `mapstructure:"decomposition"`
-	Embedding     EmbeddingConfig              `mapstructure:"embedding"`
-	Qdrant        QdrantConfig                 `mapstructure:"qdrant"`
-	Dedup         DedupConfig                  `mapstructure:"dedup"`
-	Storage       StorageConfig                `mapstructure:"storage"`
-	Summarization SummarizationConfig          `mapstructure:"summarization"`
-	Refinement    RefinementConfig              `mapstructure:"refinement"`
-	Synthesis     SynthesisConfig              `mapstructure:"synthesis"`
-	Reports       ReportsConfig                `mapstructure:"reports"`
-	Registry      RegistryConfig               `mapstructure:"registry"`
-	Registries    []RegistryConfig             `mapstructure:"registries"`
+	Search            SearchProvidersConfig        `mapstructure:"search"`
+	Resolution        ResolutionProvidersConfig    `mapstructure:"resolution"`
+	AI                AIProvidersConfig            `mapstructure:"ai"`
+	Decomposition      DecompositionProvidersConfig `mapstructure:"decomposition"`
+	Embedding         EmbeddingConfig              `mapstructure:"embedding"`
+	Qdrant            QdrantConfig                 `mapstructure:"qdrant"`
+	Dedup             DedupConfig                  `mapstructure:"dedup"`
+	Storage           StorageConfig                `mapstructure:"storage"`
+	Summarization     SummarizationConfig          `mapstructure:"summarization"`
+	Refinement        RefinementConfig              `mapstructure:"refinement"`
+	Synthesis         SynthesisConfig              `mapstructure:"synthesis"`
+	Reports           ReportsConfig                `mapstructure:"reports"`
+	Registry          RegistryConfig               `mapstructure:"registry"`
+	Registries        []RegistryConfig             `mapstructure:"registries"`
+	// PromptsetDefault is the global default promptset hash a
+	// repository inherits when its active_promptset_hash column is
+	// NULL. An empty value here means "use the built-in
+	// promptset.Default.Hash" (computed at app init from the
+	// canonical prompt strings). A non-empty value must be a hash
+	// the promptset resolver knows (built-in or a row in
+	// okt_system.promptsets). Set via providers.promptset_default
+	// in config.default.yaml.
+	PromptsetDefault  string                       `mapstructure:"promptset_default"`
 }
 
 // RegistryConfig configures the connection to the Knowledge Registry
@@ -961,6 +977,15 @@ type SearchProvidersConfig struct {
 	Provider string                 `mapstructure:"provider"`
 	Serper   SerperProviderConfig   `mapstructure:"serper"`
 	OpenAlex OpenAlexProviderConfig `mapstructure:"openalex"`
+	// Registry is the OKT Knowledge Registry search provider. It is
+	// the keyless default: a deployment with no SERPER_API_KEY and
+	// no OPENALEX_EMAIL still gets a working search provider so
+	// agents can discover sources other OKT instances have
+	// contributed. The provider queries the registry's
+	// GET /api/v1/sources?q= endpoint (free-text LIKE over
+	// title/url/doi). Per-page and timeout are capped by the
+	// registry package.
+	Registry SearchRegistryProviderConfig `mapstructure:"registry"`
 }
 
 type SerperProviderConfig struct {
@@ -969,6 +994,18 @@ type SerperProviderConfig struct {
 
 type OpenAlexProviderConfig struct {
 	Email string `mapstructure:"email"`
+}
+
+// SearchRegistryProviderConfig configures the registry search
+// provider. PerPage is the page size used when the caller doesn't
+// supply one (0 = the registry package default of 20); Timeout
+// caps each search call (0 = 15s, matching the Serper/OpenAlex
+// providers). The registry URL/auth comes from the existing
+// providers.registry / providers.registries config — this block
+// only tunes the search-side knobs.
+type SearchRegistryProviderConfig struct {
+	PerPage  int           `mapstructure:"per_page"`
+	Timeout  time.Duration `mapstructure:"timeout"`
 }
 
 type ResolutionProvidersConfig struct {

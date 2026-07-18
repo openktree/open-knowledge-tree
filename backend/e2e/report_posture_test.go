@@ -197,7 +197,7 @@ func TestAnnotateReportPostureClassifier(t *testing.T) {
 	}
 
 	// Build the annotate_report worker with the posture classifier.
-	annotateWorker := tasks.NewAnnotateReportWorker(embProvider, embCfg, reportsCfg, postureClassifier, qStore, registry, systemQueries, nil)
+	annotateWorker := tasks.NewAnnotateReportWorker(embProvider, embCfg, reportsCfg, postureClassifier, qStore, registry, systemQueries, nil, nil)
 	annotateWorkers := river.NewWorkers()
 	river.AddWorker(annotateWorkers, annotateWorker)
 	annotateCfg := &river.Config{Workers: annotateWorkers,
@@ -356,7 +356,7 @@ func TestAnnotateReportPostureFallback(t *testing.T) {
 	}
 
 	// annotate_report with NO classifier — falls back to keep-all.
-	annotateWorker := tasks.NewAnnotateReportWorker(embProvider, embCfg, reportsCfg, nil, qStore, registry, systemQueries, nil)
+	annotateWorker := tasks.NewAnnotateReportWorker(embProvider, embCfg, reportsCfg, nil, qStore, registry, systemQueries, nil, nil)
 	annotateWorkers := river.NewWorkers()
 	river.AddWorker(annotateWorkers, annotateWorker)
 	annotateCfg := &river.Config{Workers: annotateWorkers,

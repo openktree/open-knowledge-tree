@@ -14,6 +14,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
@@ -95,6 +96,7 @@ type ExtractConceptsWorker struct {
 	registry             *dbpool.Registry
 	systemQueries        *store.Queries
 	modelResolver        *ModelResolver
+	promptsetResolver    *PromptsetResolver
 	// embeddingProvider + qdrant + embeddingCfg power the per-fact
 	// embedding tie-break for the refinement-DISABLED direct-routing
 	// path (concepts.ResolveAliasMatchForFact). When refinement is
@@ -112,13 +114,15 @@ func NewExtractConceptsWorker(
 	registry *dbpool.Registry,
 	systemQueries *store.Queries,
 	modelResolver *ModelResolver,
+	promptsetResolver *PromptsetResolver,
 ) *ExtractConceptsWorker {
 	return &ExtractConceptsWorker{
-		conceptExtractor: conceptExtractor,
-		conceptCfg:       conceptCfg,
-		registry:         registry,
-		systemQueries:    systemQueries,
-		modelResolver:    modelResolver,
+		conceptExtractor:  conceptExtractor,
+		conceptCfg:        conceptCfg,
+		registry:          registry,
+		systemQueries:     systemQueries,
+		modelResolver:     modelResolver,
+		promptsetResolver: promptsetResolver,
 	}
 }
 
@@ -225,12 +229,32 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 	}
 	pool := w.registry.Get(dbName)
 
+	// Resolve the repo's effective promptset once at Work() start.
+	// The hash tags every concept + fact_concept link this job
+	// persists so downstream queries (synthesis, registry pull) can
+	// filter to a single promptset and decompositions from different
+	// promptsets do not mix.
+	var ps promptset.Promptset
+	var psHash string
+	if w.promptsetResolver != nil {
+		ps = w.promptsetResolver.Effective(ctx, repoID)
+		psHash = ps.Hash
+		w.promptsetResolver.LogEffective(ctx, repoID, "extract_concepts")
+	} else {
+		ps = promptset.Default
+		psHash = promptset.DefaultHash
+	}
+	psHashPtr := &psHash
+
 	// Resolve per-repo model overrides for concept extraction.
 	conceptExtractor := w.conceptExtractor
 	if w.modelResolver != nil {
 		if r := w.modelResolver.Resolve(ctx, repoID, TaskKindConceptExtraction); r.Provider != nil {
-			conceptExtractor = decomposition.NewAIConceptExtractionProvider(r.Provider, r.ModelID)
+			conceptExtractor = decomposition.NewAIConceptExtractionProvider(r.Provider, r.ModelID).WithPromptset(ps)
 		}
+	}
+	if ce, ok := conceptExtractor.(*decomposition.AIConceptExtractionProvider); ok {
+		conceptExtractor = ce.WithPromptset(ps)
 	}
 
 	if conceptExtractor == nil {
@@ -454,7 +478,7 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 			}
 			queries := store.New(tx)
 			for _, p := range plans {
-				if err := w.linkFactToConcept(writeCtx, tx, queries, repoID, fact.ID, p.c, &result); err != nil {
+				if err := w.linkFactToConcept(writeCtx, tx, queries, repoID, fact.ID, p.c, &result, psHashPtr); err != nil {
 					log.Printf("extract_concepts: linking fact %s to concept %q: %v", pgUUIDToString(fact.ID), p.c.Concept, err)
 					result.Errors++
 					continue
@@ -775,6 +799,7 @@ func (w *ExtractConceptsWorker) linkFactToConcept(
 	factID pgtype.UUID,
 	c decomposition.ExtractedConcept,
 	result *ExtractConceptsResult,
+	psHashPtr *string,
 ) error {
 	if c.Concept == "" || c.Context == "" {
 		return nil
@@ -792,8 +817,9 @@ func (w *ExtractConceptsWorker) linkFactToConcept(
 	if err == nil && resolved.ResolvedConceptID.Valid {
 		result.ConceptsMatched++
 		if _, err := queries.AddFactConcept(ctx, store.AddFactConceptParams{
-			FactID:    factID,
-			ConceptID: resolved.ResolvedConceptID,
+			FactID:        factID,
+			ConceptID:     resolved.ResolvedConceptID,
+			PromptsetHash: psHashPtr,
 		}); err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("add fact_concept (cache hit): %w", err)
@@ -816,11 +842,11 @@ func (w *ExtractConceptsWorker) linkFactToConcept(
 
 	// Refinement ENABLED: emit a candidate (no routing).
 	if w.refinementEnabled {
-		return w.emitCandidate(ctx, queries, repoID, factID, c, result)
+		return w.emitCandidate(ctx, queries, repoID, factID, c, result, psHashPtr)
 	}
 
 	// Refinement DISABLED: route directly via the shared helper.
-	return w.routeDirect(ctx, queries, repoID, factID, c, result)
+	return w.routeDirect(ctx, queries, repoID, factID, c, result, psHashPtr)
 }
 
 // emitCandidate creates (or reuses an unresolved) concept_candidate
@@ -834,6 +860,7 @@ func (w *ExtractConceptsWorker) emitCandidate(
 	factID pgtype.UUID,
 	c decomposition.ExtractedConcept,
 	result *ExtractConceptsResult,
+	psHashPtr *string,
 ) error {
 	candidate, err := queries.CreateCandidate(ctx, store.CreateCandidateParams{
 		RepositoryID: repoID,
@@ -864,7 +891,7 @@ func (w *ExtractConceptsWorker) emitCandidate(
 			if rerr == nil && resolved.ResolvedConceptID.Valid {
 				result.ConceptsMatched++
 				if _, lerr := queries.AddFactConcept(ctx, store.AddFactConceptParams{
-					FactID: factID, ConceptID: resolved.ResolvedConceptID,
+					FactID: factID, ConceptID: resolved.ResolvedConceptID, PromptsetHash: psHashPtr,
 				}); lerr != nil && !errors.Is(lerr, pgx.ErrNoRows) {
 					return fmt.Errorf("add fact_concept (race cache hit): %w", lerr)
 				}
@@ -901,14 +928,16 @@ func (w *ExtractConceptsWorker) routeDirect(
 	factID pgtype.UUID,
 	c decomposition.ExtractedConcept,
 	result *ExtractConceptsResult,
+	psHashPtr *string,
 ) error {
 	winner, ok := concepts.ResolveAliasMatchForFact(ctx, queries, w.qdrant, w.embeddingProvider, w.embeddingCfg.Model, repoID, c.Context, c.Concept, factID)
 	if ok {
 		// Match: link fact to the winning concept + merge seed aliases.
 		result.ConceptsMatched++
 		if _, err := queries.AddFactConcept(ctx, store.AddFactConceptParams{
-			FactID:    factID,
-			ConceptID: winner.ID,
+			FactID:        factID,
+			ConceptID:     winner.ID,
+			PromptsetHash: psHashPtr,
 		}); err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("add fact_concept (direct match): %w", err)
@@ -939,6 +968,7 @@ func (w *ExtractConceptsWorker) routeDirect(
 		RepositoryID:  repoID,
 		CanonicalName: c.Concept,
 		Context:       c.Context,
+		PromptsetHash: psHashPtr,
 	})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("create concept (direct miss): %w", err)
@@ -978,8 +1008,9 @@ func (w *ExtractConceptsWorker) routeDirect(
 	}
 
 	if _, err := queries.AddFactConcept(ctx, store.AddFactConceptParams{
-		FactID:    factID,
-		ConceptID: created.ID,
+		FactID:        factID,
+		ConceptID:     created.ID,
+		PromptsetHash: psHashPtr,
 	}); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("add fact_concept (direct miss): %w", err)

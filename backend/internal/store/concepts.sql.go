@@ -62,23 +62,33 @@ func (q *Queries) AddFactCandidate(ctx context.Context, arg AddFactCandidatePara
 }
 
 const addFactConcept = `-- name: AddFactConcept :one
-INSERT INTO okt_repository.fact_concepts (fact_id, concept_id)
-VALUES ($1, $2)
+INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, promptset_hash)
+VALUES ($1, $2, $3)
 ON CONFLICT (fact_id, concept_id) DO NOTHING
-RETURNING fact_id, concept_id, first_seen_at
+RETURNING fact_id, concept_id, first_seen_at, promptset_hash
 `
 
 type AddFactConceptParams struct {
-	FactID    pgtype.UUID `json:"fact_id"`
-	ConceptID pgtype.UUID `json:"concept_id"`
+	FactID        pgtype.UUID `json:"fact_id"`
+	ConceptID     pgtype.UUID `json:"concept_id"`
+	PromptsetHash *string     `json:"promptset_hash"`
 }
 
 // Idempotent junction link. ON CONFLICT DO NOTHING so a re-extract
 // pass that re-links the same (fact, concept) pair is a no-op.
+// promptset_hash tags the link with the philosophy that produced
+// the fact+concept pair so the junction stays queryable by
+// philosophy (a fact and a concept derived under different
+// promptsets must not be joined by a query that filters by hash).
 func (q *Queries) AddFactConcept(ctx context.Context, arg AddFactConceptParams) (OktRepositoryFactConcept, error) {
-	row := q.db.QueryRow(ctx, addFactConcept, arg.FactID, arg.ConceptID)
+	row := q.db.QueryRow(ctx, addFactConcept, arg.FactID, arg.ConceptID, arg.PromptsetHash)
 	var i OktRepositoryFactConcept
-	err := row.Scan(&i.FactID, &i.ConceptID, &i.FirstSeenAt)
+	err := row.Scan(
+		&i.FactID,
+		&i.ConceptID,
+		&i.FirstSeenAt,
+		&i.PromptsetHash,
+	)
 	return i, err
 }
 
@@ -286,10 +296,10 @@ func (q *Queries) CreateCandidate(ctx context.Context, arg CreateCandidateParams
 
 const createConcept = `-- name: CreateConcept :one
 
-INSERT INTO okt_repository.concepts (repository_id, canonical_name, context, description)
-VALUES ($1, $2, $3, $4)
+INSERT INTO okt_repository.concepts (repository_id, canonical_name, context, description, promptset_hash)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (repository_id, lower(canonical_name), lower(context)) DO NOTHING
-RETURNING id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at
+RETURNING id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at, promptset_hash
 `
 
 type CreateConceptParams struct {
@@ -297,6 +307,7 @@ type CreateConceptParams struct {
 	CanonicalName string      `json:"canonical_name"`
 	Context       string      `json:"context"`
 	Description   *string     `json:"description"`
+	PromptsetHash *string     `json:"promptset_hash"`
 }
 
 // concepts.sql — concept extraction Phase 1 queries.
@@ -312,12 +323,17 @@ type CreateConceptParams struct {
 // needs the id of the survivor. The conflict target matches the
 // uq_concepts_repo_name_context unique index on
 // (repository_id, lower(canonical_name), lower(context)).
+// promptset_hash tags the concept with the philosophy that produced
+// it so downstream queries (synthesis, registry pull) can filter to
+// a single promptset and decompositions from different promptsets do
+// not mix.
 func (q *Queries) CreateConcept(ctx context.Context, arg CreateConceptParams) (OktRepositoryConcept, error) {
 	row := q.db.QueryRow(ctx, createConcept,
 		arg.RepositoryID,
 		arg.CanonicalName,
 		arg.Context,
 		arg.Description,
+		arg.PromptsetHash,
 	)
 	var i OktRepositoryConcept
 	err := row.Scan(
@@ -331,6 +347,7 @@ func (q *Queries) CreateConcept(ctx context.Context, arg CreateConceptParams) (O
 		&i.CreatedAt,
 		&i.SummarizingAt,
 		&i.AliasesRefinedAt,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
@@ -413,7 +430,7 @@ func (q *Queries) DeleteFactCandidatesByCandidate(ctx context.Context, candidate
 }
 
 const findConceptByAlias = `-- name: FindConceptByAlias :one
-SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at
+SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at, c.promptset_hash
 FROM okt_repository.concepts c
 WHERE c.repository_id = $1
   AND lower(c.context) = lower($2)
@@ -461,12 +478,13 @@ func (q *Queries) FindConceptByAlias(ctx context.Context, arg FindConceptByAlias
 		&i.CreatedAt,
 		&i.SummarizingAt,
 		&i.AliasesRefinedAt,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
 
 const findConceptByCanonical = `-- name: FindConceptByCanonical :one
-SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at FROM okt_repository.concepts
+SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at, promptset_hash FROM okt_repository.concepts
 WHERE repository_id = $1
   AND lower(context) = lower($2)
   AND lower(canonical_name) = lower($3)
@@ -497,12 +515,13 @@ func (q *Queries) FindConceptByCanonical(ctx context.Context, arg FindConceptByC
 		&i.CreatedAt,
 		&i.SummarizingAt,
 		&i.AliasesRefinedAt,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
 
 const findConceptsByAlias = `-- name: FindConceptsByAlias :many
-SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at
+SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at, c.promptset_hash
 FROM okt_repository.concepts c
 WHERE c.repository_id = $1
   AND lower(c.context) = lower($2)
@@ -551,6 +570,7 @@ func (q *Queries) FindConceptsByAlias(ctx context.Context, arg FindConceptsByAli
 			&i.CreatedAt,
 			&i.SummarizingAt,
 			&i.AliasesRefinedAt,
+			&i.PromptsetHash,
 		); err != nil {
 			return nil, err
 		}
@@ -628,7 +648,7 @@ func (q *Queries) FindUnresolvedCandidate(ctx context.Context, arg FindUnresolve
 }
 
 const getConceptByID = `-- name: GetConceptByID :one
-SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at FROM okt_repository.concepts WHERE id = $1
+SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at, promptset_hash FROM okt_repository.concepts WHERE id = $1
 `
 
 func (q *Queries) GetConceptByID(ctx context.Context, id pgtype.UUID) (OktRepositoryConcept, error) {
@@ -645,12 +665,13 @@ func (q *Queries) GetConceptByID(ctx context.Context, id pgtype.UUID) (OktReposi
 		&i.CreatedAt,
 		&i.SummarizingAt,
 		&i.AliasesRefinedAt,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
 
 const getConceptByNameContext = `-- name: GetConceptByNameContext :one
-SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at FROM okt_repository.concepts
+SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at, promptset_hash FROM okt_repository.concepts
 WHERE repository_id = $1
   AND lower(canonical_name) = lower($2)
   AND lower(context) = lower($3)
@@ -683,6 +704,7 @@ func (q *Queries) GetConceptByNameContext(ctx context.Context, arg GetConceptByN
 		&i.CreatedAt,
 		&i.SummarizingAt,
 		&i.AliasesRefinedAt,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
@@ -944,7 +966,7 @@ func (q *Queries) ListConceptRelationsByConceptName(ctx context.Context, arg Lis
 }
 
 const listConceptsByContext = `-- name: ListConceptsByContext :many
-SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at FROM okt_repository.concepts
+SELECT id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at, promptset_hash FROM okt_repository.concepts
 WHERE repository_id = $1 AND lower(context) = lower($2)
 ORDER BY id
 `
@@ -978,6 +1000,7 @@ func (q *Queries) ListConceptsByContext(ctx context.Context, arg ListConceptsByC
 			&i.CreatedAt,
 			&i.SummarizingAt,
 			&i.AliasesRefinedAt,
+			&i.PromptsetHash,
 		); err != nil {
 			return nil, err
 		}
@@ -990,7 +1013,7 @@ func (q *Queries) ListConceptsByContext(ctx context.Context, arg ListConceptsByC
 }
 
 const listConceptsByFact = `-- name: ListConceptsByFact :many
-SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at
+SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at, c.promptset_hash
 FROM okt_repository.fact_concepts fc
 JOIN okt_repository.concepts c ON c.id = fc.concept_id
 WHERE fc.fact_id = $1
@@ -1019,6 +1042,7 @@ func (q *Queries) ListConceptsByFact(ctx context.Context, factID pgtype.UUID) ([
 			&i.CreatedAt,
 			&i.SummarizingAt,
 			&i.AliasesRefinedAt,
+			&i.PromptsetHash,
 		); err != nil {
 			return nil, err
 		}
@@ -1031,7 +1055,7 @@ func (q *Queries) ListConceptsByFact(ctx context.Context, factID pgtype.UUID) ([
 }
 
 const listConceptsByRepo = `-- name: ListConceptsByRepo :many
-SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at,
+SELECT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at, c.promptset_hash,
        (SELECT COUNT(*) FROM okt_repository.fact_concepts fc WHERE fc.concept_id = c.id) AS fact_count
 FROM okt_repository.concepts c
 WHERE c.repository_id = $1
@@ -1056,6 +1080,7 @@ type ListConceptsByRepoRow struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	SummarizingAt    pgtype.Timestamptz `json:"summarizing_at"`
 	AliasesRefinedAt pgtype.Timestamptz `json:"aliases_refined_at"`
+	PromptsetHash    *string            `json:"promptset_hash"`
 	FactCount        int64              `json:"fact_count"`
 }
 
@@ -1089,6 +1114,7 @@ func (q *Queries) ListConceptsByRepo(ctx context.Context, arg ListConceptsByRepo
 			&i.CreatedAt,
 			&i.SummarizingAt,
 			&i.AliasesRefinedAt,
+			&i.PromptsetHash,
 			&i.FactCount,
 		); err != nil {
 			return nil, err
@@ -1236,7 +1262,7 @@ func (q *Queries) ListFactIDsByCandidate(ctx context.Context, candidateID pgtype
 }
 
 const listFactsByConcept = `-- name: ListFactsByConcept :many
-SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind, fc.first_seen_at
+SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind, f.promptset_hash, fc.first_seen_at
 FROM okt_repository.fact_concepts fc
 JOIN okt_repository.facts f ON f.id = fc.fact_id
 WHERE fc.concept_id = $1
@@ -1262,6 +1288,7 @@ type ListFactsByConceptRow struct {
 	SearchTsv     interface{}        `json:"search_tsv"`
 	ImageUrl      *string            `json:"image_url"`
 	FactKind      string             `json:"fact_kind"`
+	PromptsetHash *string            `json:"promptset_hash"`
 	FirstSeenAt   pgtype.Timestamptz `json:"first_seen_at"`
 }
 
@@ -1295,6 +1322,7 @@ func (q *Queries) ListFactsByConcept(ctx context.Context, arg ListFactsByConcept
 			&i.SearchTsv,
 			&i.ImageUrl,
 			&i.FactKind,
+			&i.PromptsetHash,
 			&i.FirstSeenAt,
 		); err != nil {
 			return nil, err
@@ -1451,7 +1479,7 @@ func (q *Queries) ListGroupedInvestigationConcepts(ctx context.Context, investig
 }
 
 const listInvestigationConcepts = `-- name: ListInvestigationConcepts :many
-SELECT DISTINCT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at,
+SELECT DISTINCT c.id, c.repository_id, c.canonical_name, c.context, c.description, c.embedded_at, c.embedded_model, c.created_at, c.summarizing_at, c.aliases_refined_at, c.promptset_hash,
         (SELECT COUNT(*) FROM okt_repository.fact_concepts fc WHERE fc.concept_id = c.id) AS fact_count
 FROM okt_repository.concepts c
 JOIN okt_repository.fact_concepts fcon ON fcon.concept_id = c.id
@@ -1479,6 +1507,7 @@ type ListInvestigationConceptsRow struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	SummarizingAt    pgtype.Timestamptz `json:"summarizing_at"`
 	AliasesRefinedAt pgtype.Timestamptz `json:"aliases_refined_at"`
+	PromptsetHash    *string            `json:"promptset_hash"`
 	FactCount        int64              `json:"fact_count"`
 }
 
@@ -1517,6 +1546,7 @@ func (q *Queries) ListInvestigationConcepts(ctx context.Context, arg ListInvesti
 			&i.CreatedAt,
 			&i.SummarizingAt,
 			&i.AliasesRefinedAt,
+			&i.PromptsetHash,
 			&i.FactCount,
 		); err != nil {
 			return nil, err
@@ -1828,7 +1858,7 @@ UPDATE okt_repository.concepts
 SET embedded_at = now(),
     embedded_model = $2
 WHERE id = $1
-RETURNING id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at
+RETURNING id, repository_id, canonical_name, context, description, embedded_at, embedded_model, created_at, summarizing_at, aliases_refined_at, promptset_hash
 `
 
 type MarkConceptEmbeddedParams struct {
@@ -1850,6 +1880,7 @@ func (q *Queries) MarkConceptEmbedded(ctx context.Context, arg MarkConceptEmbedd
 		&i.CreatedAt,
 		&i.SummarizingAt,
 		&i.AliasesRefinedAt,
+		&i.PromptsetHash,
 	)
 	return i, err
 }
@@ -1877,8 +1908,8 @@ func (q *Queries) ReassignFactCandidatesToConcept(ctx context.Context, arg Reass
 }
 
 const reassignFactConceptsToConcept = `-- name: ReassignFactConceptsToConcept :exec
-INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at)
-SELECT fc.fact_id, $1, fc.first_seen_at
+INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at, promptset_hash)
+SELECT fc.fact_id, $1, fc.first_seen_at, fc.promptset_hash
 FROM okt_repository.fact_concepts fc
 WHERE fc.concept_id = $2
 ON CONFLICT (fact_id, concept_id) DO NOTHING
@@ -1892,7 +1923,9 @@ type ReassignFactConceptsToConceptParams struct {
 // Re-link every fact_concepts row pointing at old_concept_id to
 // new_concept_id, ignoring (fact_id, new_concept_id) pairs that
 // already exist (ON CONFLICT DO NOTHING). Used by the migrate_context
-// merge path before deleting the old concept row.
+// merge path before deleting the old concept row. Preserves the
+// promptset_hash of each link so a merge does not silently drop the
+// philosophy tag.
 func (q *Queries) ReassignFactConceptsToConcept(ctx context.Context, arg ReassignFactConceptsToConceptParams) error {
 	_, err := q.db.Exec(ctx, reassignFactConceptsToConcept, arg.NewConceptID, arg.OldConceptID)
 	return err
@@ -1926,8 +1959,8 @@ func (q *Queries) RecordFactConceptSkip(ctx context.Context, arg RecordFactConce
 }
 
 const relinkFactConcepts = `-- name: RelinkFactConcepts :exec
-INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at)
-SELECT $1, fc.concept_id, fc.first_seen_at
+INSERT INTO okt_repository.fact_concepts (fact_id, concept_id, first_seen_at, promptset_hash)
+SELECT $1, fc.concept_id, fc.first_seen_at, fc.promptset_hash
 FROM okt_repository.fact_concepts fc
 WHERE fc.fact_id = $2
 ON CONFLICT (fact_id, concept_id) DO NOTHING
@@ -1943,7 +1976,9 @@ type RelinkFactConceptsParams struct {
 // ON CONFLICT DO NOTHING preserves the winner's existing links.
 // Called by the dedup worker's mergeSources, alongside
 // RelinkFactReferences, so a dedup merge preserves all concept
-// mappings from both the winner and the loser.
+// mappings from both the winner and the loser. Preserves the
+// promptset_hash of each link so a dedup merge does not silently
+// drop the philosophy tag.
 func (q *Queries) RelinkFactConcepts(ctx context.Context, arg RelinkFactConceptsParams) error {
 	_, err := q.db.Exec(ctx, relinkFactConcepts, arg.WinnerID, arg.LoserID)
 	return err

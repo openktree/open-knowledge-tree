@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS okt_system.promptsets;

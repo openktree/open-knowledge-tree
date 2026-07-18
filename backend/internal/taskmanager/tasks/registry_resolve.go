@@ -12,12 +12,16 @@ import (
 
 // resolveRepoRegistryClient resolves the per-repo registry client
 // from the repo's registry_id + registry_enabled columns. Returns:
-//   - (client, nil) when the integration is on and the configured
+//   - (regID, client, nil) when the integration is on and the configured
 //     registry has a live client. The caller proceeds.
-//   - (nil, err) when the integration is off, no registry is
+//   - ("", nil, err) when the integration is off, no registry is
 //     configured, or the stored registry_id no longer matches a
 //     configured registry. The caller treats the error as "skip
 //     this registry operation" (log + return nil from Work).
+//
+// The regID is returned so the caller can inject it into the context
+// (via registry.WithRegistryID) for the ServiceMap / cache provider
+// to resolve the right client.
 //
 // This is the shared defense-in-depth gate for the contribute and
 // pull workers: the HTTP layer already refuses to enqueue when the
@@ -29,16 +33,16 @@ func resolveRepoRegistryClient(
 	systemQueries *store.Queries,
 	clients *registry.ClientMap,
 	repoID pgtype.UUID,
-) (*registry.Client, error) {
+) (string, *registry.Client, error) {
 	if clients == nil || !clients.IsConfigured() {
-		return nil, fmt.Errorf("registry not configured")
+		return "", nil, fmt.Errorf("registry not configured")
 	}
 	regCfg, err := systemQueries.GetRepositoryRegistryConfig(ctx, repoID)
 	if err != nil {
-		return nil, fmt.Errorf("reading repository registry config: %w", err)
+		return "", nil, fmt.Errorf("reading repository registry config: %w", err)
 	}
 	if !regCfg.RegistryEnabled {
-		return nil, fmt.Errorf("registry integration disabled for this repository")
+		return "", nil, fmt.Errorf("registry integration disabled for this repository")
 	}
 	regID := "default"
 	if regCfg.RegistryID != nil && *regCfg.RegistryID != "" {
@@ -46,9 +50,9 @@ func resolveRepoRegistryClient(
 	}
 	client, _, ok := clients.Client(regID)
 	if !ok || !client.IsConfigured() {
-		return nil, fmt.Errorf("registry_id %q is not configured", regID)
+		return "", nil, fmt.Errorf("registry_id %q is not configured", regID)
 	}
-	return client, nil
+	return regID, client, nil
 }
 
 // logSkip is a thin wrapper so the contribute/pull workers can log a

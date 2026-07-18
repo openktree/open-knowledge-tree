@@ -117,7 +117,7 @@ func TestRetrieveSourceWorkerPersistsParsedHTML(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -329,7 +329,7 @@ func TestRetrieveSourceWorkerFiltersChromeImages(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -445,7 +445,7 @@ func TestRetrieveSourceWorkerPersistsParsedPDF(t *testing.T) {
 			content_parsing.NewFitzPDFParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -596,7 +596,7 @@ func TestRetrieveSourceWorkerMarksParseFailed(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -735,7 +735,7 @@ func TestRetrieveSourceWorkerPersistsPublishedAtFromParser(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -826,7 +826,7 @@ func TestRetrieveSourceWorkerPublishedAtNullWhenAbsent(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -917,7 +917,7 @@ func TestRetrieveSourceWorkerPublishedAtFromCaller(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

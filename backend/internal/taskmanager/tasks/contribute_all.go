@@ -64,7 +64,7 @@ func (w *ContributeAllWorker) Work(ctx context.Context, job *river.Job[Contribut
 	// configured registry is gone. The HTTP gate already rejects
 	// the enqueue; this is defense-in-depth for a job enqueued
 	// before a toggle-off.
-	if _, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID); err != nil {
+	if _, _, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID); err != nil {
 		logSkip("contribute_all", args.RepositoryID, err.Error())
 		return nil
 	}

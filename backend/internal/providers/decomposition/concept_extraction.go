@@ -7,60 +7,10 @@ import (
 	"strings"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
-const conceptExtractionPrompt = `You are a concept extraction system. You will be given a BATCH of atomic facts (each prefixed by its 0-based fact_index). Extract ALL relevant concepts mentioned by each fact.
-
-## What is a concept
-
-A concept is a named entity or idea the fact refers to. Extract:
-- People (full names when available): "Donald Trump", "Albert Einstein"
-- Places: "Paris", "Silicon Valley"
-- Molecules / chemical compounds: "DNA", "graphene oxide"
-- Organizations: "MIT", "Electronic Frontier Foundation"
-- Ideas, theories, methods: "general relativity", "Sanger sequencing"
-- Standalone names the fact is about
-
-Each concept must be one or two words. Full names and organization names may be longer. Prefer the most specific named form present in the fact.
-
-## Context assignment
-
-Every concept must be assigned a context drawn EXACTLY from the L3 ontology class list below. The context is the class that best describes what kind of thing the concept is (a person, a chemical compound, an organization, a work, etc.). Pick the single best-fitting label from the list — do not invent labels outside the list. When a label carries a short description (shown after the em-dash), use it as a hint to pick the right label.
-
-## Seed aliases
-
-For each concept, emit seed aliases: alternate surface forms that can
-replace the concept in a sentence without changing the meaning. Only
-include aliases you are confident refer to the same thing.
-
-Rules:
-- An alias must be interchangeable with the concept in context.
-  "Trump" is a valid alias for "Donald Trump" (same person).
-  "President" is NOT (different meaning).
-- Include short forms, initials, acronyms, and full names.
-- It is OK to return no seed aliases if none are known.
-- Do not invent aliases. Quality over quantity.
-
-## L3 ontology class list (the context MUST come from this list)
-
-%s
-
-## Rules
-- Extract EVERY relevant concept each fact mentions, not just the primary subject.
-- Concepts are 1-2 words (full names / org names may be longer).
-- The context MUST be one of the labels in the list above, verbatim.
-- 0-3 seed aliases per concept. Only meaningful ones.
-- Skip concepts that are not named explicitly in the fact (no inference beyond the text).
-- If a fact mentions no extractable concepts, emit no objects for that fact_index.
-- Every output object MUST include the fact_index of the fact it came from.
-
-## Facts (one per block, prefixed by [fact_index N])
-%s
-
-Respond with a single JSON array of objects, like:
-[{"fact_index":0,"concept":"Donald Trump","context":"Politician","seed_aliases":["Donald J. Trump","DJT"]},{"fact_index":0,"concept":"DNA","context":"Molecule","seed_aliases":["deoxyribonucleic acid","deoxyribonucleic"]},{"fact_index":1,"concept":"Albert Einstein","context":"Scientist","seed_aliases":["Einstein"]}]
-Respond with ONLY the JSON array, no other text.`
 
 // FactInput is one fact in a batch submitted to the concept-
 // extraction provider. Index is the 0-based position of the fact
@@ -121,13 +71,26 @@ type ConceptExtractionAttribution struct {
 type AIConceptExtractionProvider struct {
 	AIProvider ai.AIProvider
 	Model      string
+	// promptset is the prompt set this provider uses for the
+	// concept-extraction phase. Defaults to promptset.Default; a
+	// worker swaps in the per-repo philosophy via WithPromptset.
+	promptset promptset.Promptset
 }
 
 func NewAIConceptExtractionProvider(aiProvider ai.AIProvider, model string) *AIConceptExtractionProvider {
 	return &AIConceptExtractionProvider{
 		AIProvider: aiProvider,
 		Model:      model,
+		promptset:  promptset.Default,
 	}
+}
+
+// WithPromptset returns a copy of the provider that uses the given
+// promptset's ConceptExtraction phase.
+func (p *AIConceptExtractionProvider) WithPromptset(ps promptset.Promptset) *AIConceptExtractionProvider {
+	clone := *p
+	clone.promptset = ps
+	return &clone
 }
 
 func (p *AIConceptExtractionProvider) Describe() ProviderDescription {
@@ -164,7 +127,7 @@ func (p *AIConceptExtractionProvider) ExtractConcepts(ctx context.Context, db st
 		return nil, fmt.Errorf("concept extraction: allowed context list is empty; repository has no contexts configured")
 	}
 
-	prompt := buildConceptExtractionPrompt(filtered, contexts)
+	prompt := buildConceptExtractionPrompt(filtered, contexts, p.promptset)
 
 	var taskID *string
 	if attr.TaskID != "" {
@@ -221,7 +184,7 @@ func (p *AIConceptExtractionProvider) ExtractConcepts(ctx context.Context, db st
 // batch is rendered as its own block prefixed by [fact_index N] so
 // the model can echo the index back on every concept it extracts
 // from that fact.
-func buildConceptExtractionPrompt(facts []FactInput, contexts []ContextEntry) string {
+func buildConceptExtractionPrompt(facts []FactInput, contexts []ContextEntry, ps promptset.Promptset) string {
 	var ctxSB strings.Builder
 	for _, c := range contexts {
 		ctxSB.WriteString("- ")
@@ -239,5 +202,5 @@ func buildConceptExtractionPrompt(facts []FactInput, contexts []ContextEntry) st
 		fmt.Fprintf(&factsSB, "[fact_index %d]\n\"\"\"\n%s\n\"\"\"\n\n", f.Index, f.Text)
 	}
 	renderedFacts := factsSB.String()
-	return fmt.Sprintf(conceptExtractionPrompt, renderedContexts, renderedFacts)
+	return fmt.Sprintf(ps.ConceptExtraction, renderedContexts, renderedFacts)
 }

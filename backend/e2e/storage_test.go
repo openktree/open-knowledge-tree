@@ -422,7 +422,7 @@ func TestStorage_RetrieveSourceWorkerMirrorsImage(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
 	fs := env.Storage
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, queries, fs, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, queries, fs, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

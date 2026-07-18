@@ -45,6 +45,7 @@ type ContributeSourceWorker struct {
 	registry             *dbpool.Registry
 	systemQueries        *store.Queries
 	modelResolver        *ModelResolver
+	promptsetResolver    *PromptsetResolver
 	defaultFactModel     string
 }
 
@@ -54,15 +55,17 @@ func NewContributeSourceWorker(
 	poolRegistry *dbpool.Registry,
 	systemQueries *store.Queries,
 	modelResolver *ModelResolver,
+	promptsetResolver *PromptsetResolver,
 	defaultFactModel string,
 ) *ContributeSourceWorker {
 	return &ContributeSourceWorker{
-		registryClients:  registryClients,
-		qdrant:           qdrant,
-		registry:         poolRegistry,
-		systemQueries:    systemQueries,
-		modelResolver:    modelResolver,
-		defaultFactModel: defaultFactModel,
+		registryClients:   registryClients,
+		qdrant:            qdrant,
+		registry:          poolRegistry,
+		systemQueries:     systemQueries,
+		modelResolver:     modelResolver,
+		promptsetResolver: promptsetResolver,
+		defaultFactModel:  defaultFactModel,
 	}
 }
 
@@ -91,7 +94,7 @@ func (w *ContributeSourceWorker) Work(ctx context.Context, job *river.Job[Contri
 	// integration off, or the configured registry may no longer
 	// exist. Skip the push in either case (defense-in-depth — the
 	// HTTP gate already rejects enqueuing when disabled).
-	rc, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID)
+	_, rc, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID)
 	if err != nil {
 		log.Printf("contribute_source: skipping push for repo %s: %v", args.RepositoryID, err)
 		return nil
@@ -206,11 +209,22 @@ func (w *ContributeSourceWorker) Work(ctx context.Context, job *river.Job[Contri
 		extractionModel = "default"
 	}
 
+	// Resolve the repo's effective promptset hash so the registry
+	// can tag the decomposition with the philosophy that produced
+	// it. Pulling repos filter on this hash (via their
+	// accepted_promptset_hashes) so decompositions from different
+	// promptsets do not mix.
+	var psHash string
+	if w.promptsetResolver != nil {
+		psHash = w.promptsetResolver.EffectiveHash(ctx, repoID)
+	}
+
 	decomp := &registry.DecompositionPackage{
-		ModelID:  extractionModel,
-		Facts:    facts,
-		Concepts: concepts,
-		Links:    links,
+		ModelID:       extractionModel,
+		PromptsetHash: psHash,
+		Facts:         facts,
+		Concepts:      concepts,
+		Links:         links,
 	}
 
 	// Build the EmbeddingData in the registry's expected shape:

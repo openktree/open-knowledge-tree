@@ -14,7 +14,7 @@ import (
 const createRepository = `-- name: CreateRepository :one
 INSERT INTO repositories (name, slug, description, owner_id, database_name, tier)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level
+RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types
 `
 
 type CreateRepositoryParams struct {
@@ -54,12 +54,15 @@ func (q *Queries) CreateRepository(ctx context.Context, arg CreateRepositoryPara
 		&i.AllowedModels,
 		&i.RegistryPushLevel,
 		&i.RegistryPullLevel,
+		&i.ActivePromptsetHash,
+		&i.AcceptedPromptsetHashes,
+		&i.AllowedContentTypes,
 	)
 	return i, err
 }
 
 const deleteRepository = `-- name: DeleteRepository :one
-DELETE FROM repositories WHERE id = $1 RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level
+DELETE FROM repositories WHERE id = $1 RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types
 `
 
 func (q *Queries) DeleteRepository(ctx context.Context, id pgtype.UUID) (Repository, error) {
@@ -83,8 +86,27 @@ func (q *Queries) DeleteRepository(ctx context.Context, id pgtype.UUID) (Reposit
 		&i.AllowedModels,
 		&i.RegistryPushLevel,
 		&i.RegistryPullLevel,
+		&i.ActivePromptsetHash,
+		&i.AcceptedPromptsetHashes,
+		&i.AllowedContentTypes,
 	)
 	return i, err
+}
+
+const getRepositoryAllowedContentTypes = `-- name: GetRepositoryAllowedContentTypes :one
+SELECT allowed_content_types FROM repositories WHERE id = $1
+`
+
+// Per-repo allowed content types gate (migration 0049). NULL means
+// "allow all" (the default, backward compatible for existing repos);
+// a non-NULL array restricts to the listed kinds ("document", "url",
+// "doi"). Read by the CreateSource / UploadSource / EnqueueRetrieveSource
+// handlers to 403-reject disallowed content types.
+func (q *Queries) GetRepositoryAllowedContentTypes(ctx context.Context, id pgtype.UUID) ([]string, error) {
+	row := q.db.QueryRow(ctx, getRepositoryAllowedContentTypes, id)
+	var allowed_content_types []string
+	err := row.Scan(&allowed_content_types)
+	return allowed_content_types, err
 }
 
 const getRepositoryAllowedModels = `-- name: GetRepositoryAllowedModels :one
@@ -119,7 +141,7 @@ func (q *Queries) GetRepositoryAutoContribute(ctx context.Context, id pgtype.UUI
 }
 
 const getRepositoryByID = `-- name: GetRepositoryByID :one
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level FROM repositories WHERE id = $1
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories WHERE id = $1
 `
 
 func (q *Queries) GetRepositoryByID(ctx context.Context, id pgtype.UUID) (Repository, error) {
@@ -143,12 +165,15 @@ func (q *Queries) GetRepositoryByID(ctx context.Context, id pgtype.UUID) (Reposi
 		&i.AllowedModels,
 		&i.RegistryPushLevel,
 		&i.RegistryPullLevel,
+		&i.ActivePromptsetHash,
+		&i.AcceptedPromptsetHashes,
+		&i.AllowedContentTypes,
 	)
 	return i, err
 }
 
 const getRepositoryBySlug = `-- name: GetRepositoryBySlug :one
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level FROM repositories WHERE slug = $1
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories WHERE slug = $1
 `
 
 func (q *Queries) GetRepositoryBySlug(ctx context.Context, slug string) (Repository, error) {
@@ -172,6 +197,9 @@ func (q *Queries) GetRepositoryBySlug(ctx context.Context, slug string) (Reposit
 		&i.AllowedModels,
 		&i.RegistryPushLevel,
 		&i.RegistryPullLevel,
+		&i.ActivePromptsetHash,
+		&i.AcceptedPromptsetHashes,
+		&i.AllowedContentTypes,
 	)
 	return i, err
 }
@@ -185,6 +213,31 @@ func (q *Queries) GetRepositoryDatabaseName(ctx context.Context, id pgtype.UUID)
 	var database_name string
 	err := row.Scan(&database_name)
 	return database_name, err
+}
+
+const getRepositoryPromptset = `-- name: GetRepositoryPromptset :one
+SELECT active_promptset_hash, accepted_promptset_hashes FROM repositories WHERE id = $1
+`
+
+type GetRepositoryPromptsetRow struct {
+	ActivePromptsetHash     *string  `json:"active_promptset_hash"`
+	AcceptedPromptsetHashes []string `json:"accepted_promptset_hashes"`
+}
+
+// Combined active_promptset_hash + accepted_promptset_hashes lookup
+// in one round-trip. Read by the promptset resolver at Work() start
+// to decide which promptset a repo's decompositions run under, and
+// by the registry pull worker to filter remote decompositions to
+// those whose promptset_hash is in the accepted set. active_hash is
+// NULL when the repo inherits the global config default; the resolver
+// falls back to cfg.Providers.PromptsetDefault then to the built-in
+// hash. accepted_hashes defaults to '{}' meaning "only the active
+// hash is accepted" (see migration 0047).
+func (q *Queries) GetRepositoryPromptset(ctx context.Context, id pgtype.UUID) (GetRepositoryPromptsetRow, error) {
+	row := q.db.QueryRow(ctx, getRepositoryPromptset, id)
+	var i GetRepositoryPromptsetRow
+	err := row.Scan(&i.ActivePromptsetHash, &i.AcceptedPromptsetHashes)
+	return i, err
 }
 
 const getRepositoryRegistryConfig = `-- name: GetRepositoryRegistryConfig :one
@@ -270,7 +323,7 @@ func (q *Queries) GetRepositorySyncLevels(ctx context.Context, id pgtype.UUID) (
 }
 
 const listAllRepositories = `-- name: ListAllRepositories :many
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level FROM repositories ORDER BY created_at DESC
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAllRepositories(ctx context.Context) ([]Repository, error) {
@@ -300,6 +353,9 @@ func (q *Queries) ListAllRepositories(ctx context.Context) ([]Repository, error)
 			&i.AllowedModels,
 			&i.RegistryPushLevel,
 			&i.RegistryPullLevel,
+			&i.ActivePromptsetHash,
+			&i.AcceptedPromptsetHashes,
+			&i.AllowedContentTypes,
 		); err != nil {
 			return nil, err
 		}
@@ -312,7 +368,7 @@ func (q *Queries) ListAllRepositories(ctx context.Context) ([]Repository, error)
 }
 
 const listRepositoriesByOwner = `-- name: ListRepositoriesByOwner :many
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level FROM repositories WHERE owner_id = $1 ORDER BY created_at DESC
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories WHERE owner_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListRepositoriesByOwner(ctx context.Context, ownerID pgtype.UUID) ([]Repository, error) {
@@ -342,6 +398,9 @@ func (q *Queries) ListRepositoriesByOwner(ctx context.Context, ownerID pgtype.UU
 			&i.AllowedModels,
 			&i.RegistryPushLevel,
 			&i.RegistryPullLevel,
+			&i.ActivePromptsetHash,
+			&i.AcceptedPromptsetHashes,
+			&i.AllowedContentTypes,
 		); err != nil {
 			return nil, err
 		}
@@ -351,6 +410,28 @@ func (q *Queries) ListRepositoriesByOwner(ctx context.Context, ownerID pgtype.UU
 		return nil, err
 	}
 	return items, nil
+}
+
+const setRepositoryAllowedContentTypes = `-- name: SetRepositoryAllowedContentTypes :exec
+UPDATE repositories
+SET allowed_content_types = $2, updated_at = now()
+WHERE id = $1
+`
+
+type SetRepositoryAllowedContentTypesParams struct {
+	ID                  pgtype.UUID `json:"id"`
+	AllowedContentTypes []string    `json:"allowed_content_types"`
+}
+
+// Upsert the per-repo allowed content types list. Called by the
+// SetContentTypes handler (PUT .../settings/content-types). Pass NULL
+// to clear the per-repo override (revert to allow-all); pass an array
+// (e.g. ["doi"] or ["document","url","doi"]) to restrict. The handler
+// validates each value against {"document","url","doi"} before this
+// call; the CHECK constraint on the column is the defense-in-depth.
+func (q *Queries) SetRepositoryAllowedContentTypes(ctx context.Context, arg SetRepositoryAllowedContentTypesParams) error {
+	_, err := q.db.Exec(ctx, setRepositoryAllowedContentTypes, arg.ID, arg.AllowedContentTypes)
+	return err
 }
 
 const setRepositoryAllowedModels = `-- name: SetRepositoryAllowedModels :exec
@@ -389,6 +470,32 @@ type SetRepositoryAutoContributeParams struct {
 // SetAutoContribute handler (PUT .../settings/auto-contribute).
 func (q *Queries) SetRepositoryAutoContribute(ctx context.Context, arg SetRepositoryAutoContributeParams) error {
 	_, err := q.db.Exec(ctx, setRepositoryAutoContribute, arg.ID, arg.AutoContribute)
+	return err
+}
+
+const setRepositoryPromptset = `-- name: SetRepositoryPromptset :exec
+UPDATE repositories
+SET active_promptset_hash = $2,
+    accepted_promptset_hashes = $3,
+    updated_at = now()
+WHERE id = $1
+`
+
+type SetRepositoryPromptsetParams struct {
+	ID                      pgtype.UUID `json:"id"`
+	ActivePromptsetHash     *string     `json:"active_promptset_hash"`
+	AcceptedPromptsetHashes []string    `json:"accepted_promptset_hashes"`
+}
+
+// Update the per-repo promptset selection. Called by the
+// SetPromptset handler (PUT .../settings/promptset). The handler
+// validates active_hash against the resolver (built-in or a promptset
+// the user owns / is public) and validates every entry in
+// accepted_hashes the same way before this call. active_hash may be
+// NULL (clear → inherit global default); accepted_hashes may be NULL
+// (clear → only the active hash is accepted) or an array.
+func (q *Queries) SetRepositoryPromptset(ctx context.Context, arg SetRepositoryPromptsetParams) error {
+	_, err := q.db.Exec(ctx, setRepositoryPromptset, arg.ID, arg.ActivePromptsetHash, arg.AcceptedPromptsetHashes)
 	return err
 }
 
@@ -457,7 +564,7 @@ const updateRepository = `-- name: UpdateRepository :one
 UPDATE repositories
 SET name = $2, description = $3, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level
+RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types
 `
 
 type UpdateRepositoryParams struct {
@@ -487,6 +594,9 @@ func (q *Queries) UpdateRepository(ctx context.Context, arg UpdateRepositoryPara
 		&i.AllowedModels,
 		&i.RegistryPushLevel,
 		&i.RegistryPullLevel,
+		&i.ActivePromptsetHash,
+		&i.AcceptedPromptsetHashes,
+		&i.AllowedContentTypes,
 	)
 	return i, err
 }

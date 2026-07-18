@@ -133,7 +133,7 @@ func TestExtractConceptsPipeline(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 
-	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil, nil)
 	// This test exercises the candidate-emission path (refinement
 	// enabled), where extract creates candidates and defers routing
 	// to refine_concepts. Without this, extract routes directly.
@@ -223,7 +223,7 @@ func TestExtractConcepts_NotConfiguredIsNoop(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	// nil concept extractor + nil alias provider.
-	worker := tasks.NewExtractConceptsWorker(nil, config.DecompositionConceptConfig{Enabled: false}, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(nil, config.DecompositionConceptConfig{Enabled: false}, registry, systemQueries, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -264,6 +264,7 @@ func TestExtractConcepts_InvalidRepoID(t *testing.T) {
 		config.DecompositionConceptConfig{Enabled: true},
 		registry,
 		systemQueries,
+		nil,
 		nil,
 	)
 
@@ -412,7 +413,7 @@ func TestExtractConcepts_AlreadyLinkedFactIsNoop(t *testing.T) {
 	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -544,7 +545,7 @@ func TestExtractConcepts_CreateConceptConflictIsRecovered(t *testing.T) {
 	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil, nil)
 	// Candidate-emission path (refinement enabled): extract creates
 	// candidates, defers routing to refine_concepts.
 	worker.SetRefinementEnabled(true)
@@ -674,7 +675,7 @@ func TestExtractConcepts_DedupsMultiSourceFacts(t *testing.T) {
 	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil, nil)
 	// Candidate-emission path (refinement enabled): extract creates
 	// candidates, defers routing to refine_concepts.
 	worker.SetRefinementEnabled(true)
@@ -763,7 +764,7 @@ func TestExtractConcepts_LLMFailureMarksSkip(t *testing.T) {
 	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewExtractConceptsWorker(failingExtractor, conceptCfg, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(failingExtractor, conceptCfg, registry, systemQueries, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -927,7 +928,7 @@ func TestExtractConcepts_SourceScoped(t *testing.T) {
 	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
-	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil)
+	worker := tasks.NewExtractConceptsWorker(extractor, conceptCfg, registry, systemQueries, nil, nil)
 	// Candidate-emission path (refinement enabled): extract creates
 	// candidates, defers routing to refine_concepts.
 	worker.SetRefinementEnabled(true)

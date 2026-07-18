@@ -3,8 +3,13 @@
 -- does not specify it; image facts pass 'image' plus a non-null
 -- image_url so the frontend can render the picture next to the fact
 -- text. image_url is nullable so text facts leave it NULL.
-INSERT INTO okt_repository.facts (id, text, fact_kind, image_url)
-VALUES ($1, $2, $3, $4)
+-- promptset_hash tags the fact with the philosophy that produced it
+-- so downstream queries (synthesis, registry pull) can filter to a
+-- single promptset and decompositions from different promptsets do
+-- not mix. The caller passes the repo's effective promptset hash;
+-- NULL is allowed (legacy rows) and interpreted as the built-in.
+INSERT INTO okt_repository.facts (id, text, fact_kind, image_url, promptset_hash)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: AddFactSource :exec
@@ -78,9 +83,10 @@ LIMIT 1;
 -- complete in one embed pass so the dedup chain fires per source.
 -- One row per fact; a fact linked to this source multiple times is
 -- returned once (the JOIN can't expand it since fact_sources PK is
--- (fact_id, source_id)).
-SELECT DISTINCT ON (f.id) f.id, f.text, f.status, f.embedded_at,
-       f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind
+-- (fact_id, source_id)). Uses SELECT f.* (not an explicit column
+-- list) so sqlc emits the row as store.OktRepositoryFact, which the
+-- embed worker passes to embedFacts without a type conversion.
+SELECT DISTINCT ON (f.id) f.*
 FROM okt_repository.facts f
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 JOIN okt_repository.sources s ON fs.source_id = s.id
@@ -273,8 +279,11 @@ WHERE id = $1;
 -- name: AddFactReference :exec
 -- One row per (fact, source, sentence_index). Idempotent on the PK
 -- so re-processing a source doesn't double-count a citation.
-INSERT INTO okt_repository.fact_references (fact_id, source_id, sentence_index, chunk_index)
-VALUES ($1, $2, $3, $4)
+-- promptset_hash tags the citation with the philosophy that produced
+-- the fact, mirroring facts.promptset_hash so the junction stays
+-- queryable by philosophy.
+INSERT INTO okt_repository.fact_references (fact_id, source_id, sentence_index, chunk_index, promptset_hash)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (fact_id, source_id, sentence_index) DO NOTHING;
 
 -- name: ListFactReferencesByFact :many

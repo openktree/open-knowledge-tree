@@ -72,7 +72,7 @@ func TestRetrieveSourceWorkerBoilerplateGuardFailed(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -173,7 +173,7 @@ func TestRetrieveSourceWorkerRealArticlePassesGuard(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

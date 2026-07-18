@@ -23,6 +23,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ontology"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -51,6 +52,7 @@ type Handler struct {
 	oauth          *handler.OAuth
 	mcp           *handler.MCP
 	repoSettings  *handler.RepositorySettings
+	promptsets    *handler.Promptsets
 	remote        *handler.Remote
 	repoDBCache    *appmw.RepoDBCache
 	slugCache   *appmw.SlugCache
@@ -126,6 +128,7 @@ func NewHandler(queries *store.Queries, cfg *config.Config, rbacSvc *rbac.Servic
 		syntheses:      handler.NewSyntheses(deps),
 		reports:        handler.NewReports(deps),
 		repoSettings:   handler.NewRepositorySettings(deps),
+		promptsets:     handler.NewPromptsets(deps),
 		repoDBCache:    appmw.NewRepoDBCache(queries, 5*time.Minute),
 		slugCache:   appmw.NewSlugCache(queries, 5*time.Minute),
 	}
@@ -215,6 +218,12 @@ func (h *Handler) SetSource(s *handler.Source) {
 	if s != nil {
 		s.SetProviderRegistry(h.deps.ProviderRegistry)
 		s.SetSettingsGate(h.repoProviderGate)
+		// Wire the system-pool store so the content-type gate
+		// (per-repo allowed_content_types, migration 0049) can
+		// read the repo's allow-list and 403-reject disallowed
+		// source kinds at CreateSource / UploadSource /
+		// EnqueueRetrieveSource.
+		s.SetSystemStore(h.deps.Store)
 	}
 }
 
@@ -407,6 +416,19 @@ func (h *Handler) SetModelCatalog(c *handler.ModelCatalog) {
 	}
 }
 
+// SetPromptsetResolver wires the promptset resolver (built-in + DB)
+// onto the promptsets CRUD handler and the repository-settings
+// handler (so SetPromptset can validate hashes). Called once during
+// wiring, after the resolver is built in cmd/app/api.go.
+func (h *Handler) SetPromptsetResolver(r *promptset.Resolver) {
+	if h.promptsets != nil {
+		h.promptsets.SetResolver(r)
+	}
+	if h.repoSettings != nil {
+		h.repoSettings.SetPromptsetResolver(r)
+	}
+}
+
 // SetRemoteDedupEnqueuer wires the task enqueuer the remote handler
 // uses to kick off the embed→dedup pipeline after pulling a source.
 func (h *Handler) SetRemoteDedupEnqueuer(eq handler.RemoteDedupEnqueuer) {
@@ -509,6 +531,7 @@ func (h *Handler) Router() chi.Router {
 		r.Route("/tasks", h.tasksRoutes)
 		r.Route("/groups", h.groupsRoutes)
 		r.Route("/ai", h.aiRoutes)
+		r.Route("/promptsets", h.promptsetsRoutes)
 		r.Get("/permissions", h.authed(h.user.GetOwnPermissions))
 		// OAuth 2.1 authorization server. Mounts the authorize,
 		// token, register, and revoke endpoints; the
@@ -658,6 +681,9 @@ func (h *Handler) repoRoutes(r chi.Router) {
 			r.Put("/settings/auto-contribute", h.repoPerm("repository", "manage", h.repoSettings.SetAutoContribute))
 			r.Put("/settings/registry", h.repoPerm("repository", "manage", h.repoSettings.SetRegistrySettings))
 			r.Put("/settings/sync-levels", h.repoPerm("repository", "manage", h.repoSettings.SetSyncLevels))
+			r.Put("/settings/content-types", h.repoPerm("repository", "manage", h.repoSettings.SetContentTypes))
+		r.Get("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.GetPromptset))
+		r.Put("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.SetPromptset))
 
 			// Remote registry browse / pull.
 			if h.remote != nil {
@@ -881,4 +907,27 @@ func (h *Handler) aiRoutes(r chi.Router) {
 			r.Get("/by-source", h.perm("ai_usage", "read", h.aiUsage.BySource))
 		})
 	}
+}
+
+// promptsetsRoutes registers the /api/v1/promptsets CRUD surface.
+// Reads (List, Get) are authed-only — any logged-in user can see the
+// built-in + their own custom promptsets (and sysadmins see all).
+// Writes (Create, Update, Delete) are gated by the promptset.manage
+// permission, granted to every authenticated user by default so
+// creating a custom promptset is a user-scoped action, not an admin
+// privilege. The handler enforces ownership on update/delete.
+func (h *Handler) promptsetsRoutes(r chi.Router) {
+	if h.promptsets == nil {
+		r.Get("/", notConfigured)
+		r.Get("/{hash}", notConfigured)
+		r.Post("/", notConfigured)
+		r.Put("/{hash}", notConfigured)
+		r.Delete("/{hash}", notConfigured)
+		return
+	}
+	r.Get("/", h.authed(h.promptsets.List))
+	r.Get("/{hash}", h.authed(h.promptsets.Get))
+	r.Post("/", h.perm("promptset", "manage", h.promptsets.Create))
+	r.Put("/{hash}", h.perm("promptset", "manage", h.promptsets.Update))
+	r.Delete("/{hash}", h.perm("promptset", "manage", h.promptsets.Delete))
 }

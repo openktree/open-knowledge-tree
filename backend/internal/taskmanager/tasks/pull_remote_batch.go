@@ -45,6 +45,7 @@ type PullRemoteBatchWorker struct {
 	river.WorkerDefaults[PullRemoteBatchArgs]
 
 	registryClients *registry.ClientMap
+	registryServices *registry.ServiceMap
 	registry        *dbpool.Registry
 	systemQueries   *store.Queries
 	dedupEnqueuer   handler.RemoteDedupEnqueuer
@@ -52,15 +53,17 @@ type PullRemoteBatchWorker struct {
 
 func NewPullRemoteBatchWorker(
 	registryClients *registry.ClientMap,
+	registryServices *registry.ServiceMap,
 	poolRegistry *dbpool.Registry,
 	systemQueries *store.Queries,
 	dedupEnqueuer handler.RemoteDedupEnqueuer,
 ) *PullRemoteBatchWorker {
 	return &PullRemoteBatchWorker{
-		registryClients: registryClients,
-		registry:        poolRegistry,
-		systemQueries:   systemQueries,
-		dedupEnqueuer:   dedupEnqueuer,
+		registryClients:  registryClients,
+		registryServices: registryServices,
+		registry:         poolRegistry,
+		systemQueries:    systemQueries,
+		dedupEnqueuer:    dedupEnqueuer,
 	}
 }
 
@@ -80,7 +83,7 @@ func (w *PullRemoteBatchWorker) Work(ctx context.Context, job *river.Job[PullRem
 
 	// Resolve the repo's registry client (defense-in-depth — the
 	// HTTP gate already rejects when the integration is off).
-	rc, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID)
+	regID, rc, err := resolveRepoRegistryClient(ctx, w.systemQueries, w.registryClients, repoID)
 	if err != nil {
 		logSkip("pull_remote_batch", args.RepositoryID, err.Error())
 		return river.RecordOutput(ctx, &PullRemoteBatchResult{RepositoryID: args.RepositoryID, Skipped: len(args.RemoteSourceIDs)})
@@ -114,6 +117,33 @@ func (w *PullRemoteBatchWorker) Work(ctx context.Context, job *river.Job[PullRem
 	}
 	pullFilter := registry.NewSyncLevelFilter(registry.ParseSyncLevel(syncLevels.RegistryPullLevel))
 
+	// Build the per-repo RelevanceFilter the Service applies. This
+	// is the fix for the per-repo allowed_models override bug: the
+	// legacy path used Client.IsAllowedModel (global only); the
+	// Service path uses resolveAllowedModels (per-repo replaces
+	// global), so a repo with a non-NULL allowed_models now gets
+	// its override honored on the batch pull path too.
+	autoAdd := func(registryLabel string) {
+		if _, err := w.systemQueries.SeedRepositoryContext(ctx, store.SeedRepositoryContextParams{
+			RepositoryID: repoID,
+			Context:      registryLabel,
+			IsCustom:     true,
+			Description:  "",
+		}); err != nil {
+			log.Printf("pull_remote_batch: auto-adding context %q: %v", registryLabel, err)
+		}
+	}
+	filter := &registry.RelevanceFilter{
+		AllowedModels:      resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels()),
+		SyncLevel:          pullFilter,
+		ContextMapper:      mapper,
+		AutoAdd:            autoAdd,
+	}
+	// Resolve the Service for the active registry. The ServiceMap
+	// reads the registry id from the context, so inject it here.
+	svcCtx := registry.WithRegistryID(ctx, regID)
+	svc := w.registryServices.Service(svcCtx)
+
 	result := PullRemoteBatchResult{RepositoryID: args.RepositoryID}
 	for _, remoteID := range args.RemoteSourceIDs {
 		if err := ctx.Err(); err != nil {
@@ -124,13 +154,15 @@ func (w *PullRemoteBatchWorker) Work(ctx context.Context, job *river.Job[PullRem
 			continue
 		}
 		pr, err := handler.PullOneRemoteSource(ctx, handler.RemotePullDeps{
-			Client:        rc,
-			Queries:       queries,
-			SystemQueries: w.systemQueries,
-			RepoID:        repoID,
-			Mapper:        mapper,
-			DedupEnqueuer: w.dedupEnqueuer,
-			PullFilter:    pullFilter,
+			Service:        svc,
+			Client:         rc,
+			Filter:         filter,
+			Queries:        queries,
+			SystemQueries:  w.systemQueries,
+			RepoID:         repoID,
+			Mapper:         mapper,
+			DedupEnqueuer:  w.dedupEnqueuer,
+			PullFilter:     pullFilter,
 		}, remoteID)
 		if err != nil {
 			log.Printf("pull_remote_batch: repo %s source %s: %v", args.RepositoryID, remoteID, err)

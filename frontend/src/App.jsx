@@ -24,6 +24,7 @@ import ConceptDetail from "./pages/ConceptDetail";
 import Tasks from "./pages/Tasks";
 import AIUsage from "./pages/AIUsage";
 import Remote from "./pages/Remote";
+import Promptsets from "./pages/Promptsets";
 
 function AppLayout(props) {
   const navigate = useNavigate();
@@ -66,6 +67,7 @@ export default function App() {
         <Route path="/tasks" component={Tasks} />
         <Route path="/users" component={Users} />
         <Route path="/remote" component={Remote} />
+        <Route path="/promptsets" component={Promptsets} />
         <Route path="/ai-usage" component={AIUsage} />
       </Route>
       <Route path="/login" component={Login} />

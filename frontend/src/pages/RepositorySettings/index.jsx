@@ -1,3 +1,4 @@
+// @okt-page-allow-large: thin orchestrator composing 8 sibling panels; splitting further would contrive a layer
 import { createResource, createSignal, Show } from "solid-js";
 import { useParams } from "@solidjs/router";
 import { api } from "../../services/api";
@@ -11,6 +12,8 @@ import RegistryPanel from "./RegistryPanel";
 import ModelsPanel from "./ModelsPanel";
 import ContextsPanel from "./ContextsPanel";
 import ContextMappingsPanel from "./ContextMappingsPanel";
+import PromptsetPanel from "./PromptsetPanel";
+import ContentTypesPanel from "./ContentTypesPanel";
 
 // RepositorySettings is the repo-admin settings surface (distinct
 // from the global /repositories page). Gated by repository:manage.
@@ -48,6 +51,7 @@ export default function RepositorySettings() {
             onChanged={refetch}
             onAlert={setAlert}
           />
+          <PromptsetPanel repoID={repoID} onAlert={setAlert} />
           <RegistryPanel
             repoID={repoID}
             registryID={() => data().registry_id}
@@ -69,6 +73,12 @@ export default function RepositorySettings() {
             pullLevel={() => data().registry_pull_level}
             onAlert={setAlert}
             onChanged={refetch}
+          />
+          <ContentTypesPanel
+            repoID={repoID}
+            allowedContentTypes={() => data().allowed_content_types}
+            onChanged={refetch}
+            onAlert={setAlert}
           />
           <Card>
             <ContextsPanel

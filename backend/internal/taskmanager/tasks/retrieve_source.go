@@ -157,14 +157,16 @@ type RetrieveSourceResult struct {
 type RetrieveSourceWorker struct {
 	river.WorkerDefaults[RetrieveSourceArgs]
 
-	searchProviders map[string]search.SearchProvider
-	fetchStrategy   *fetch.FetchStrategy
-	registry        *dbpool.Registry
-	systemQueries   *store.Queries
-	storage         storage.FileStorage
-	registryClients *registry.ClientMap
-	qdrant          *qdrantstore.Store
-	reconciler      *CacheReconciler
+	searchProviders  map[string]search.SearchProvider
+	fetchStrategy    *fetch.FetchStrategy
+	registry         *dbpool.Registry
+	systemQueries    *store.Queries
+	storage          storage.FileStorage
+	registryClients  *registry.ClientMap
+	registryCache    *registry.RegistryCacheProvider
+	qdrant           *qdrantstore.Store
+	reconciler       *CacheReconciler
+	promptsetResolver *PromptsetResolver
 }
 
 // NewRetrieveSourceWorker builds a worker. The search provider map
@@ -195,18 +197,22 @@ func NewRetrieveSourceWorker(
 	systemQueries *store.Queries,
 	stor storage.FileStorage,
 	registryClients *registry.ClientMap,
+	registryCache *registry.RegistryCacheProvider,
 	qdrant *qdrantstore.Store,
 	reconciler *CacheReconciler,
+	promptsetResolver *PromptsetResolver,
 ) *RetrieveSourceWorker {
 	return &RetrieveSourceWorker{
-		searchProviders: searchProviders,
-		fetchStrategy:   fetchStrategy,
-		registry:        poolRegistry,
-		systemQueries:   systemQueries,
-		storage:         stor,
-		registryClients: registryClients,
-		qdrant:          qdrant,
-		reconciler:      reconciler,
+		searchProviders:   searchProviders,
+		fetchStrategy:     fetchStrategy,
+		registry:          poolRegistry,
+		systemQueries:     systemQueries,
+		storage:           stor,
+		registryClients:   registryClients,
+		registryCache:     registryCache,
+		qdrant:            qdrant,
+		reconciler:        reconciler,
+		promptsetResolver: promptsetResolver,
 	}
 }
 
@@ -593,6 +599,16 @@ func (w *RetrieveSourceWorker) linkSourceToInvestigation(ctx context.Context, re
 // so the caller falls through to the normal fetch path. The returned
 // ImportStats tells the CacheReconciler whether the import produced
 // any delta and which embedding models were used.
+//
+// The cache lookup + decomposition pull + filtering is delegated to
+// the RegistryCacheProvider (backed by registry.Service), which
+// applies the RelevanceFilter (allowed_models, accepted_promptsets,
+// sync_level, context mapping) in one place. The import loop in
+// importFromRegistry then iterates the already-filtered
+// decompositions and persists them — it does not re-apply any
+// filter. This keeps the four pull paths (retrieve_source,
+// pull_all, pull_remote_batch, the cache adapter) in lockstep: the
+// rules live in registry.Service, not in the workers.
 func (w *RetrieveSourceWorker) tryRegistryImport(
 	ctx context.Context,
 	args RetrieveSourceArgs,
@@ -600,7 +616,7 @@ func (w *RetrieveSourceWorker) tryRegistryImport(
 	result *RetrieveSourceResult,
 ) (bool, ImportStats, error) {
 	var stats ImportStats
-	if w.registryClients == nil || !w.registryClients.IsConfigured() {
+	if w.registryCache == nil || !w.registryCache.IsConfigured() {
 		return false, stats, nil
 	}
 
@@ -631,10 +647,10 @@ func (w *RetrieveSourceWorker) tryRegistryImport(
 	if regCfg.RegistryID != nil && *regCfg.RegistryID != "" {
 		regID = *regCfg.RegistryID
 	}
-	rc, _, ok := w.registryClients.Client(regID)
-	if !ok || !rc.IsConfigured() {
-		return false, stats, nil
-	}
+	// Inject the active registry id into the context so the
+	// ServiceMap resolves the right client. The cache provider
+	// reads it via registry.RegistryIDFromContext.
+	cacheCtx := registry.WithRegistryID(ctx, regID)
 
 	searchURL := args.URL
 	searchDOI := args.DOI
@@ -642,32 +658,30 @@ func (w *RetrieveSourceWorker) tryRegistryImport(
 		searchDOI = resource.DOI
 	}
 
-	sr, err := rc.SearchSource(ctx, searchURL, searchDOI)
+	// Build the per-repo RelevanceFilter. retrieve_source
+	// currently imports concepts verbatim (no context mapper), so
+	// ContextMapper stays nil — the Service's applyContextFilter
+	// is a no-op and concepts keep their registry contexts. The
+	// pull_all / pull_remote_batch paths set the mapper; this path
+	// deliberately does not, to preserve current behavior.
+	filter := w.buildRelevanceFilter(ctx, repoID, regID, nil)
+
+	hit, found, err := w.registryCache.LookupAndPull(cacheCtx, searchURL, searchDOI, filter)
 	if err != nil {
-		return false, stats, fmt.Errorf("registry search: %w", err)
+		return false, stats, fmt.Errorf("registry cache lookup: %w", err)
 	}
-	if sr == nil || !sr.Found {
+	if !found || hit == nil {
 		return false, stats, nil
 	}
 
-	log.Printf("retrieve_source: registry hit for source %q (id=%s)", sr.Title, sr.SourceID)
+	log.Printf("retrieve_source: registry hit for source %q (id=%s) — %d relevant decomposition(s)",
+		hit.Source.Source.Title, hit.Source.Source.ID, len(hit.Decompositions))
 
-	pkg, err := rc.PullSource(ctx, sr.SourceID)
-	if err != nil {
-		return false, stats, fmt.Errorf("registry pull source: %w", err)
-	}
-
-	// Per-repo pull level (migration 0044). Controls whether the
-	// import includes concepts/links/concept-embeddings or only
-	// sources + facts + fact embeddings. Defaults to "concepts".
-	syncLevels, err := w.systemQueries.GetRepositorySyncLevels(ctx, repoID)
-	if err != nil {
-		return false, stats, fmt.Errorf("registry sync levels read: %w", err)
-	}
-	pullFilter := registry.NewSyncLevelFilter(registry.ParseSyncLevel(syncLevels.RegistryPullLevel))
-
-	// Import the source row and decomposition artifacts.
-	sourceID, importStats, err := w.importFromRegistry(ctx, args, resource, pkg, result, rc, pullFilter)
+	// Import the source row and decomposition artifacts. The
+	// decompositions in the hit are already filtered by the
+	// Service (model whitelist, promptset acceptance, sync level,
+	// context mapping) so the import loop just persists them.
+	sourceID, importStats, err := w.importFromRegistry(ctx, args, resource, hit, result)
 	if err != nil {
 		return false, importStats, fmt.Errorf("registry import: %w", err)
 	}
@@ -683,15 +697,55 @@ func (w *RetrieveSourceWorker) tryRegistryImport(
 	return true, importStats, nil
 }
 
-// importFromRegistry pulls the source package + decomposition from
-// the registry, creates/updates the source row, and persists the
-// pre-computed facts, concepts, links, aliases, and embeddings
-// into the local database and Qdrant. It is delta-aware: for each
-// fact it checks whether an identical fact (same text) is already
-// linked to this source; if so it skips CreateFact entirely (no new
-// row, no Qdrant point, no downstream job). The returned ImportStats
-// tells the CacheReconciler whether to enqueue downstream jobs and
-// whether the imported embedding model differs from the local config.
+// buildRelevanceFilter assembles the per-repo RelevanceFilter the
+// cache provider applies. It consolidates the four axes that were
+// previously read inline (resolveAllowedModels,
+// GetRepositorySyncLevels, promptsetResolver.AcceptedHashes, and
+// the inbound context mapper) into one call. The contextMapper
+// argument is nil for the retrieve_source path (verbatim concept
+// import, the legacy behavior) and non-nil for the pull_all /
+// pull_remote_batch paths (which translate registry contexts to
+// the repo's local vocabulary).
+func (w *RetrieveSourceWorker) buildRelevanceFilter(
+	ctx context.Context,
+	repoID pgtype.UUID,
+	regID string,
+	contextMapper registry.InboundContextMapper,
+) *registry.RelevanceFilter {
+	rc, _, _ := w.registryClients.Client(regID)
+	allowedModels := resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels())
+
+	syncLevels, err := w.systemQueries.GetRepositorySyncLevels(ctx, repoID)
+	var pullFilter *registry.SyncLevelFilter
+	if err == nil {
+		pullFilter = registry.NewSyncLevelFilter(registry.ParseSyncLevel(syncLevels.RegistryPullLevel))
+	}
+
+	var acceptedHashes []string
+	if w.promptsetResolver != nil {
+		acceptedHashes = w.promptsetResolver.AcceptedHashes(ctx, repoID)
+	}
+
+	return &registry.RelevanceFilter{
+		AllowedModels:      allowedModels,
+		AcceptedPromptsets: acceptedHashes,
+		SyncLevel:          pullFilter,
+		ContextMapper:      contextMapper,
+	}
+}
+
+// importFromRegistry creates/updates the source row and persists the
+// pre-computed facts, concepts, links, aliases, and embeddings from a
+// registry CacheHit into the local database and Qdrant. The
+// decompositions in the hit are already filtered by the
+// RegistryCacheProvider (model whitelist, promptset acceptance, sync
+// level, context mapping) so this method only persists — it does not
+// re-apply any filter. It is delta-aware: for each fact it checks
+// whether an identical fact (same text) is already linked to this
+// source; if so it skips CreateFact entirely (no new row, no Qdrant
+// point, no downstream job). The returned ImportStats tells the
+// CacheReconciler whether to enqueue downstream jobs and whether the
+// imported embedding model differs from the local config.
 //
 // Qdrant points are keyed by the LOCAL fact/concept UUID (not the
 // registry's embedding UUID) so Postgres and Qdrant stay consistent
@@ -703,10 +757,8 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 	ctx context.Context,
 	args RetrieveSourceArgs,
 	resource fetch.Resource,
-	pkg *registry.SourcePackage,
+	hit *registry.CacheHit,
 	result *RetrieveSourceResult,
-	rc *registry.Client,
-	pullFilter *registry.SyncLevelFilter,
 ) (string, ImportStats, error) {
 	stats := ImportStats{}
 	repoID := pgtype.UUID{}
@@ -721,6 +773,19 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 
 	pool := w.registry.Get(dbName)
 	queries := store.New(pool.Pool)
+
+	// Resolve the repo's effective promptset hash. Imported facts
+	// and concepts are tagged with this hash so they join the repo's
+	// active philosophy. (The cache provider already filtered the
+	// decompositions to accepted promptsets, so the imported
+	// decomposition is by definition from an accepted philosophy.)
+	var psHashPtr *string
+	if w.promptsetResolver != nil {
+		h := w.promptsetResolver.EffectiveHash(ctx, repoID)
+		psHashPtr = &h
+	}
+
+	pkg := hit.Source
 
 	// Create or reuse the source row, same as persistSource.
 	displayURL := args.URL
@@ -786,29 +851,15 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 		log.Printf("retrieve_source: marking registry source parsed: %v", parseErr)
 	}
 
-	// Resolve the per-repo model whitelist. When the repo has set
-	// allowed_models (non-NULL), it replaces the global config; when
-	// NULL, the global registry config is the fallback. This is the
-	// "per-repo replaces global" semantics.
-	allowedModels := resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels())
-
-	// Import each allowed decomposition model.
-	for _, dr := range pkg.Decompositions {
-		if !registry.IsAllowed(allowedModels, dr.ModelID) {
-			continue
-		}
-		decomp, err := rc.PullDecomposition(ctx, pkg.Source.ID, dr.ModelID)
-		if err != nil {
-			log.Printf("retrieve_source: pulling decomposition %s from registry: %v", dr.ModelID, err)
-			continue
-		}
-		// Strip concept-level fields when the repo's pull level is
-		// "facts". The concept/link/concept-embedding import loops
-		// below then iterate zero items, leaving fact_concepts empty
-		// so extract_concepts regenerates concepts from the stable
-		// facts. One line per pull path — the filter is the single
-		// source of truth for what each level includes.
-		decomp = pullFilter.FilterForPull(decomp)
+	// The decompositions in the CacheHit are already filtered by
+	// the RegistryCacheProvider (model whitelist, promptset
+	// acceptance, sync level, context mapping). Iterate them and
+	// persist — no re-filtering here. This is the single place the
+	// retrieve_source path persists registry artifacts; the rules
+	// live in registry.Service so the four pull paths stay in
+	// lockstep.
+	for i := range hit.Decompositions {
+		decomp := &hit.Decompositions[i]
 
 		// Track fact content_hash → local fact_id for link resolution
 		// and Qdrant point mapping. The registry's embedding key
@@ -866,10 +917,11 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 				factKind = "image"
 			}
 			if _, err := queries.CreateFact(ctx, store.CreateFactParams{
-				ID:       factID,
-				Text:     f.Content,
-				FactKind: factKind,
-				ImageUrl: strPtrOrNil(f.ImageURL),
+				ID:            factID,
+				Text:          f.Content,
+				FactKind:      factKind,
+				ImageUrl:      strPtrOrNil(f.ImageURL),
+				PromptsetHash: psHashPtr,
 			}); err != nil {
 				log.Printf("retrieve_source: creating fact from registry: %v", err)
 				continue
@@ -898,6 +950,7 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 				CanonicalName: c.CanonicalName,
 				Context:       c.Context,
 				Description:   desc,
+				PromptsetHash: psHashPtr,
 			}); err != nil {
 				log.Printf("retrieve_source: creating concept from registry: %v", err)
 				continue
@@ -956,8 +1009,9 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 				continue
 			}
 			if _, err := queries.AddFactConcept(ctx, store.AddFactConceptParams{
-				FactID:    factID,
-				ConceptID: concept.ID,
+				FactID:        factID,
+				ConceptID:     concept.ID,
+				PromptsetHash: psHashPtr,
 			}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				log.Printf("retrieve_source: adding fact_concept link: %v", err)
 			}

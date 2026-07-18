@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -80,15 +81,16 @@ type ImageTrace struct {
 type SourceDecompositionWorker struct {
 	river.WorkerDefaults[SourceDecompositionArgs]
 
-	chunkingProvider decomposition.ChunkingProvider
-	factExtractor    decomposition.FactExtractionProvider
-	imageExtractor   decomposition.ImageFactExtractionProvider
-	factCfg          config.DecompositionFactConfig
-	imageCfg         config.DecompositionImageConfig
-	registry         *dbpool.Registry
-	systemQueries    *store.Queries
-	storage          storage.FileStorage
-	modelResolver    *ModelResolver
+	chunkingProvider  decomposition.ChunkingProvider
+	factExtractor     decomposition.FactExtractionProvider
+	imageExtractor    decomposition.ImageFactExtractionProvider
+	factCfg           config.DecompositionFactConfig
+	imageCfg          config.DecompositionImageConfig
+	registry          *dbpool.Registry
+	systemQueries     *store.Queries
+	storage           storage.FileStorage
+	modelResolver     *ModelResolver
+	promptsetResolver *PromptsetResolver
 }
 
 func NewSourceDecompositionWorker(
@@ -101,17 +103,19 @@ func NewSourceDecompositionWorker(
 	systemQueries *store.Queries,
 	stor storage.FileStorage,
 	modelResolver *ModelResolver,
+	promptsetResolver *PromptsetResolver,
 ) *SourceDecompositionWorker {
 	return &SourceDecompositionWorker{
-		chunkingProvider: chunkingProvider,
-		factExtractor:    factExtractor,
-		imageExtractor:   imageExtractor,
-		factCfg:          factCfg,
-		imageCfg:         imageCfg,
-		registry:         registry,
-		systemQueries:    systemQueries,
-		storage:          stor,
-		modelResolver:    modelResolver,
+		chunkingProvider:  chunkingProvider,
+		factExtractor:     factExtractor,
+		imageExtractor:    imageExtractor,
+		factCfg:           factCfg,
+		imageCfg:          imageCfg,
+		registry:          registry,
+		systemQueries:     systemQueries,
+		storage:           stor,
+		modelResolver:     modelResolver,
+		promptsetResolver: promptsetResolver,
 	}
 }
 
@@ -140,15 +144,39 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 	pool := w.registry.Get(dbName)
 	queries := store.New(pool.Pool)
 
+	// Resolve the repo's effective promptset (philosophy) once at
+	// Work() start. The hash tags every fact/reference this job
+	// persists so downstream queries (synthesis, registry pull) can
+	// filter to a single promptset and decompositions from different
+	// promptsets do not mix. The resolved Promptset is threaded into
+	// the fact + image extractors via WithPromptset so they run the
+	// repo's philosophy, not the built-in default.
+	var ps promptset.Promptset
+	var psHash string
+	if w.promptsetResolver != nil {
+		ps = w.promptsetResolver.Effective(ctx, repoID)
+		psHash = ps.Hash
+		w.promptsetResolver.LogEffective(ctx, repoID, "source_decomposition")
+	} else {
+		ps = promptset.Default
+		psHash = promptset.DefaultHash
+	}
+	psHashPtr := &psHash
+
 	// Resolve per-repo model overrides for fact + image extraction.
 	// When the resolver returns a non-nil provider, build a fresh
 	// thin wrapper with the per-repo model; otherwise use the
-	// default (baked-in) instance.
+	// default (baked-in) instance. The wrapper inherits the resolved
+	// promptset via WithPromptset so a per-repo model swap does not
+	// reset the philosophy.
 	factExtractor := w.factExtractor
 	if w.modelResolver != nil {
 		if r := w.modelResolver.Resolve(ctx, repoID, TaskKindFactExtraction); r.Provider != nil {
-			factExtractor = decomposition.NewAIFactExtractionProvider(r.Provider, r.ModelID)
+			factExtractor = decomposition.NewAIFactExtractionProvider(r.Provider, r.ModelID).WithPromptset(ps)
 		}
+	}
+	if fe, ok := factExtractor.(*decomposition.AIFactExtractionProvider); ok {
+		factExtractor = fe.WithPromptset(ps)
 	}
 	imageExtractor := w.imageExtractor
 	if w.modelResolver != nil && imageExtractor != nil {
@@ -158,9 +186,12 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 			if def, ok := imageExtractor.(*decomposition.AIImageFactExtractionProvider); ok {
 				imageExtractor = decomposition.NewAIImageFactExtractionProvider(
 					r.Provider, r.ModelID, def.ImageFetcher, def.MaxImageBytes,
-				)
+				).WithPromptset(ps)
 			}
 		}
+	}
+	if ie, ok := imageExtractor.(*decomposition.AIImageFactExtractionProvider); ok {
+		imageExtractor = ie.WithPromptset(ps)
 	}
 
 	source, err := queries.GetSourceByID(ctx, sourceID)
@@ -303,9 +334,10 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 				continue
 			}
 			created, err := queries.CreateFact(ctx, store.CreateFactParams{
-				ID:       factID,
-				Text:     ef.Text,
-				FactKind: "text",
+				ID:            factID,
+				Text:          ef.Text,
+				FactKind:      "text",
+				PromptsetHash: psHashPtr,
 			})
 			if err != nil {
 				log.Printf("source_decomposition: persisting fact failed: %v", err)
@@ -336,6 +368,7 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 					SourceID:      sourceID,
 					SentenceIndex: int32(sIdx),
 					ChunkIndex:    int32(chunk.Index),
+					PromptsetHash: psHashPtr,
 				}); err != nil {
 					log.Printf("source_decomposition: linking fact reference failed: %v", err)
 					continue
@@ -362,7 +395,7 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 	imagesAttempted := 0
 	imageTraces := []ImageTrace{}
 	if imageExtractor != nil && w.imageCfg.Enabled {
-		imageCount, imageFailures, imagesAttempted = w.extractImageFacts(ctx, queries, pool.Pool, source, sourceHasText, repoSlug, args, job, &totalFacts, &imageTraces, imageExtractor)
+		imageCount, imageFailures, imagesAttempted = w.extractImageFacts(ctx, queries, pool.Pool, source, sourceHasText, repoSlug, args, job, &totalFacts, &imageTraces, imageExtractor, psHashPtr)
 	} else if w.imageCfg.Enabled && imageExtractor == nil {
 		log.Printf("source_decomposition: image extraction enabled but provider not configured; skipping images for source %s", args.SourceID)
 	}
@@ -498,6 +531,7 @@ func (w *SourceDecompositionWorker) extractImageFacts(
 	totalFacts *int,
 	imageTraces *[]ImageTrace,
 	imageExtractor decomposition.ImageFactExtractionProvider,
+	psHashPtr *string,
 ) (int, int, int) {
 	images, err := queries.ListSourceImages(ctx, source.ID)
 	if err != nil {
@@ -645,12 +679,13 @@ func (w *SourceDecompositionWorker) extractImageFacts(
 				continue
 			}
 			imgURLPtr := imageURLPtr(imageURL)
-			created, err := queries.CreateFact(ctx, store.CreateFactParams{
-				ID:       factID,
-				Text:     factText,
-				FactKind: "image",
-				ImageUrl: imgURLPtr,
-			})
+		created, err := queries.CreateFact(ctx, store.CreateFactParams{
+			ID:            factID,
+			Text:          factText,
+			FactKind:      "image",
+			ImageUrl:      imgURLPtr,
+			PromptsetHash: psHashPtr,
+		})
 			if err != nil {
 				log.Printf("source_decomposition: persisting image fact failed: %v", err)
 				continue

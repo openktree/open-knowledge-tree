@@ -245,12 +245,31 @@ oauth:
   auth_code_ttl: 10m
 
 providers:
+  # promptset_default is the global default promptset hash a
+  # repository inherits when its active_promptset_hash column is
+  # NULL. Empty means "use the built-in promptset.Default.Hash"
+  # (computed at app init from the canonical prompt strings). A
+  # non-empty value must be a hash the promptset resolver knows
+  # (built-in or a row in okt_system.promptsets). Per-repo overrides
+  # via repositories.active_promptset_hash take precedence.
+  promptset_default: ""
   search:
     provider: "serper"
     serper:
       api_key: ""
     openalex:
       email: ""
+    # OKT Knowledge Registry search provider. Queries the registry's
+    # GET /api/v1/sources?q= endpoint (free-text LIKE over
+    # title/url/doi) so a deployment with no SERPER_API_KEY and no
+    # OPENALEX_EMAIL still has a working search provider. The
+    # registry URL/auth comes from providers.registry /
+    # providers.registries above; this block only tunes the
+    # search-side knobs. per_page defaults to 20 (0 = use the
+    # default); timeout defaults to 15s (0 = use the default).
+    registry:
+      per_page: 20
+      timeout: 15s
   resolution:
     fetch:
       enabled: true
@@ -792,6 +811,10 @@ repository_presets:
     providers:
       search: ["openalex"]
       resolution: ["fetch", "unpaywall", "tls"]
+    # Restrict to DOI-identified sources so a scientific repo only
+    # accepts academic works. An admin can relax this (add "url"
+    # and/or "document") via the settings UI after creation.
+    allowed_content_types: ["doi"]
     contexts:
       - Biomolecule
       - chemical compound

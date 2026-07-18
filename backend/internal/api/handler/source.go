@@ -162,6 +162,11 @@ type Source struct {
 	// filter stored settings down to the live set (orphans ignored).
 	// Set via SetProviderRegistry; nil means "no enforcement".
 	providerRegistry *ProviderRegistry
+	// systemStore is the system-pool *store.Queries the content-type
+	// gate reads allowed_content_types from. Set via SetSystemStore;
+	// nil means the content-type gate is a no-op (legacy behavior),
+	// so existing tests that don't wire it still pass.
+	systemStore *store.Queries
 }
 
 // NewSource constructs a Source handler bundle. `storage` is the
@@ -238,6 +243,50 @@ func (s *Source) SetSettingsGate(g RepoProviderGate) {
 // checking stored rows directly, which can include orphans).
 func (s *Source) SetProviderRegistry(r *ProviderRegistry) {
 	s.providerRegistry = r
+}
+
+// SetSystemStore attaches the system-pool *store.Queries the
+// content-type gate reads allowed_content_types from. Optional;
+// nil means the content-type gate is a no-op (legacy behavior), so
+// existing tests that don't wire it still pass. Wired by
+// api.Handler.SetSource in cmd/app/api.go.
+func (s *Source) SetSystemStore(q *store.Queries) {
+	s.systemStore = q
+}
+
+// contentTypesAllowedForRepo reports whether a given content kind
+// ("document", "url", "doi") is allowed for the active repository.
+// Returns (allowed, checked, err):
+//   - checked=false means the gate didn't run (no system store wired,
+//     no repo in context, or the repo's allowed_content_types column
+//     is NULL = allow all) → the caller skips enforcement (legacy
+//     behavior).
+//   - checked=true, allowed=true → allow.
+//   - checked=true, allowed=false → deny (403).
+//   - err non-nil → a settings lookup failure; the caller logs and
+//     denies (safer than allowing through a broken gate).
+func (s *Source) contentTypesAllowedForRepo(ctx context.Context, repoID, kind string) (allowed, checked bool, err error) {
+	if s.systemStore == nil || repoID == "" {
+		return false, false, nil
+	}
+	var uuid pgtype.UUID
+	if err := uuid.Scan(repoID); err != nil {
+		return false, false, nil // malformed repo id — let the downstream handler 400 it
+	}
+	types, qerr := s.systemStore.GetRepositoryAllowedContentTypes(ctx, uuid)
+	if qerr != nil {
+		return false, false, qerr
+	}
+	if types == nil {
+		// NULL = allow all (the default, backward compatible).
+		return false, false, nil
+	}
+	for _, t := range types {
+		if t == kind {
+			return true, true, nil
+		}
+	}
+	return false, true, nil
 }
 
 // providerEnabledForRepo reports whether a (kind, id) provider is
@@ -332,6 +381,12 @@ func (s *Source) ListProviders(w http.ResponseWriter, r *http.Request) {
 			entry = map[string]interface{}{
 				"id":   "openalex",
 				"name": "OpenAlex (Academic Works)",
+				"type": "search",
+			}
+		case "registry":
+			entry = map[string]interface{}{
+				"id":   "registry",
+				"name": "OKT Knowledge Registry",
 				"type": "search",
 			}
 		}
@@ -887,6 +942,25 @@ func (s *Source) EnqueueRetrieveSource(w http.ResponseWriter, r *http.Request) {
 		body.RepositoryID = r.Header.Get("X-Repository-ID")
 	}
 
+	// Content-type gate (migration 0049): 403-reject when the
+	// repo's allowed_content_types doesn't include the classified
+	// kind (url or doi). A repo with ["doi"] rejects URL retrieves
+	// but accepts DOI; ["document","url"] accepts URLs but not
+	// DOIs. NULL (the default) = allow all — the gate is a no-op.
+	contentKind := string(resource.Type)
+	if contentKind == "" {
+		contentKind = ContentKindURL
+	}
+	if allowed, checked, gerr := s.contentTypesAllowedForRepo(r.Context(), body.RepositoryID, contentKind); checked {
+		if gerr != nil {
+			log.Printf("source: EnqueueRetrieveSource content-type gate error for repo %s: %v", body.RepositoryID, gerr)
+		}
+		if !allowed {
+			httputil.WriteError(w, http.StatusForbidden, "this repository does not allow "+contentKind+" sources")
+			return
+		}
+	}
+
 	// Per-repo provider gate: when a repo is in context, check
 	// that at least one enabled resolution provider supports the
 	// classified resource type. The fetch strategy chain is decided
@@ -1116,9 +1190,28 @@ func (s *Source) CreateSource(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "url is required")
 		return
 	}
-	kind := body.Kind
+	// Content-type gate (migration 0049): classify the URL and
+	// 403-reject when the repo's allowed_content_types doesn't
+	// include the classified kind. A repo with ["doi"] rejects URL
+	// source creation; ["document","url"] accepts it. NULL (the
+	// default) = allow all — the gate is a no-op.
+	resource := fetch.ClassifyURL(body.URL)
+	kind := string(resource.Type)
 	if kind == "" {
-		kind = "homepage"
+		kind = "url"
+	}
+	if allowed, checked, gerr := s.contentTypesAllowedForRepo(r.Context(), repoID.String(), kind); checked {
+		if gerr != nil {
+			log.Printf("source: CreateSource content-type gate error for repo %s: %v", repoID.String(), gerr)
+		}
+		if !allowed {
+			httputil.WriteError(w, http.StatusForbidden, "this repository does not allow "+kind+" sources")
+			return
+		}
+	}
+	kind0 := body.Kind
+	if kind0 == "" {
+		kind0 = "homepage"
 	}
 
 	id := pgtype.UUID{}
@@ -1131,7 +1224,7 @@ func (s *Source) CreateSource(w http.ResponseWriter, r *http.Request) {
 		ID:           id,
 		RepositoryID: repoID,
 		Url:          body.URL,
-		Kind:         kind,
+		Kind:         kind0,
 		Status:       "pending",
 	})
 	if err != nil {
@@ -1205,6 +1298,20 @@ func (s *Source) UploadSource(w http.ResponseWriter, r *http.Request) {
 	if s.taskEnqueuer == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "task manager not configured")
 		return
+	}
+
+	// Content-type gate (migration 0049): uploads are always
+	// "document" kind. 403-reject when the repo's
+	// allowed_content_types doesn't include "document". NULL (the
+	// default) = allow all — the gate is a no-op.
+	if allowed, checked, gerr := s.contentTypesAllowedForRepo(r.Context(), repoID.String(), ContentKindDocument); checked {
+		if gerr != nil {
+			log.Printf("source: UploadSource content-type gate error for repo %s: %v", repoID.String(), gerr)
+		}
+		if !allowed {
+			httputil.WriteError(w, http.StatusForbidden, "this repository does not allow document uploads")
+			return
+		}
 	}
 
 	// Parse the request body. Two shapes are supported:

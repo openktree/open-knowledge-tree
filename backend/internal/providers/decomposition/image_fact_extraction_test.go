@@ -3,6 +3,8 @@ package decomposition
 import (
 	"strings"
 	"testing"
+
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 )
 
 // TestBuildImageFactExtractionPrompt_Substitutions verifies the
@@ -15,6 +17,7 @@ func TestBuildImageFactExtractionPrompt_Substitutions(t *testing.T) {
 		"Acme Revenue 2023",
 		"bar chart of revenue",
 		false, // sourceHasText — base prompt only, no scope note
+		promptset.Default,
 	)
 	if !strings.Contains(got, "Source URL: https://example.com/article") {
 		t.Errorf("prompt missing substituted Source URL; got:\n%s", got)
@@ -32,7 +35,7 @@ func TestBuildImageFactExtractionPrompt_Substitutions(t *testing.T) {
 // alt text are empty, so the model never sees a bare "Source URL: "
 // line.
 func TestBuildImageFactExtractionPrompt_EmptyFallbacks(t *testing.T) {
-	got := buildImageFactExtractionPrompt("", "", "", false)
+	got := buildImageFactExtractionPrompt("", "", "", false, promptset.Default)
 	if !strings.Contains(got, "Source URL: (unknown)") {
 		t.Errorf("expected (unknown) fallback for Source URL; got:\n%s", got)
 	}
@@ -55,6 +58,7 @@ func TestBuildImageFactExtractionPrompt_FocusFiguresNoteAppendedWhenSourceHasTex
 		"Acme Revenue 2023",
 		"bar chart",
 		true, // sourceHasText — scope note appended
+		promptset.Default,
 	)
 	if !strings.Contains(got, "## Scope note") {
 		t.Errorf("expected '## Scope note' section when sourceHasText=true; got:\n%s", got)
@@ -78,6 +82,7 @@ func TestBuildImageFactExtractionPrompt_NoFocusFiguresNoteWhenSourceHasNoText(t 
 		"Scanned Document",
 		"",
 		false, // sourceHasText — no scope note
+		promptset.Default,
 	)
 	if strings.Contains(got, "## Scope note") {
 		t.Errorf("expected NO '## Scope note' section when sourceHasText=false; got:\n%s", got)
@@ -95,7 +100,7 @@ func TestBuildImageFactExtractionPrompt_NoFocusFiguresNoteWhenSourceHasNoText(t 
 // build unchanged. This mirrors the existing contract documented
 // inline at the call site.
 func TestBuildImageFactExtractionPrompt_LiteralPercentPreserved(t *testing.T) {
-	got := buildImageFactExtractionPrompt("https://example.com", "Title", "alt", false)
+	got := buildImageFactExtractionPrompt("https://example.com", "Title", "alt", false, promptset.Default)
 	if !strings.Contains(got, "42%") {
 		t.Errorf("expected literal '42%%' to survive prompt build; got:\n%s", got)
 	}

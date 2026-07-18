@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -19,6 +20,12 @@ import (
 type AISummarizationProvider struct {
 	aiProvider ai.AIProvider
 	model      string
+	// promptset is the prompt set this provider uses for the
+	// summarization phase. Defaults to promptset.Default; a worker
+	// swaps in the per-repo philosophy via WithPromptset. The
+	// Summarization phase field is a template carrying two %d verbs
+	// (the per-call word budget) rendered by FormatSystemPrompt.
+	promptset promptset.Promptset
 }
 
 // NewAISummarizationProvider constructs the provider. The aiProvider
@@ -26,7 +33,15 @@ type AISummarizationProvider struct {
 // send on every Summarize call (the worker may override it per-call
 // via SummarizationRequest.Model, but that path is unused today).
 func NewAISummarizationProvider(aiProvider ai.AIProvider, model string) *AISummarizationProvider {
-	return &AISummarizationProvider{aiProvider: aiProvider, model: model}
+	return &AISummarizationProvider{aiProvider: aiProvider, model: model, promptset: promptset.Default}
+}
+
+// WithPromptset returns a copy of the provider that uses the given
+// promptset's Summarization phase template.
+func (p *AISummarizationProvider) WithPromptset(ps promptset.Promptset) *AISummarizationProvider {
+	clone := *p
+	clone.promptset = ps
+	return &clone
 }
 
 func (p *AISummarizationProvider) Describe() ProviderDescription {
@@ -75,7 +90,7 @@ func (p *AISummarizationProvider) Summarize(ctx context.Context, db store.DBTX, 
 
 	chatReq := ai.ChatRequest{
 		Model:    model,
-		Messages: []ai.ChatMessage{{Role: "system", Content: buildSystemPrompt(req.MaxTokens)}, {Role: "user", Content: userMsg}},
+		Messages: []ai.ChatMessage{{Role: "system", Content: FormatSystemPrompt(p.promptset.Summarization, req.MaxTokens)}, {Role: "user", Content: userMsg}},
 		TaskID:   taskID,
 		Attribution: ai.Attribution{
 			RepositoryID: req.Attribution.RepositoryID,

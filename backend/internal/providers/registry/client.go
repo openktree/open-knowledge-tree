@@ -160,6 +160,15 @@ type DecompRef struct {
 	EmbeddingModel string `json:"embedding_model,omitempty"`
 	PresignedURL   string `json:"presigned_url,omitempty"`
 	S3Key          string `json:"s3_key,omitempty"`
+	// PromptsetHash is the philosophy hash the registry stamps on
+	// each decomposition it stores. Pulling repos use it to filter
+	// the DecompRef list (Service.ListRelevantDecompositions) so
+	// decompositions from promptsets the repo hasn't accepted are
+	// skipped before the per-decomposition pull. Empty when the
+	// registry server hasn't shipped promptset_hash on its
+	// source-listing response — the client treats empty as the
+	// default and accepts it (legacy behavior).
+	PromptsetHash string `json:"promptset_hash,omitempty"`
 }
 
 // PullSource retrieves a source package from the registry.
@@ -194,6 +203,7 @@ func (c *Client) PullSource(ctx context.Context, sourceID string) (*SourcePackag
 
 type DecompositionPackage struct {
 	ModelID          string            `json:"model_id"`
+	PromptsetHash    string            `json:"promptset_hash,omitempty"`
 	Facts            []FactData        `json:"facts,omitempty"`
 	Concepts         []ConceptData     `json:"concepts,omitempty"`
 	Embeddings       *EmbeddingData    `json:"embeddings,omitempty"`

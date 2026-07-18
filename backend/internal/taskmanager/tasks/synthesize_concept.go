@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/synthesis"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -62,11 +63,12 @@ type SynthesizeConceptResult struct {
 type SynthesizeConceptsWorker struct {
 	river.WorkerDefaults[SynthesizeConceptArgs]
 
-	synthesizer    synthesis.SynthesisProvider
-	cfg            config.SynthesisConfig
-	registry       *dbpool.Registry
-	systemQueries  *store.Queries
-	modelResolver  *ModelResolver
+	synthesizer     synthesis.SynthesisProvider
+	cfg             config.SynthesisConfig
+	registry        *dbpool.Registry
+	systemQueries   *store.Queries
+	modelResolver   *ModelResolver
+	promptsetResolver *PromptsetResolver
 }
 
 func NewSynthesizeConceptsWorker(
@@ -75,13 +77,15 @@ func NewSynthesizeConceptsWorker(
 	registry *dbpool.Registry,
 	systemQueries *store.Queries,
 	modelResolver *ModelResolver,
+	promptsetResolver *PromptsetResolver,
 ) *SynthesizeConceptsWorker {
 	return &SynthesizeConceptsWorker{
-		synthesizer:   synthesizer,
-		cfg:           cfg,
-		registry:      registry,
-		systemQueries: systemQueries,
-		modelResolver: modelResolver,
+		synthesizer:       synthesizer,
+		cfg:               cfg,
+		registry:          registry,
+		systemQueries:     systemQueries,
+		modelResolver:     modelResolver,
+		promptsetResolver: promptsetResolver,
 	}
 }
 
@@ -123,6 +127,22 @@ func (w *SynthesizeConceptsWorker) Work(ctx context.Context, job *river.Job[Synt
 	}
 	pool := w.registry.Get(dbName)
 
+	// Resolve the repo's effective promptset once at Work() start.
+	// The resolved Promptset is threaded into the synthesizer (and
+	// its image-picker) via WithPromptset so the repo's philosophy
+	// runs, not the built-in default.
+	var ps promptset.Promptset
+	if w.promptsetResolver != nil {
+		ps = w.promptsetResolver.Effective(ctx, repoID)
+		w.promptsetResolver.LogEffective(ctx, repoID, "synthesize_concept")
+	} else {
+		ps = promptset.Default
+	}
+	synthesizer := w.synthesizer
+	if s, ok := synthesizer.(*synthesis.AISynthesisProvider); ok {
+		synthesizer = s.WithPromptset(ps)
+	}
+
 	// Resolve per-repo model override for synthesis. The synthesis
 	// wrapper already honors a non-empty req.Model (ai_synthesis.go:
 	// model := req.Model; if "" { model = p.model }), so we pass the
@@ -152,7 +172,7 @@ func (w *SynthesizeConceptsWorker) Work(ctx context.Context, job *river.Job[Synt
 	result := SynthesizeConceptResult{RepositoryID: args.RepositoryID}
 
 	w.synthesizeOneGroup(ctx, pool.Pool, conceptID, repoID, args.RepositoryID, args.SourceID,
-		maxTokens, maxImages, maxCands, maxRelated, maxRelatedSynth, thinkingLevel, taskID, &result, synthesisModelOverride)
+		maxTokens, maxImages, maxCands, maxRelated, maxRelatedSynth, thinkingLevel, taskID, &result, synthesisModelOverride, synthesizer)
 
 	log.Printf("synthesize_concept: repo %s concept %s -> %s (created=%d updated=%d skipped-no-delta=%d skipped-locked=%d images=%d errors=%d)",
 		args.RepositoryID, args.ConceptID, result.CanonicalName,
@@ -174,6 +194,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	taskID string,
 	result *SynthesizeConceptResult,
 	synthesisModelOverride string,
+	synthesizer synthesis.SynthesisProvider,
 ) {
 	queries := store.New(pool)
 
@@ -318,7 +339,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 			chosenImages = candidateImages
 		} else {
 			pickCtx, pickCancel := context.WithTimeout(context.Background(), 120*time.Second)
-			picked, perr := w.synthesizer.PickImages(pickCtx, pool, synthesis.ImagePickRequest{
+			picked, perr := synthesizer.PickImages(pickCtx, pool, synthesis.ImagePickRequest{
 				CanonicalName: concept.CanonicalName,
 				Context:       concept.Context,
 				Candidates:    candidateImages,
@@ -345,7 +366,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 
 	// 7. Synthesis LLM call (outside any transaction, 180s background ctx).
 	synthCtx, synthCancel := context.WithTimeout(context.Background(), 180*time.Second)
-	content, err := w.synthesizer.Synthesize(synthCtx, pool, synthesis.SynthesisRequest{
+	content, err := synthesizer.Synthesize(synthCtx, pool, synthesis.SynthesisRequest{
 		CanonicalName:   concept.CanonicalName,
 		Context:         concept.Context,
 		Slices:          sliceInputs,

@@ -81,6 +81,7 @@ func defaultPolicies() [][]string {
 		[]string{RoleSysAdmin, "*", Objects.Tasks, Actions.Cancel},
 		[]string{RoleSysAdmin, "*", Objects.Tasks, Actions.Manage},
 		[]string{RoleSysAdmin, "*", Objects.Audit, Actions.Read},
+		[]string{RoleSysAdmin, "*", Objects.Promptset, Actions.Manage},
 	)
 
 	// ── repoadmin (repo scope + system-scope utility access) ────
@@ -114,6 +115,7 @@ func defaultPolicies() [][]string {
 		[]string{RoleRepoAdmin, "*", Objects.Remote, Actions.Write},
 		[]string{RoleRepoAdmin, "*", Objects.Tasks, Actions.Read},
 		[]string{RoleRepoAdmin, "*", Objects.Tasks, Actions.Cancel},
+		[]string{RoleRepoAdmin, "*", Objects.Promptset, Actions.Manage},
 	)
 
 	// ── editor (sources + investigations + reports write) ───────
@@ -142,6 +144,7 @@ func defaultPolicies() [][]string {
 		[]string{RoleEditor, "*", Objects.Remote, Actions.Write},
 		[]string{RoleEditor, "*", Objects.Tasks, Actions.Read},
 		[]string{RoleEditor, "*", Objects.Tasks, Actions.Cancel},
+		[]string{RoleEditor, "*", Objects.Promptset, Actions.Manage},
 	)
 
 	// ── curator (read sources, write investigations + reports) ──
@@ -165,6 +168,7 @@ func defaultPolicies() [][]string {
 		[]string{RoleCurator, "*", Objects.Remote, Actions.Read},
 		[]string{RoleCurator, "*", Objects.Tasks, Actions.Read},
 		[]string{RoleCurator, "*", Objects.Tasks, Actions.Cancel},
+		[]string{RoleCurator, "*", Objects.Promptset, Actions.Manage},
 	)
 
 	// ── viewer (read-only) ─────────────────────────────────────
@@ -180,6 +184,7 @@ func defaultPolicies() [][]string {
 		[]string{RoleViewer, "*", Objects.Reports, Actions.Read},
 		[]string{RoleViewer, "*", Objects.Remote, Actions.Read},
 		[]string{RoleViewer, "*", Objects.Tasks, Actions.Read},
+		[]string{RoleViewer, "*", Objects.Promptset, Actions.Manage},
 	)
 
 	return p

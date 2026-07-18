@@ -375,6 +375,17 @@ export const api = {
     });
   },
 
+  // Update the per-repo allowed content types gate. Body:
+  // { allowed_content_types: ["document","url","doi"] | null }.
+  // null = allow all (the default); an array restricts to the
+  // listed kinds. Each value must be one of "document", "url", "doi".
+  setRepositoryContentTypes(repoID, body) {
+    return request(`/repositories/${repoID}/settings/content-types`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+
   // Update the per-repo model override for a task kind. Body:
   // { task_kind, model_id }. Empty model_id clears the override
   // (revert to inheriting the global default).
@@ -752,6 +763,65 @@ export const api = {
 
   getAIUsageBySource(params = {}) {
     return request(`/ai/usage/by-source${usageQS(params)}`);
+  },
+
+  // ── Promptsets ──────────────────────────────────────────────
+  // listPromptsets returns the built-in + the caller's custom
+  // promptsets (sysadmins see all). Used by the Promptsets page and
+  // by the RepositorySettings promptset dropdown.
+  listPromptsets() {
+    return request(`/promptsets`);
+  },
+
+  // getPromptset returns a single promptset by hash (built-in or
+  // custom the caller can see). 404 when unknown.
+  getPromptset(hash) {
+    return request(`/promptsets/${encodeURIComponent(hash)}`);
+  },
+
+  // createPromptset creates a custom promptset. The hash is
+  // computed server-side from the 8 phase strings; the response
+  // carries the authoritative hash.
+  createPromptset(body) {
+    return request(`/promptsets`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // updatePromptset edits a custom promptset. Editing creates a
+  // NEW row (new hash) since the hash is the identity; the
+  // response is the new promptset. The old row stays so repos
+  // pointing at it keep working.
+  updatePromptset(hash, body) {
+    return request(`/promptsets/${encodeURIComponent(hash)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // deletePromptset deletes a custom promptset the caller owns
+  // (or any if sysadmin). The built-in cannot be deleted.
+  deletePromptset(hash) {
+    return request(`/promptsets/${encodeURIComponent(hash)}`, {
+      method: "DELETE",
+    });
+  },
+
+  // getRepositoryPromptset returns the repo's active + accepted
+  // promptset hashes plus the resolved effective hash.
+  getRepositoryPromptset(slug) {
+    return request(`/repositories/${slug}/settings/promptset`);
+  },
+
+  // setRepositoryPromptset updates the repo's active + accepted
+  // promptset hashes. Pass null active_hash to clear (inherit
+  // global default); null accepted_hashes to clear the set.
+  setRepositoryPromptset(slug, body) {
+    return request(`/repositories/${slug}/settings/promptset`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
   },
 };
 

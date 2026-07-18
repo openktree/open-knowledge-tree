@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/oauth"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
@@ -36,6 +38,17 @@ import (
 )
 
 func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, registry *dbpool.Registry) {
+	// Build the registry client map + service map up front so the
+	// registry search provider (the keyless default) can join the
+	// searchProviders map alongside Serper/OpenAlex. The ClientMap
+	// is also rebuilt later for the remote handler / pull workers —
+	// both share the same config, so the two instances are
+	// equivalent. Building it here lets a deployment with no
+	// SERPER_API_KEY and no OPENALEX_EMAIL still get a working
+	// search provider backed by the OKT Knowledge Registry.
+	registryClients := registryclient.NewClientMap(cfg.Providers)
+	registryServices := registryclient.NewServiceMap(registryClients)
+
 	searchProviders := make(map[string]search.SearchProvider)
 
 	serperKey := cfg.Providers.Search.Serper.APIKey
@@ -52,6 +65,40 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	}
 	if openAlexEmail != "" {
 		searchProviders["openalex"] = search.NewOpenAlexSearchProvider(openAlexEmail)
+	}
+
+	// Register the registry search provider whenever any registry
+	// is configured. It is the keyless default — a deployment with
+	// no Serper/OpenAlex keys still gets a working search provider
+	// so agents can discover sources other OKT instances have
+	// contributed. When no registry is configured the ServiceMap is
+	// a no-op and the provider self-reports "not configured" on
+	// Search, so registering it is harmless.
+	if registryServices.IsConfigured() {
+		searchProviders["registry"] = search.NewRegistrySearchProvider(registryServices, cfg.Providers.Search.Registry)
+	}
+
+	// Default search provider precedence: the configured default
+	// (cfg.Providers.Search.Provider, typically "serper") wins when
+	// it's actually registered; otherwise fall back to "registry"
+	// when the registry search provider is available, so a keyless
+	// deployment still has a working default. The MCP handler and
+	// the REST TestSearch handler both read this default when the
+	// caller omits `provider`.
+	defaultSearchProvider := cfg.Providers.Search.Provider
+	if _, ok := searchProviders[defaultSearchProvider]; !ok {
+		if _, ok := searchProviders["registry"]; ok {
+			defaultSearchProvider = "registry"
+		} else if len(searchProviders) > 0 {
+			// Pick the first registered id (sorted for determinism)
+			// so the default is never an unregistered id.
+			ids := make([]string, 0, len(searchProviders))
+			for k := range searchProviders {
+				ids = append(ids, k)
+			}
+			sort.Strings(ids)
+			defaultSearchProvider = ids[0]
+		}
 	}
 
 	// Build the parser set shared by the plain fetch
@@ -559,7 +606,15 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	}
 
 	modelResolver := tasks.NewModelResolver(cfg, aiProviders, queries)
-	tm, err := taskmanager.New(ctx, cfg, taskPool, queries, registry, searchProviders, fetchStrategy, chunkingProviders, factExtractors, imageExtractors, conceptExtractor, refiner, embeddingProvider, qdrantStore, storageBackend, summarizer, synthesizer, postureClassifier, modelResolver)
+	// Build the promptset resolver: a DB provider over the system
+	// pool + the built-in provider, chained. The resolver is the
+	// single source of truth for "which promptsets exist" — the
+	// HTTP handler uses it to validate hashes, the workers use it
+	// to resolve a repo's effective philosophy. Nil-safe: a
+	// deployment that hasn't wired the system pool still gets the
+	// built-in promptset via the BuiltinProvider.
+	promptsetResolver := promptset.NewResolver(promptset.NewDBProvider(queries))
+	tm, err := taskmanager.New(ctx, cfg, taskPool, queries, registry, searchProviders, fetchStrategy, chunkingProviders, factExtractors, imageExtractors, conceptExtractor, refiner, embeddingProvider, qdrantStore, storageBackend, summarizer, synthesizer, postureClassifier, modelResolver, promptsetResolver)
 	if err != nil {
 		log.Fatalf("setting up task manager: %v", err)
 	}
@@ -609,11 +664,20 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	// and the task workers so both resolve the same per-repo client
 	// from the repo's `registry_id` column. When no registry is
 	// configured the map is empty and every registry feature is a
-	// no-op.
-	registryClients := registryclient.NewClientMap(cfg.Providers)
+	// no-op. The same ClientMap was built at the top of runAPI so
+	// the registry search provider could join the searchProviders
+	// map; reuse it here instead of rebuilding.
 	h.SetRemote(handler.NewRemote(registryClients, cfg.Providers))
 	h.SetRegistryClients(registryClients)
+	// Build the registry cache provider (the cache-hit shortcut the
+	// retrieve_source / pull workers call instead of inlining
+	// SearchSource + PullSource + PullDecomposition + filter). It
+	// is wired into the task manager workers below alongside the
+	// ClientMap; the HTTP layer doesn't need it directly.
+	registryCacheProvider := registryclient.NewRegistryCacheProvider(registryServices)
+	_ = registryCacheProvider
 	h.SetModelCatalog(handler.NewModelCatalog(cfg.Providers.AI.Models))
+	h.SetPromptsetResolver(promptsetResolver)
 	h.SetRemoteDedupEnqueuer(tm.RemoteDedupEnqueuer())
 	h.SetRemotePullBatchEnqueuer(tm.RemotePullBatchEnqueuer())
 
@@ -662,7 +726,7 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	mcpHandler.SetTaskClient(tm.Client())
 	mcpHandler.SetTaskPool(taskPool.Pool)
 	mcpHandler.SetSearchProviders(searchProviders)
-	mcpHandler.SetDefaultSearchProvider(cfg.Providers.Search.Provider)
+	mcpHandler.SetDefaultSearchProvider(defaultSearchProvider)
 	h.SetMCP(mcpHandler)
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),

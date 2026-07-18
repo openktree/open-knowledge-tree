@@ -11,19 +11,39 @@ import (
 )
 
 // RemotePullDeps is the dependency bundle passed to
-// PullOneRemoteSource. It bundles the registry client, the per-repo
-// store, the repo UUID, the inbound context mapper (may be nil when
-// context mapping isn't configured — the pull then imports contexts
-// verbatim, the legacy behavior), the dedup enqueuer (may be nil to
-// skip the embed→dedup chain), and the sync-level filter (may be nil
-// to default to full "concepts" pull).
+// PullOneRemoteSource. It bundles the registry service (filter-aware
+// decomposition pull), the per-repo store, the repo UUID, the
+// inbound context mapper (may be nil when context mapping isn't
+// configured — the pull then imports contexts verbatim, the legacy
+// behavior), the dedup enqueuer (may be nil to skip the embed→dedup
+// chain), and the relevance filter (model whitelist, promptset
+// acceptance, sync level, context mapping — the single struct the
+// registry core applies).
 type RemotePullDeps struct {
-	Client        *registry.Client
+	// Service is the filter-aware registry core. When nil the pull
+	// falls back to the legacy path (Client + manual filtering),
+	// preserved for backward compatibility with callers that
+	// haven't been migrated.
+	Service *registry.Service
+	// Client is the raw registry client, used for the source
+	// package pull (PullSource) and as the fallback when Service is
+	// nil. Kept on the struct so the batch worker doesn't need a
+	// separate resolver.
+	Client *registry.Client
+	// Filter is the per-repo RelevanceFilter the Service applies
+	// when pulling decompositions. Nil when the caller wants the
+	// legacy "no filter" behavior (the Service then returns all
+	// decompositions unfiltered).
+	Filter *registry.RelevanceFilter
 	Queries       *store.Queries
 	SystemQueries *store.Queries
 	RepoID        pgtype.UUID
 	// Mapper rewrites registry concept contexts to the repo's local
 	// vocabulary on pull. Nil = import verbatim (legacy behavior).
+	// Deprecated: pass the mapper via Filter.ContextMapper instead —
+	// the Service applies it during the pull so the import loop
+	// receives already-translated concepts. Kept for the legacy
+	// fallback path.
 	Mapper RemoteInboundMapper
 	// DedupEnqueuer kicks off embed_facts after a successful pull so
 	// the imported 'new' facts go through the standard dedup
@@ -33,6 +53,9 @@ type RemotePullDeps struct {
 	// decomposition based on the repo's registry_pull_level. Nil
 	// defaults to full "concepts" pull (the legacy behavior). Set by
 	// the caller from GetRepositorySyncLevels.
+	// Deprecated: pass the filter via Filter.SyncLevel instead — the
+	// Service applies it during the pull. Kept for the legacy
+	// fallback path.
 	PullFilter *registry.SyncLevelFilter
 }
 
@@ -141,6 +164,9 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 	// autoAdd seeds a repository_contexts row for the auto_add
 	// policy. It needs the system pool (repository_contexts lives in
 	// okt_system), so it's only wired when SystemQueries is set.
+	// When the Service is wired, the filter's AutoAdd callback is
+	// preferred (set by the caller); this one is the fallback for
+	// the legacy path.
 	autoAdd := func(registryLabel string) {
 		if deps.SystemQueries == nil {
 			return
@@ -155,28 +181,53 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 		}
 	}
 
-	for _, dr := range pkg.Decompositions {
-		if !deps.Client.IsAllowedModel(dr.ModelID) {
-			continue
+	// Build the decomposition list to pull. When a Service + Filter
+	// is wired, use the filter-aware path (the Service applies the
+	// model whitelist, promptset acceptance, sync level, and
+	// context mapping). Otherwise fall back to the legacy path
+	// (Client.IsAllowedModel + manual filtering) so callers that
+	// haven't been migrated keep working.
+	var decompRefs []registry.DecompRef
+	if deps.Service != nil && deps.Filter != nil {
+		decompRefs = deps.Service.ListRelevantDecompositions(pkg, deps.Filter)
+	} else {
+		for _, dr := range pkg.Decompositions {
+			if deps.Client != nil && !deps.Client.IsAllowedModel(dr.ModelID) {
+				continue
+			}
+			decompRefs = append(decompRefs, dr)
 		}
-		decomp, err := deps.Client.PullDecomposition(ctx, pkg.Source.ID, dr.ModelID)
-		if err != nil {
-			log.Printf("remote: pulling decomposition %s: %v", dr.ModelID, err)
-			continue
-		}
-		// Strip concept-level fields when the repo's pull level is
-		// "facts". The concept/link import loops below then iterate
-		// zero items, leaving fact_concepts empty so extract_concepts
-		// regenerates concepts from the stable facts. Nil filter
-		// defaults to full "concepts" pull (legacy behavior).
-		if deps.PullFilter != nil {
-			decomp = deps.PullFilter.FilterForPull(decomp)
+	}
+
+	for _, dr := range decompRefs {
+		var decomp *registry.DecompositionPackage
+		if deps.Service != nil && deps.Filter != nil {
+			d, ok, err := deps.Service.PullRelevantDecomposition(ctx, pkg.Source.ID, dr.ModelID, deps.Filter)
+			if err != nil {
+				log.Printf("remote: pulling decomposition %s: %v", dr.ModelID, err)
+				continue
+			}
+			if !ok {
+				continue
+			}
+			decomp = d
+		} else {
+			d, err := deps.Client.PullDecomposition(ctx, pkg.Source.ID, dr.ModelID)
+			if err != nil {
+				log.Printf("remote: pulling decomposition %s: %v", dr.ModelID, err)
+				continue
+			}
+			if deps.PullFilter != nil {
+				d = deps.PullFilter.FilterForPull(d)
+			}
+			decomp = d
 		}
 
 		// Track fact content_hash → local fact_id for link resolution.
 		factIDByHash := make(map[string]pgtype.UUID, len(decomp.Facts))
 		// Track skipped (name, registryContext) pairs so the link
-		// loop drops links to skipped concepts.
+		// loop drops links to skipped concepts. Only populated on
+		// the legacy path; the Service path already dropped them.
 		skippedConcepts := map[string]bool{}
 
 		for _, f := range decomp.Facts {
@@ -213,10 +264,17 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 			if c.CanonicalName == "" {
 				continue
 			}
-			localContext, ok := applyInboundContext(deps.Mapper, c.Context, autoAdd)
-			if !ok {
-				skippedConcepts[lowerJoin(c.CanonicalName, c.Context)] = true
-				continue
+			// When the Service is wired, c.Context is already the
+			// local context (the filter translated it). Otherwise
+			// apply the legacy mapper.
+			localContext := c.Context
+			if deps.Service == nil || deps.Filter == nil || deps.Filter.ContextMapper == nil {
+				var ok bool
+				localContext, ok = applyInboundContext(deps.Mapper, c.Context, autoAdd)
+				if !ok {
+					skippedConcepts[lowerJoin(c.CanonicalName, c.Context)] = true
+					continue
+				}
 			}
 			desc := strPtrOrNil(localContext)
 			if _, err := deps.Queries.CreateConcept(ctx, store.CreateConceptParams{
@@ -232,18 +290,24 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 
 		// Import fact_concept links. The link's concept_context is
 		// translated via the inbound mapper; links to skipped
-		// concepts are dropped.
+		// concepts are dropped. On the Service path the filter
+		// already translated + dropped, so this loop persists
+		// directly.
 		for _, link := range decomp.Links {
 			factID, ok := factIDByHash[link.FactContentHash]
 			if !ok {
 				continue
 			}
-			if skippedConcepts[lowerJoin(link.ConceptName, link.ConceptContext)] {
-				continue
-			}
-			localContext, ok := applyInboundContext(deps.Mapper, link.ConceptContext, autoAdd)
-			if !ok {
-				continue
+			localContext := link.ConceptContext
+			if deps.Service == nil || deps.Filter == nil || deps.Filter.ContextMapper == nil {
+				if skippedConcepts[lowerJoin(link.ConceptName, link.ConceptContext)] {
+					continue
+				}
+				var ok2 bool
+				localContext, ok2 = applyInboundContext(deps.Mapper, link.ConceptContext, autoAdd)
+				if !ok2 {
+					continue
+				}
 			}
 			concept, err := deps.Queries.GetConceptByNameContext(ctx, store.GetConceptByNameContextParams{
 				RepositoryID:  deps.RepoID,

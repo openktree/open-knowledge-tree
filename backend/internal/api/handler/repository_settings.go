@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -26,9 +27,10 @@ import (
 // "all" context sentinel has been expanded to the full embedded
 // context vocabulary.
 type seedInput struct {
-	providers      []seedProvider
-	contexts       []seedContext
-	customContexts []seedContext
+	providers          []seedProvider
+	contexts           []seedContext
+	customContexts     []seedContext
+	allowedContentTypes []string // nil = allow all (the default); non-nil = restrict to these kinds
 }
 
 type seedProvider struct {
@@ -193,6 +195,13 @@ func resolveSeed(ctx context.Context, deps Deps, body createSeedBody) (seedInput
 		}
 		in.customContexts = append(in.customContexts, seedContext{label: c, description: desc})
 	}
+	// Per-repo allowed content types (migration 0049). nil = allow
+	// all (the default); a non-empty array restricts to the listed
+	// kinds. The "scientific" preset ships ["doi"] so a scientific
+	// repo only accepts DOI-identified sources out of the box.
+	if preset != nil {
+		in.allowedContentTypes = preset.AllowedContentTypes
+	}
 	return in, nil
 }
 
@@ -301,6 +310,17 @@ func seedRepositorySettings(ctx context.Context, deps Deps, repoID pgtype.UUID, 
 			Description:  c.description,
 		}); err != nil {
 			return fmt.Errorf("seeding custom context %q: %w", c.label, err)
+		}
+	}
+	// Per-repo allowed content types (migration 0049). Only write
+	// when the preset specified a non-nil list; nil = allow all (the
+	// default) and we leave the column NULL so the gate is a no-op.
+	if in.allowedContentTypes != nil {
+		if err := deps.Store.SetRepositoryAllowedContentTypes(ctx, store.SetRepositoryAllowedContentTypesParams{
+			ID:                  repoID,
+			AllowedContentTypes: in.allowedContentTypes,
+		}); err != nil {
+			return fmt.Errorf("seeding allowed_content_types: %w", err)
 		}
 	}
 	return nil
@@ -615,6 +635,25 @@ func (h *RepositorySettings) GetSettings(w http.ResponseWriter, r *http.Request)
 		log.Printf("repository_settings: reading sync levels for GetSettings: %v", syncErr)
 	}
 
+	// Per-repo allowed content types gate (migration 0049). NULL =
+	// allow all (the default, backward compatible for existing
+	// repos); a non-NULL array restricts to the listed kinds
+	// ("document", "url", "doi"). Surfaced so the UI can render the
+	// toggle and the ingestion handlers can 403-reject disallowed
+	// types.
+	allowedContentTypes, contentTypesErr := h.deps.Store.GetRepositoryAllowedContentTypes(r.Context(), repoID)
+	var allowedContentTypesVal interface{}
+	if contentTypesErr == nil {
+		if allowedContentTypes != nil {
+			allowedContentTypesVal = allowedContentTypes
+		} else {
+			allowedContentTypesVal = nil
+		}
+	} else {
+		log.Printf("repository_settings: reading allowed_content_types for GetSettings: %v", contentTypesErr)
+		allowedContentTypesVal = nil
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"providers":             liveList,
 		"orphaned_providers":    orphanList,
@@ -636,6 +675,7 @@ func (h *RepositorySettings) GetSettings(w http.ResponseWriter, r *http.Request)
 		"reports":               reportsSection,
 		"registry_push_level":   pushLevel,
 		"registry_pull_level":   pullLevel,
+		"allowed_content_types": allowedContentTypesVal,
 	})
 }
 
@@ -1690,6 +1730,95 @@ func (h *RepositorySettings) SetSyncLevels(w http.ResponseWriter, r *http.Reques
 		"registry_pull_level": newPull,
 	})
 }
+
+// SetContentTypes handles PUT /repositories/{repoID}/settings/content-types.
+//
+// Updates the per-repo allowed content types gate (migration 0049).
+// The body is { "allowed_content_types": ["document","url","doi"] | null }.
+// Pass null (or omit the field) to clear the override and allow all
+// content types (the default, backward compatible). Pass an array
+// to restrict: a repo with ["doi"] only accepts DOI-identified
+// sources; ["document","url"] accepts uploads and URLs but not DOIs.
+//
+// Validation:
+//   - Each value must be one of "document", "url", "doi" (the only
+//     members of the column's CHECK constraint). Any other value is
+//     a 400.
+//   - An empty array is rejected (use null to reset to allow-all).
+//   - Duplicates are rejected.
+//
+// After the update, the per-repo provider gate cache is invalidated
+// so the change takes effect on the next ingestion request.
+func (h *RepositorySettings) SetContentTypes(w http.ResponseWriter, r *http.Request) {
+	repoID, ok := parseRepoID(w, r)
+	if !ok {
+		return
+	}
+	// Read the raw body first so we can detect whether
+	// allowed_content_types was explicitly present (even as null)
+	// vs absent. Mirrors the SetRegistrySettings pattern.
+	rawBody, rawErr := io.ReadAll(r.Body)
+	if rawErr != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	var body struct {
+		AllowedContentTypes *[]string `json:"allowed_content_types"`
+	}
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var rawPresent struct {
+		AllowedContentTypes json.RawMessage `json:"allowed_content_types"`
+	}
+	_ = json.Unmarshal(rawBody, &rawPresent)
+	present := len(rawPresent.AllowedContentTypes) > 0
+	if !present {
+		httputil.WriteError(w, http.StatusBadRequest, "must set allowed_content_types (array or null)")
+		return
+	}
+
+	// null = clear the override (allow all). A non-null array is
+	// validated: each value must be a known content kind, no
+	// duplicates, no empty array.
+	var types []string
+	if body.AllowedContentTypes != nil {
+		types = *body.AllowedContentTypes
+		seen := map[string]bool{}
+		for _, v := range types {
+			if !ValidContentKinds[v] {
+				httputil.WriteError(w, http.StatusBadRequest, "allowed_content_types: invalid value "+v+" (must be one of document, url, doi)")
+				return
+			}
+			if seen[v] {
+				httputil.WriteError(w, http.StatusBadRequest, "allowed_content_types: duplicate value "+v)
+				return
+			}
+			seen[v] = true
+		}
+		if len(types) == 0 {
+			httputil.WriteError(w, http.StatusBadRequest, "allowed_content_types: empty array is not allowed (use null to allow all)")
+			return
+		}
+	}
+
+	if err := h.deps.Store.SetRepositoryAllowedContentTypes(r.Context(), store.SetRepositoryAllowedContentTypesParams{
+		ID:                  repoID,
+		AllowedContentTypes: types,
+	}); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update allowed_content_types")
+		return
+	}
+
+	if h.gateInvalidator != nil {
+		h.gateInvalidator(repoID.String())
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"allowed_content_types": body.AllowedContentTypes,
+	})
+}
 // enqueue. The taskmanager package mirrors it in a River JobArgs
 // type; this struct stays in handler to keep the HTTP layer
 // independent of River internals (same pattern as RetrieveSourceArgs).
@@ -1812,6 +1941,11 @@ type RepositorySettings struct {
 	// SetModelCatalog. Nil is safe — the models section of GetSettings
 	// returns an empty catalog and SetModelSetting returns 400.
 	modelCatalog         *ModelCatalog
+	// promptsetResolver validates the active + accepted promptset
+	// hashes against the live catalog (built-in + DB). Set via
+	// SetPromptsetResolver. Nil is safe — GetPromptset returns the
+	// stored values and SetPromptset returns 503.
+	promptsetResolver    *promptset.Resolver
 }
 
 func NewRepositorySettings(d Deps) *RepositorySettings {
@@ -1833,4 +1967,126 @@ func (h *RepositorySettings) SetModelCatalog(c *ModelCatalog) {
 // configured" and the gate returns 400 on enable/selector changes.
 func (h *RepositorySettings) SetRegistryClients(m *registry.ClientMap) {
 	h.registryClients = m
+}
+
+// SetPromptsetResolver wires the promptset resolver (built-in + DB)
+// used by GetPromptset / SetPromptset to validate the active +
+// accepted hashes against the live catalog. Called by
+// api.Handler.SetPromptsetResolver in wiring.go. Nil is safe —
+// GetPromptset returns the stored values unchanged and SetPromptset
+// returns 503.
+func (h *RepositorySettings) SetPromptsetResolver(r *promptset.Resolver) {
+	h.promptsetResolver = r
+}
+
+// GetPromptset handles GET /repositories/{repoID}/settings/promptset.
+//
+// Returns the repo's active_promptset_hash (NULL = inherit global
+// default) and accepted_promptset_hashes (the cache-admit set for
+// registry pull). The response also includes the resolved
+// effective_hash (what the repo actually runs under after the
+// global-default fallback) so the UI can show the current
+// philosophy without re-resolving.
+func (h *RepositorySettings) GetPromptset(w http.ResponseWriter, r *http.Request) {
+	repoID, ok := parseRepoID(w, r)
+	if !ok {
+		return
+	}
+	row, err := h.deps.Store.GetRepositoryPromptset(r.Context(), repoID)
+	out := map[string]interface{}{
+		"active_hash":              nil,
+		"accepted_hashes":          []string{},
+		"effective_hash":           promptset.DefaultHash,
+		"global_default_hash":      globalPromptsetDefault(h, promptset.DefaultHash),
+	}
+	if err == nil {
+		if row.ActivePromptsetHash != nil {
+			out["active_hash"] = *row.ActivePromptsetHash
+			out["effective_hash"] = *row.ActivePromptsetHash
+		}
+		if row.AcceptedPromptsetHashes != nil {
+			out["accepted_hashes"] = row.AcceptedPromptsetHashes
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read repository promptset")
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, out)
+}
+
+// SetPromptset handles PUT /repositories/{repoID}/settings/promptset.
+//
+// Updates the repo's active_promptset_hash and
+// accepted_promptset_hashes. The body is
+// { "active_hash": string|null, "accepted_hashes": []string|null }.
+// A null active_hash clears the override (inherit global default);
+// a null accepted_hashes clears the accepted set (only the active
+// hash is accepted). Every non-empty hash must be known to the
+// resolver (built-in or a promptset the caller owns / is public).
+func (h *RepositorySettings) SetPromptset(w http.ResponseWriter, r *http.Request) {
+	repoID, ok := parseRepoID(w, r)
+	if !ok {
+		return
+	}
+	if h.promptsetResolver == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "promptset resolver not configured")
+		return
+	}
+	var body struct {
+		ActiveHash     *string  `json:"active_hash"`
+		AcceptedHashes *[]string `json:"accepted_hashes"`
+	}
+	if err := httputil.DecodeBody(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Validate active_hash.
+	var active *string
+	if body.ActiveHash != nil && *body.ActiveHash != "" {
+		hash := strings.TrimSpace(*body.ActiveHash)
+		if !h.promptsetResolver.Has(hash) {
+			httputil.WriteError(w, http.StatusBadRequest, "active_hash is not a known promptset")
+			return
+		}
+		active = &hash
+	}
+	// Validate accepted_hashes.
+	var accepted []string
+	if body.AcceptedHashes != nil {
+		accepted = make([]string, 0, len(*body.AcceptedHashes))
+		for _, h2 := range *body.AcceptedHashes {
+			h2 = strings.TrimSpace(h2)
+			if h2 == "" {
+				continue
+			}
+			if !h.promptsetResolver.Has(h2) {
+				httputil.WriteError(w, http.StatusBadRequest, "accepted_hashes contains an unknown promptset: "+h2)
+				return
+			}
+			accepted = append(accepted, h2)
+		}
+	}
+	if err := h.deps.Store.SetRepositoryPromptset(r.Context(), store.SetRepositoryPromptsetParams{
+		ID:                    repoID,
+		ActivePromptsetHash:   active,
+		AcceptedPromptsetHashes: accepted,
+	}); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update repository promptset")
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"active_hash":     active,
+		"accepted_hashes": accepted,
+	})
+}
+
+// globalPromptsetDefault returns the configured global default
+// promptset hash (cfg.Providers.PromptsetDefault), falling back to
+// the built-in default when unset. Used by GetPromptset to surface
+// the inherited value in the UI.
+func globalPromptsetDefault(h *RepositorySettings, fallback string) string {
+	if h.deps.Config != nil && h.deps.Config.Providers.PromptsetDefault != "" {
+		return h.deps.Config.Providers.PromptsetDefault
+	}
+	return fallback
 }

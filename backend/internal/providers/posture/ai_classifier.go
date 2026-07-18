@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -27,6 +28,10 @@ import (
 type AIClassifier struct {
 	aiProvider ai.AIProvider
 	model      string
+	// promptset is the prompt set this classifier uses for the
+	// posture phase. Defaults to promptset.Default; a worker swaps
+	// in the per-repo philosophy via WithPromptset.
+	promptset promptset.Promptset
 }
 
 // NewAIClassifier constructs the classifier. aiProvider may be nil
@@ -35,7 +40,15 @@ type AIClassifier struct {
 // Classify so a deployment without a chat provider falls back to the
 // keep-all path without a panic.
 func NewAIClassifier(aiProvider ai.AIProvider, model string) *AIClassifier {
-	return &AIClassifier{aiProvider: aiProvider, model: model}
+	return &AIClassifier{aiProvider: aiProvider, model: model, promptset: promptset.Default}
+}
+
+// WithPromptset returns a copy of the classifier that uses the given
+// promptset's Posture phase.
+func (c *AIClassifier) WithPromptset(ps promptset.Promptset) *AIClassifier {
+	clone := *c
+	clone.promptset = ps
+	return &clone
 }
 
 // Configured reports whether the classifier is ready to run: a non-nil
@@ -102,7 +115,7 @@ func (c *AIClassifier) Classify(ctx context.Context, db store.DBTX, req Classify
 
 	chatReq := ai.ChatRequest{
 		Model:    model,
-		Messages: []ai.ChatMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userMsg}},
+		Messages: []ai.ChatMessage{{Role: "system", Content: c.promptset.Posture}, {Role: "user", Content: userMsg}},
 		TaskID:   taskID,
 		Attribution: ai.Attribution{
 			RepositoryID: req.Attribution.RepositoryID,
@@ -141,20 +154,6 @@ func (c *AIClassifier) Classify(ctx context.Context, db store.DBTX, req Classify
 	return parsed, nil
 }
 
-// systemPrompt is the fixed instruction that defines the four
-// postures and the strict JSON output contract.
-const systemPrompt = `You are an autocite posture classifier for a knowledge-graph annotation system.
-
-For each (sentence, fact) pair in the user message you must assign exactly one of four postures:
-- "supports": the fact provides evidence FOR the claim made in the sentence;
-- "contradicts": the fact provides evidence AGAINST the claim made in the sentence;
-- "related": the fact is topically relevant to the sentence but neither supports nor contradicts its claim;
-- "irrelevant": the fact is NOT meaningfully related to the sentence.
-
-You MUST output ONLY a JSON array of objects, one per input pair, with these fields:
-  {"sentence_index": <int>, "fact_id": "<uuid string>", "posture": "<related|supports|contradicts|irrelevant>"}
-
-Do not output any prose, headings, or explanations — only the JSON array. Every input pair must appear exactly once in the output.`
 
 // buildUserMessage renders the batch as a compact JSON array of
 // {sentence_index, sentence, candidates:[{fact_id, fact_text}]} so
