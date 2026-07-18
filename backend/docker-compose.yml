@@ -383,7 +383,7 @@ services:
       # installed MuPDF library version so go-fitz can
       # create the context for PDF parsing.
       FZ_VERSION: "1.27.2"
-      REGISTRY_URL: http://registry-dev:8081
+      REGISTRY_URL: https://registry.openktree.com
     ports:
       - "8080:8080"
     volumes:
