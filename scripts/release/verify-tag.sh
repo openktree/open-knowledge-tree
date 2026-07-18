@@ -10,7 +10,7 @@
 set -euo pipefail
 
 service="${1:?usage: verify-tag.sh <service>}"
-tag="${GITHUB_REF_NAME:-}"
+tag="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 
 case "$tag" in
     "${service}-v"*) exit 0 ;;
