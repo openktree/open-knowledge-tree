@@ -374,7 +374,8 @@ func (s *Source) ListProviders(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"search":     searchProviders,
 		"resolution": resolutionProviders,
-		"flare_skip_candidates": s.flareSkipCandidates(r),
+		"flare_skip_candidates":         s.flareSkipCandidates(r),
+		"host_failures_by_provider":     s.hostFailuresByProvider(r),
 	})
 }
 
@@ -392,19 +393,13 @@ func (s *Source) ListProviders(w http.ResponseWriter, r *http.Request) {
 // pool can't be resolved. Best-effort: any query error is
 // logged and returns nil so the catalog endpoint never fails
 // on a diagnostic feature.
+//
+// Kept for backwards compatibility with the existing UI card;
+// hostFailuresByProvider is the generalized form that covers
+// every provider in the chain.
 func (s *Source) flareSkipCandidates(r *http.Request) []map[string]interface{} {
-	if s.repoPoolResolver == nil {
-		return nil
-	}
-	repoID := r.Header.Get("X-Repository-ID")
-	if repoID == "" {
-		return nil
-	}
-	pool, _, err := s.repoPoolResolver(r.Context(), repoID)
-	if err != nil || pool == nil {
-		if err != nil {
-			log.Printf("source: flare_skip_candidates pool resolve for repo %s: %v", repoID, err)
-		}
+	pool, ok := s.repoPoolForRequest(r)
+	if !ok {
 		return nil
 	}
 	queries := store.New(pool)
@@ -423,6 +418,106 @@ func (s *Source) flareSkipCandidates(r *http.Request) []map[string]interface{} {
 		})
 	}
 	return out
+}
+
+// hostFailuresByProvider returns a map from provider id to its
+// per-host failure/success candidate list, covering every
+// resolution provider that has ever recorded an attempt in the
+// active repository's fetch_attempts audit trail. The Providers
+// UI renders one "hosts that don't reply" card per provider from
+// this map. A host with failures > 0 and successes = 0 is a
+// strong candidate for pinning out of that tier.
+//
+// The provider list is the union of the live strategy chain and
+// the fixed set of known historical provider ids. This ensures
+// the card appears for providers that were active when the
+// source was fetched even if they're not in the current chain
+// (e.g. FlareSolverr was disabled but old attempts still show
+// its failure patterns). The fixed set mirrors the ids
+// ProviderID() in fetch/strategy.go returns.
+//
+// Returns nil when no repository is in context or the per-repo
+// pool can't be resolved. Best-effort: a query error for one
+// provider is logged and that provider's entry is omitted, but
+// the other providers' entries are still returned.
+func (s *Source) hostFailuresByProvider(r *http.Request) map[string]interface{} {
+	pool, ok := s.repoPoolForRequest(r)
+	if !ok {
+		return nil
+	}
+	queries := store.New(pool)
+	// Known provider ids, in chain-priority order. The live
+	// strategy may have fewer (e.g. test env has only "fetch");
+	// the historical audit trail may have any of these. Querying
+	// all of them ensures the UI shows every provider that has
+	// ever recorded a failure, not just the ones currently
+	// registered.
+	providerIDs := []string{"unpaywall", "tls", "fetch", "flaresolverr", "url_safety"}
+	if s.FetchStrategy != nil {
+		// Prepend live providers so they appear first in the
+		// UI (the map order is preserved by Go's range over
+		// the insertion-ordered slice).
+		var ordered []string
+		live := map[string]bool{}
+		for _, p := range s.FetchStrategy.Providers() {
+			pid := providerID(p)
+			if !live[pid] {
+				ordered = append(ordered, pid)
+				live[pid] = true
+			}
+		}
+		for _, pid := range providerIDs {
+			if !live[pid] {
+				ordered = append(ordered, pid)
+			}
+		}
+		providerIDs = ordered
+	}
+	out := make(map[string]interface{})
+	for _, pid := range providerIDs {
+		rows, err := queries.ListProviderHostCandidates(r.Context(), pid)
+		if err != nil {
+			log.Printf("source: host_failures_by_provider query for %s: %v", pid, err)
+			continue
+		}
+		entries := make([]map[string]interface{}, 0, len(rows))
+		for _, row := range rows {
+			entries = append(entries, map[string]interface{}{
+				"host":           row.Host,
+				"total_attempts": row.TotalAttempts,
+				"failures":       row.Failures,
+				"successes":      row.Successes,
+			})
+		}
+		if len(entries) > 0 {
+			out[pid] = entries
+		}
+	}
+	return out
+}
+
+// repoPoolForRequest resolves the per-repo pool for the active
+// repository (read from the X-Repository-ID header the frontend
+// API client injects). Returns (pool, true) on success, (nil,
+// false) when no repo is in context, no resolver is wired, or
+// the pool can't be resolved. Errors are logged by the caller's
+// caller (the diagnostic methods that use this helper).
+func (s *Source) repoPoolForRequest(r *http.Request) (*pgxpool.Pool, bool) {
+	if s.repoPoolResolver == nil {
+		return nil, false
+	}
+	repoID := r.Header.Get("X-Repository-ID")
+	if repoID == "" {
+		return nil, false
+	}
+	pool, _, err := s.repoPoolResolver(r.Context(), repoID)
+	if err != nil || pool == nil {
+		if err != nil {
+			log.Printf("source: repo pool resolve for %s: %v", repoID, err)
+		}
+		return nil, false
+	}
+	return pool, true
 }
 
 // ListDecompositionProviders handles GET /decomposition/providers.

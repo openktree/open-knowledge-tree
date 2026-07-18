@@ -335,3 +335,61 @@ HAVING COUNT(*) FILTER (
     )
 ) > 0
 ORDER BY flare_failures DESC;
+
+-- name: ListProviderHostCandidates :many
+-- Generalized per-provider host-candidate query. Returns per-host
+-- failure/success counts for ONE resolution provider, filtered by
+-- the provider id parameter. The handler calls this once per
+-- provider in the chain so the Providers UI can show a "hosts
+-- that don't reply" card for each resolver (fetch, tls,
+-- unpaywall, flaresolverr), not just FlareSolverr.
+--
+-- A host with failures > 0 and successes = 0 is a strong
+-- candidate for pinning out of that provider tier. Hosts with
+-- mixed results tell the operator the provider sometimes works,
+-- so the issue is rate-limiting or transient rather than a hard
+-- block.
+--
+-- Implementation note: sqlc's analyzer cannot resolve a bind
+-- parameter ($1 or sqlc.arg) inside a jsonb_array_elements
+-- subquery — it reports "column 'a' does not exist". The four
+-- provider ids are known at compile time, so this query uses a
+-- CASE expression that hardcodes the four ids and picks the
+-- matching branch based on the $1 argument. Each branch is a
+-- full literal query sqlc can analyze. The runtime cost is one
+-- CASE evaluation per row; the planner short-circuits the
+-- non-matching branches. This is the same shape the
+-- FlareSolverr-specific query uses, just generalized over the
+-- four providers without duplicating the query four times.
+SELECT
+    substring(url FROM 'https?://([^/]+)')::text AS host,
+    COUNT(*) AS total_attempts,
+    CASE WHEN $1 IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = $1
+                  AND (a->>'success')::boolean = false
+            )
+        )
+    ELSE 0 END AS failures,
+    CASE WHEN $1 IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = $1
+                  AND (a->>'success')::boolean = true
+            )
+        )
+    ELSE 0 END AS successes
+FROM okt_repository.sources
+WHERE fetch_attempts IS NOT NULL
+GROUP BY 1
+HAVING COUNT(*) FILTER (
+    WHERE EXISTS (
+        SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+        WHERE a->>'provider' = $1
+          AND (a->>'success')::boolean = false
+    )
+) > 0
+ORDER BY failures DESC;

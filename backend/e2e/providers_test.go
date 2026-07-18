@@ -37,6 +37,19 @@ type providersResponse struct {
 	Search               []map[string]interface{} `json:"search"`
 	Resolution           []fetchProvider           `json:"resolution"`
 	FlareSkipCandidates  []flareSkipCandidate      `json:"flare_skip_candidates"`
+	HostFailuresByProvider map[string][]hostCandidate `json:"host_failures_by_provider"`
+}
+
+// hostCandidate is the per-host entry in
+// host_failures_by_provider. The field names differ from
+// flareSkipCandidate (failures/successes vs
+// flare_failures/flare_successes) because the generalized
+// query is provider-agnostic.
+type hostCandidate struct {
+	Host            string `json:"host"`
+	TotalAttempts   int64  `json:"total_attempts"`
+	Failures        int32  `json:"failures"`
+	Successes       int32  `json:"successes"`
 }
 
 // flareSkipCandidate is the wire shape of one
@@ -261,9 +274,11 @@ func TestProvidersEndpointFlareSkipCandidates(t *testing.T) {
 		t.Fatalf("scan repo id: %v", err)
 	}
 	seedFlareSource(t, queries, repoUUID, "https://flare-fail.example.com/page-1",
-		`[{"provider":"flaresolverr","success":false,"error":"context deadline exceeded","elapsed_ms":60000}]`)
+		`[{"provider":"flaresolverr","success":false,"error":"context deadline exceeded","elapsed_ms":60000},
+		  {"provider":"tls","success":false,"error":"upstream returned status 403","elapsed_ms":12000}]`)
 	seedFlareSource(t, queries, repoUUID, "https://flare-fail.example.com/page-2",
-		`[{"provider":"flaresolverr","success":true,"elapsed_ms":5000}]`)
+		`[{"provider":"flaresolverr","success":true,"elapsed_ms":5000},
+		  {"provider":"tls","success":false,"error":"upstream returned status 403","elapsed_ms":11000}]`)
 
 	// With X-Repository-ID: the flare_skip_candidates field
 	// must list flare-fail.example.com with one failure and one
@@ -294,6 +309,53 @@ func TestProvidersEndpointFlareSkipCandidates(t *testing.T) {
 		t.Errorf("expected flare-fail.example.com in flare_skip_candidates, got %+v", out.FlareSkipCandidates)
 	}
 
+	// host_failures_by_provider must list both flaresolverr and
+	// tls entries for the same host. The generalized per-provider
+	// query covers every provider in the chain.
+	if len(out.HostFailuresByProvider) == 0 {
+		t.Fatal("expected non-empty host_failures_by_provider, got empty map")
+	}
+	flareEntries, ok := out.HostFailuresByProvider["flaresolverr"]
+	if !ok {
+		t.Errorf("expected 'flaresolverr' key in host_failures_by_provider, got keys %v", keysOf(out.HostFailuresByProvider))
+	} else {
+	 flareFound := false
+		for _, c := range flareEntries {
+			if c.Host == "flare-fail.example.com" {
+				flareFound = true
+				if c.Failures != 1 {
+					t.Errorf("host_failures_by_provider[flaresolverr]: expected failures=1, got %d", c.Failures)
+				}
+				if c.Successes != 1 {
+					t.Errorf("host_failures_by_provider[flaresolverr]: expected successes=1, got %d", c.Successes)
+				}
+			}
+		}
+		if !flareFound {
+			t.Errorf("expected flare-fail.example.com in host_failures_by_provider[flaresolverr], got %+v", flareEntries)
+		}
+	}
+	tlsEntries, ok := out.HostFailuresByProvider["tls"]
+	if !ok {
+		t.Errorf("expected 'tls' key in host_failures_by_provider, got keys %v", keysOf(out.HostFailuresByProvider))
+	} else {
+		tlsFound := false
+		for _, c := range tlsEntries {
+			if c.Host == "flare-fail.example.com" {
+				tlsFound = true
+				if c.Failures != 2 {
+					t.Errorf("host_failures_by_provider[tls]: expected failures=2, got %d", c.Failures)
+				}
+				if c.Successes != 0 {
+					t.Errorf("host_failures_by_provider[tls]: expected successes=0, got %d", c.Successes)
+				}
+			}
+		}
+		if !tlsFound {
+			t.Errorf("expected flare-fail.example.com in host_failures_by_provider[tls], got %+v", tlsEntries)
+		}
+	}
+
 	// Without X-Repository-ID: the field must be nil/empty
 	// (the query is repo-scoped; no repo means no candidates).
 	resp, raw = client.do("GET", "/api/v1/sources/providers", nil)
@@ -307,6 +369,18 @@ func TestProvidersEndpointFlareSkipCandidates(t *testing.T) {
 	if len(global.FlareSkipCandidates) > 0 {
 		t.Errorf("expected no flare_skip_candidates without X-Repository-ID, got %+v", global.FlareSkipCandidates)
 	}
+	if len(global.HostFailuresByProvider) > 0 {
+		t.Errorf("expected no host_failures_by_provider without X-Repository-ID, got %+v", global.HostFailuresByProvider)
+	}
+}
+
+// keysOf returns the keys of a map for readable error messages.
+func keysOf(m map[string][]hostCandidate) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // seedFlareSource inserts a source row with the given

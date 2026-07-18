@@ -3,6 +3,7 @@ import Alert from "../../components/Alert";
 import FetchProviderCard from "./FetchProviderCard";
 import ChainOverview from "./ChainOverview";
 import FlareSkipCandidates from "./FlareSkipCandidates";
+import ProviderHostFailures from "./ProviderHostFailures";
 
 export default function FetchProvidersTab(props) {
   const fetchProviders = () =>
@@ -10,6 +11,9 @@ export default function FetchProvidersTab(props) {
 
   const skipCandidates = () =>
     (props.providers() && props.providers().flare_skip_candidates) || [];
+
+  const hostFailuresByProvider = () =>
+    (props.providers() && props.providers().host_failures_by_provider) || {};
 
   return (
     <div>
@@ -19,6 +23,8 @@ export default function FetchProvidersTab(props) {
       />
 
       <ChainOverview providers={fetchProviders} />
+
+      <ProviderHostFailures byProvider={hostFailuresByProvider} />
 
       <FlareSkipCandidates candidates={skipCandidates} />
 

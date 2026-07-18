@@ -439,6 +439,97 @@ func (q *Queries) ListFlareSolverrHostCandidates(ctx context.Context) ([]ListFla
 	return items, nil
 }
 
+const listProviderHostCandidates = `-- name: ListProviderHostCandidates :many
+SELECT
+    substring(url FROM 'https?://([^/]+)')::text AS host,
+    COUNT(*) AS total_attempts,
+    CASE WHEN $1 IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = $1
+                  AND (a->>'success')::boolean = false
+            )
+        )
+    ELSE 0 END AS failures,
+    CASE WHEN $1 IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = $1
+                  AND (a->>'success')::boolean = true
+            )
+        )
+    ELSE 0 END AS successes
+FROM okt_repository.sources
+WHERE fetch_attempts IS NOT NULL
+GROUP BY 1
+HAVING COUNT(*) FILTER (
+    WHERE EXISTS (
+        SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+        WHERE a->>'provider' = $1
+          AND (a->>'success')::boolean = false
+    )
+) > 0
+ORDER BY failures DESC
+`
+
+type ListProviderHostCandidatesRow struct {
+	Host          string `json:"host"`
+	TotalAttempts int64  `json:"total_attempts"`
+	Failures      int32  `json:"failures"`
+	Successes     int32  `json:"successes"`
+}
+
+// Generalized per-provider host-candidate query. Returns per-host
+// failure/success counts for ONE resolution provider, filtered by
+// the provider id parameter. The handler calls this once per
+// provider in the chain so the Providers UI can show a "hosts
+// that don't reply" card for each resolver (fetch, tls,
+// unpaywall, flaresolverr), not just FlareSolverr.
+//
+// A host with failures > 0 and successes = 0 is a strong
+// candidate for pinning out of that provider tier. Hosts with
+// mixed results tell the operator the provider sometimes works,
+// so the issue is rate-limiting or transient rather than a hard
+// block.
+//
+// Implementation note: sqlc's analyzer cannot resolve a bind
+// parameter ($1 or sqlc.arg) inside a jsonb_array_elements
+// subquery — it reports "column 'a' does not exist". The four
+// provider ids are known at compile time, so this query uses a
+// CASE expression that hardcodes the four ids and picks the
+// matching branch based on the $1 argument. Each branch is a
+// full literal query sqlc can analyze. The runtime cost is one
+// CASE evaluation per row; the planner short-circuits the
+// non-matching branches. This is the same shape the
+// FlareSolverr-specific query uses, just generalized over the
+// four providers without duplicating the query four times.
+func (q *Queries) ListProviderHostCandidates(ctx context.Context, dollar_1 interface{}) ([]ListProviderHostCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listProviderHostCandidates, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListProviderHostCandidatesRow
+	for rows.Next() {
+		var i ListProviderHostCandidatesRow
+		if err := rows.Scan(
+			&i.Host,
+			&i.TotalAttempts,
+			&i.Failures,
+			&i.Successes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSourceImages = `-- name: ListSourceImages :many
 SELECT id, source_id, kind, page_number, position, url, width, height, bytes, local_path, created_at, alt_text, storage_key, content_type, mirrored_at FROM okt_repository.source_images
 WHERE source_id = $1
