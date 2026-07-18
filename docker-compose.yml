@@ -1,0 +1,177 @@
+# Root docker-compose.yml — the one-command entry point.
+#
+#   cp .env.example .env   # then edit .env to add your API keys
+#   docker compose up      # that's it — no -f, no --profile, no --env-file
+#
+# Frontend:  http://localhost:3000
+# API:       http://localhost:8080
+#
+# This file uses PRE-BUILT public images from GHCR
+# (ghcr.io/openktree/api, ghcr.io/openktree/frontend). It does NOT
+# build anything from source — you don't need the repo checked out
+# for the binary services, only the .env file.
+#
+# For development from source (hot-reload, source mounts), use
+# `just dev` (which runs backend/docker-compose.yml --profile dev)
+# instead of this file.
+#
+# Pin a release tag by setting OKT_TAG in .env (defaults to latest):
+#   OKT_TAG=v0.1.0
+
+# YAML anchor for the Byparr/FlareSolverr healthcheck, reused by
+# every flaresolverrN service so the definition stays in one place.
+# See backend/docker-compose.yml for the rationale.
+x-flaresolverr-health: &flaresolverr-health
+  test: ["CMD", "curl", "-fsS", "--max-time", "14", "http://127.0.0.1:8191/health"]
+  interval: 15s
+  timeout: 15s
+  retries: 5
+  start_period: 30s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: okt-postgres
+    # max_connections=300: see backend/docker-compose.yml for rationale.
+    command: postgres -c max_connections=300
+    environment:
+      POSTGRES_USER: okt
+      POSTGRES_PASSWORD: okt_dev
+      POSTGRES_DB: okt
+    shm_size: 1gb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U okt -d okt"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Dedicated Postgres for the River task queue. The standard
+  # postgres image entrypoint creates the POSTGRES_DB database
+  # (okt_tasks) on first boot, so no init script is needed.
+  postgres-tasks:
+    image: postgres:16-alpine
+    container_name: okt-postgres-tasks
+    environment:
+      POSTGRES_USER: okt
+      POSTGRES_PASSWORD: okt_dev
+      POSTGRES_DB: okt_tasks
+    shm_size: 1gb
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata_tasks:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U okt -d okt_tasks"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  flaresolverr:
+    image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
+    container_name: okt-flaresolverr
+    ports:
+      - "8191:8191"
+    healthcheck: *flaresolverr-health
+
+  flaresolverr2:
+    image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
+    container_name: okt-flaresolverr2
+    ports:
+      - "8192:8191"
+    healthcheck: *flaresolverr-health
+
+  flaresolverr3:
+    image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
+    container_name: okt-flaresolverr3
+    ports:
+      - "8193:8191"
+    healthcheck: *flaresolverr-health
+
+  qdrant:
+    image: qdrant/qdrant:v1.18
+    container_name: okt-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c '
+            exec 3<>/dev/tcp/127.0.0.1/6333 &&
+            printf "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+            head -n1 <&3 | grep -q "200 OK"
+          '
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ghcr.io/openktree/api:${OKT_TAG:-latest}
+    container_name: okt-api
+    command: --mode=api
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: okt
+      DATABASE_PASSWORD: okt_dev
+      DATABASE_NAME: okt
+      DATABASE_SSLMODE: disable
+      # Route the task manager to the dedicated postgres-tasks
+      # container. See backend/docker-compose.yml for rationale.
+      TASK_HOST: postgres-tasks
+      TASK_PORT: 5432
+      TASK_USER: okt
+      TASK_PASSWORD: okt_dev
+      TASK_NAME: okt_tasks
+      TASK_SSLMODE: disable
+      AUTH_JWTSECRET: change-me-in-production
+      SERPER_API_KEY: ${SERPER_API_KEY}
+      OPENALEX_EMAIL: ${OPENALEX_EMAIL:-}
+      UNPAYWALL_EMAIL: ${UNPAYWALL_EMAIL:-}
+      OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_124}
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      FLARESOLVERR_ENDPOINTS: ${FLARESOLVERR_ENDPOINTS:-http://flaresolverr:8191,http://flaresolverr2:8191,http://flaresolverr3:8191}
+      FLARESOLVERR_MAX_CONCURRENCY: ${FLARESOLVERR_MAX_CONCURRENCY:-3}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6334"
+      FZ_VERSION: "1.27.2"
+    ports:
+      - "8080:8080"
+    volumes:
+      - source_assets:/app/var/source_assets
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-tasks:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      flaresolverr:
+        condition: service_healthy
+      flaresolverr2:
+        condition: service_healthy
+      flaresolverr3:
+        condition: service_healthy
+
+  frontend:
+    image: ghcr.io/openktree/frontend:${OKT_TAG:-latest}
+    container_name: okt-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  pgdata_tasks:
+  qdrant_data:
+  source_assets:

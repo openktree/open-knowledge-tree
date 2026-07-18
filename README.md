@@ -8,6 +8,55 @@ sources, investigations, and synthesized reports from them.
 See [`AGENTS.md`](./AGENTS.md) for the full contributor guide, conventions,
 folder structure, testing policy, and artifact placement rules.
 
+## Quick start
+
+The fastest way to a running OKT is the pre-built public images on GHCR. You
+need **Docker with Compose v2** and nothing else — no Go, no Node, no source
+build.
+
+```bash
+cp .env.example .env   # then edit .env: add SERPER_API_KEY and a chat-model key
+docker compose up      # that's it
+```
+
+Then open **<http://localhost:3000>** (frontend). The API is at
+<http://localhost:8080>.
+
+| Port  | Service |
+|-------|---------|
+| 3000  | Frontend (SolidJS SPA) |
+| 8080  | API (Go backend) |
+| 5432  | Postgres (app DB) |
+| 5434  | Postgres (task queue DB) |
+| 6333  | Qdrant dashboard |
+| 8191–8193 | FlareSolverr / Byparr (headless-browser sidecars) |
+
+The first `docker compose up` pulls ~1–2 GB of images (the API image includes
+the CGo-compiled MuPDF runtime; the three Byparr containers each ship a
+headless Chromium). Subsequent runs start instantly from the local cache.
+
+### What you need to put in `.env`
+
+Only two keys are required; both are billed to your own account and cannot be
+baked into a public image:
+
+- **`SERPER_API_KEY`** — web search ([serper.dev](https://serper.dev), free tier available).
+- **`OPENROUTER_API_KEY`** or **`OLLAMA_API_KEY`** — the chat model that drives
+  decomposition + synthesis. Pick one provider.
+
+See [`.env.example`](./.env.example) for the full list of optional tuning
+knobs (fetch impersonation, FlareSolverr concurrency, release-tag pinning).
+
+### Pinning a release
+
+The compose file pulls `ghcr.io/openktree/api:${OKT_TAG:-latest}` and
+`ghcr.io/openktree/frontend:${OKT_TAG:-latest}`. `latest` tracks the most
+recent release. For reproducibility, pin in `.env`:
+
+```
+OKT_TAG=v0.1.0
+```
+
 ## Documentation
 
 User and reference docs are hosted at **<https://docs.openktree.com>**.
@@ -27,46 +76,51 @@ providers like Unpaywall, FlareSolverr, HTTP fetch) live under
 
 ## Requirements
 
-- **[just](https://github.com/casey/just)** (command runner) — required, all
-  dev workflows are `just` recipes.
-- Docker with Compose v2 (the stack runs in containers).
+- **Docker with Compose v2** — all you need for the pre-built quick start
+  above.
+- **[just](https://github.com/casey/just)** (command runner) — required for the
+  development workflows below; the `just` recipes wrap the source-build compose
+  files.
 - Go 1.22+ (for running e2e tests and building backend binaries on demand).
 - Node 18+ (for the frontend and docs site).
-
-Binaries are never shipped in the repo — build them on demand with the
-recipes below.
 
 ## Common commands
 
 ```bash
-# Dev: hot-reload API + frontend via docker compose (profile: dev)
+# === Pre-built stack (no source build) ===
+# Quick start — uses pre-built public images from GHCR.
+just up              # docker compose up -d  (frontend on :3000, API on :8080)
+just down            # docker compose down
+
+# === Development from source ===
+# Dev: hot-reload API + frontend via docker compose (profile: dev).
 just dev
 
-# Standalone Knowledge Registry + MinIO (registry listens on :8081)
+# Production build of the full stack FROM SOURCE (the old `up`).
+just up-dev-source
+
+# Stop everything across all compose files / profiles.
+just down-all
+
+# Standalone Knowledge Registry + MinIO (registry listens on :8081).
 just knowledge-registry
 
-# Production build of the full stack (profile: prod)
-just up
-
-# Stop everything (all profiles)
-just down
-
-# Wipe dev databases and restart dev stack from a clean state
+# Wipe dev databases and restart dev stack from a clean state.
 just reset-db
 
-# Run the Go e2e suite (boots an isolated test Postgres on :5433)
+# Run the Go e2e suite (boots an isolated test Postgres on :5433).
 just test-e2e
 
-# Frontend pre-commit gate: page-size policy + production build
+# Frontend pre-commit gate: page-size policy + production build.
 just check-frontend
 
-# Docusaurus dev server (localhost:3001)
+# Docusaurus dev server (localhost:3001).
 just docs
 
-# Promote a user to system admin by email
+# Promote a user to system admin by email.
 just bootstrap-admin carlos@example.com
 
-# Tail logs
+# Tail logs.
 just api-logs         # okt-api-dev
 just frontend-logs    # okt-frontend-dev
 just registry-logs    # okt-registry-dev

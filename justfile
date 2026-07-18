@@ -62,12 +62,33 @@ reset-registry:
 	echo "Registry wiped + restarted. It will seed the canonical contexts on boot."
 	echo "Check the boot log: just registry-logs"
 
+# Production stack from PRE-BUILT public images (the one-liner).
+# Uses the root docker-compose.yml, which pulls
+# ghcr.io/openktree/api and ghcr.io/openktree/frontend. No source
+# build, no -f flag, no --profile. Requires a .env with at least
+# SERPER_API_KEY and one chat-model key (OPENROUTER or OLLAMA).
+#   cp .env.example .env   # then edit
+#   just up
 up:
+	docker compose up -d
+
+# Stop the pre-built production stack.
+down:
+	docker compose down --remove-orphans
+
+# Stop ALL profiles / compose files (pre-built stack + dev + test).
+down-all:
+	docker compose down --remove-orphans
+	docker compose -f backend/docker-compose.yml --profile dev --profile prod --profile test down --remove-orphans
+
+# Production stack built FROM SOURCE (the old `up`).
+# Uses backend/docker-compose.yml --profile prod, which builds the
+# api + frontend images locally. Use this when you're modifying
+# backend or frontend code and want to test the prod build path
+# without pushing images. For everyday dev, use `just dev`.
+up-dev-source:
 	docker compose -f backend/docker-compose.yml --env-file .env --profile prod stop
 	docker compose -f backend/docker-compose.yml --env-file .env --profile prod up -d --build --force-recreate
-
-down:
-	docker compose -f backend/docker-compose.yml --profile dev --profile prod --profile test down --remove-orphans
 
 # Wipe the dev databases and restart the dev stack on a truly empty
 # state. Unlike a bare `docker compose down -v` (whose `-v` only
