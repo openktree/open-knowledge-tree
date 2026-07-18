@@ -21,9 +21,9 @@ const FEATURES = [
     desc: "HTTP endpoints for auth, repositories, sources, facts, concepts, investigations, reports, and providers. JWT and OAuth 2.1 bearer auth.",
   },
   {
-    title: "Local Dev",
+    title: "Develop from Source",
     to: "/docs/local-dev/overview",
-    desc: "Run the full stack with Docker Compose and `just dev`. Postgres, Qdrant, FlareSolverr, and MinIO boot in seconds.",
+    desc: "Clone the repo and run `just dev` for hot-reload, source mounts, and the full dev toolchain with Go, Node, and e2e tests.",
   },
   {
     title: "Architecture",
@@ -62,7 +62,7 @@ export default function Home(): React.ReactElement {
             links them into a concept graph, and accumulates syntheses you can search, cite, and reason over.
           </p>
           <div style={{ display: "flex", gap: "1rem", justifyContent: "center", flexWrap: "wrap" }}>
-            <Link className="button button--primary button--lg" to="/docs/intro">
+            <Link className="button button--primary button--lg" to="/docs/getting-started">
               Get Started
             </Link>
             <Link className="button button--secondary button--lg" to="/docs/reference/knowledge-flow/overview">

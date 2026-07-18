@@ -3,6 +3,7 @@
 /** @type {import('@docusaurus/plugin-content-docs').SidebarsConfig} */
 const sidebars = {
   reference: [
+    "getting-started",
     "intro",
     {
       type: "category",
@@ -57,6 +58,18 @@ const sidebars = {
         },
         "reference/expected-cost",
         "reference/registry",
+        "reference/config",
+      ],
+    },
+    {
+      type: "category",
+      label: "Local Dev",
+      link: { type: "doc", id: "local-dev/overview" },
+      items: [
+        "local-dev/docker-compose",
+        "local-dev/services-overview",
+        "local-dev/development",
+        "local-dev/troubleshooting",
       ],
     },
   ],
@@ -83,18 +96,6 @@ const sidebars = {
         "api/reports",
         "api/providers",
         "api/tasks",
-      ],
-    },
-  ],
-  localDev: [
-    {
-      type: "category",
-      label: "Local Dev",
-      link: { type: "doc", id: "local-dev/overview" },
-      items: [
-        "local-dev/docker-compose",
-        "local-dev/services-overview",
-        "local-dev/troubleshooting",
       ],
     },
   ],

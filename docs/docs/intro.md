@@ -28,6 +28,7 @@ See [Knowledge Flow](/docs/reference/knowledge-flow/overview) for the detailed w
 
 ## How to use it
 
+- **Quick start**: run with Docker in two commands — no git needed. See [Getting Started](/docs/getting-started).
 - **Agent (MCP)**: the 18 MCP tools let an agent fetch sources, search facts and concepts, track ingestion, and create annotated reports. See [MCP Tools](/docs/mcp/overview).
 - **HTTP API**: the REST API exposes the same operations plus auth, repositories, and provider management. See [REST API](/docs/api/overview).
 - **Frontend**: a SolidJS SPA for browsing facts, concepts, investigations, and reports.

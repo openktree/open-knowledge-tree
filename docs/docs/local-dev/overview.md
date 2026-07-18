@@ -6,7 +6,9 @@ title: Local Dev Overview
 
 # Local Dev Overview
 
-OKT runs the full stack via Docker Compose and the `just` runner. You need Docker, `just`, and (optionally) Go + Node for running tests and building locally.
+> **Just want to run OKT?** You don't need this page. See [Getting Started](/docs/getting-started) — two commands, no git required.
+
+This page is for developers who want to contribute to OKT or run from source with hot-reload, e2e tests, and the full toolchain.
 
 ## Prerequisites
 

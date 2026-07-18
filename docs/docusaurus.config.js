@@ -61,12 +61,6 @@ const config = {
           },
           {
             type: "docSidebar",
-            sidebarId: "localDev",
-            label: "Local Dev",
-            position: "left",
-          },
-          {
-            type: "docSidebar",
             sidebarId: "architecture",
             label: "Architecture",
             position: "left",
