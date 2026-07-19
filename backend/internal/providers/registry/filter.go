@@ -8,15 +8,24 @@ package registry
 //
 // The filter consolidates four axes that were previously scattered
 // across the pull workers (resolveAllowedModels, GetRepositorySyncLevels,
-// promptsetResolver.AcceptedHashes, NewInboundContextMapper):
+// promptsetResolver.AcceptedRegistryHashes, NewInboundContextMapper):
 //
 //   - AllowedModels: the per-repo model whitelist (per-repo replaces
 //     global; ["*"] = all, [] = none, nil = inherit client's global).
-//   - AcceptedPromptsets: the promptset hashes a repo will admit on
-//     pull. Empty/nil = accept all (the default-accept semantics that
-//     preserve legacy behavior for deployments that haven't adopted
-//     promptsets). A decomposition whose promptset_hash is empty is
-//     treated as the default and always accepted.
+//   - AcceptedPromptsets: the REGISTRY-compatibility hashes a repo
+//     will admit on pull (see promptset.RegistryHashPromptset — a
+//     hash over only the 4 shared phases). Empty/nil = accept all
+//     (the default-accept semantics that preserve legacy behavior
+//     for deployments that haven't adopted promptsets). A
+//     decomposition whose hash is empty is treated as the default
+//     and always accepted.
+//   - DefaultAccepted: hashes always accepted regardless of
+//     AcceptedPromptsets — seeded with promptset.DefaultRegistryHashes
+//     so the built-in philosophy is always pullable. Lets a repo
+//     that has configured a custom active promptset still receive
+//     decompositions from the default philosophy (and any other
+//     blessed hashes an operator adds to the constant) without
+//     having to list them explicitly.
 //   - SyncLevel: the SyncLevelFilter that strips concept-level fields
 //     when the repo's pull level is "facts". Nil = full "concepts" pull.
 //   - ContextMapper: the inbound context mapper that translates
@@ -29,11 +38,12 @@ package registry
 //     The caller seeds a repository_contexts row so the import can
 //     land. Nil = no auto-add (the concept is dropped instead).
 type RelevanceFilter struct {
-	AllowedModels      []string
-	AcceptedPromptsets []string
-	SyncLevel          *SyncLevelFilter
-	ContextMapper      InboundContextMapper
-	AutoAdd            func(string)
+	AllowedModels       []string
+	AcceptedPromptsets  []string
+	DefaultAccepted     []string
+	SyncLevel           *SyncLevelFilter
+	ContextMapper       InboundContextMapper
+	AutoAdd             func(string)
 }
 
 // InboundContextMapper is the minimal slice of the inbound context
@@ -71,20 +81,35 @@ func (f *RelevanceFilter) AllowsModel(modelID string) bool {
 	return IsAllowed(f.AllowedModels, modelID)
 }
 
-// AllowsPromptset reports whether a decomposition's promptset_hash is
-// in the repo's accepted set. Empty AcceptedPromptsets = accept all
-// (the default-accept semantics). A decomposition with an empty hash
-// is treated as the default and always accepted — this preserves the
-// legacy behavior when the registry server hasn't shipped
-// promptset_hash on DecompRef yet.
+// AllowsPromptset reports whether a decomposition's
+// promptset_hash (the REGISTRY-compatibility hash; see
+// promptset.RegistryHashPromptset) is admissible for this repo.
+// The decision is the union of three sources:
+//
+//  1. The empty hash is always accepted (legacy: a registry server
+//     that hasn't shipped promptset_hash on its wire format yet).
+//  2. The hash is in DefaultAccepted (the always-accepted list
+//     seeded with promptset.DefaultRegistryHashes so the built-in
+//     philosophy is pullable by every repo).
+//  3. The hash is in AcceptedPromptsets (the repo's per-repo
+//     accepted set). Empty/nil AcceptedPromptsets = accept all
+//     (the default-accept semantics).
+//
+// A nil filter allows everything (the permissive default for a
+// deployment that hasn't configured the restriction).
 func (f *RelevanceFilter) AllowsPromptset(hash string) bool {
 	if f == nil {
 		return true
 	}
-	if len(f.AcceptedPromptsets) == 0 {
+	if hash == "" {
 		return true
 	}
-	if hash == "" {
+	for _, h := range f.DefaultAccepted {
+		if h == hash {
+			return true
+		}
+	}
+	if len(f.AcceptedPromptsets) == 0 {
 		return true
 	}
 	for _, h := range f.AcceptedPromptsets {

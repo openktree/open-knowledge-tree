@@ -5,6 +5,13 @@ import { BUILTIN_SOURCE } from "./constants";
 // with actions. The built-in is non-editable; custom rows carry
 // Edit + Delete buttons. Controlled by the parent.
 //
+// The "Compatibility" column shows the REGISTRY-compatibility hash
+// (over only the 4 shared phases: fact/image-fact/concept/refinement)
+// and a "≡ default" badge when the row's registry_hash equals the
+// built-in's — two promptsets with the same registry hash can
+// exchange decompositions via the registry even if their local-only
+// phases (synthesis, summarization, posture, image_picker) differ.
+//
 // Props:
 //   promptsets  – accessor []Promptset
 //   onEdit      – (ps) => void  open the edit form for a custom ps
@@ -13,6 +20,18 @@ import { BUILTIN_SOURCE } from "./constants";
 export default function PromptsetsTable(props) {
   const rows = () => props.promptsets?.() ?? [];
   const busy = () => props.busyHash?.() ?? "";
+  // The built-in's registry_hash is the default compatibility class;
+  // promptsets whose registry_hash matches are "compatible with the
+  // default philosophy".
+  const defaultRegistryHash = () => {
+    const list = rows();
+    const bi = list.find((p) => p.source === BUILTIN_SOURCE);
+    return bi?.registry_hash ?? "";
+  };
+  const isDefaultCompatible = (ps) => {
+    const dh = defaultRegistryHash();
+    return dh && ps.registry_hash && ps.registry_hash === dh;
+  };
 
   return (
     <div class="overflow-x-auto">
@@ -22,6 +41,7 @@ export default function PromptsetsTable(props) {
             <th class="py-2 pr-4 font-medium">Name</th>
             <th class="py-2 pr-4 font-medium">Source</th>
             <th class="py-2 pr-4 font-medium">Hash</th>
+            <th class="py-2 pr-4 font-medium">Compatibility</th>
             <th class="py-2 pr-4 font-medium text-right">Actions</th>
           </tr>
         </thead>
@@ -46,6 +66,18 @@ export default function PromptsetsTable(props) {
                 </td>
                 <td class="py-2 pr-4 font-mono text-xs text-gray-500 dark:text-gray-400">
                   {ps.hash ? ps.hash.slice(0, 12) + "…" : ""}
+                </td>
+                <td class="py-2 pr-4">
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-xs text-gray-500 dark:text-gray-400">
+                      {ps.registry_hash ? ps.registry_hash.slice(0, 12) + "…" : "—"}
+                    </span>
+                    <Show when={isDefaultCompatible(ps)}>
+                      <span class="px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200" title="Shares the 4 registry-shared phases with the built-in philosophy — decompositions are exchangeable via the registry.">
+                        ≡ default
+                      </span>
+                    </Show>
+                  </div>
                 </td>
                 <td class="py-2 pr-4 text-right">
                   <Show when={ps.source !== BUILTIN_SOURCE}>

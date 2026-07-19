@@ -133,7 +133,33 @@ func (w *ContributeSourceWorker) Work(ctx context.Context, job *river.Job[Contri
 		parsedMarkdown = *source.ParsedMarkdown
 	}
 
-	regSourceID, err := rc.PushSource(ctx, sourceURL, sourceDOI, "", sourceTitle, parsedText, parsedMarkdown)
+	// Resolve the repo's contributor identity (migration 0050) so
+	// the registry can attribute the source to the repo that
+	// contributed it. Defaults to anonymous (display_name="",
+	// anonymous=true) when the column is unset — the registry's
+	// canonical "anonymous" marker. When the admin has opted out
+	// of anonymity, the display_name they configured is sent so
+	// pulling repos can see who contributed the decomposition.
+	contributor := &registry.Contributor{Anonymous: true}
+	if w.systemQueries != nil {
+		if cRow, cErr := w.systemQueries.GetRepositoryContributor(ctx, repoID); cErr == nil {
+			contributor.Anonymous = cRow.ContributorAnonymous
+			if cRow.ContributorDisplayName != nil && *cRow.ContributorDisplayName != "" {
+				contributor.DisplayName = *cRow.ContributorDisplayName
+			}
+		} else {
+			log.Printf("contribute_source: reading contributor identity for repo %s (non-fatal, defaulting to anonymous): %v",
+				args.RepositoryID, cErr)
+		}
+	}
+	if contributor.Anonymous {
+		// Normalize so the registry receives the canonical
+		// "anonymous" marker rather than a name the admin
+		// previously set and then toggled back to anonymous.
+		contributor.DisplayName = ""
+	}
+
+	regSourceID, err := rc.PushSource(ctx, sourceURL, sourceDOI, "", sourceTitle, parsedText, parsedMarkdown, contributor)
 	if err != nil {
 		return fmt.Errorf("contribute_source: pushing source: %w", err)
 	}
@@ -209,14 +235,22 @@ func (w *ContributeSourceWorker) Work(ctx context.Context, job *river.Job[Contri
 		extractionModel = "default"
 	}
 
-	// Resolve the repo's effective promptset hash so the registry
-	// can tag the decomposition with the philosophy that produced
-	// it. Pulling repos filter on this hash (via their
-	// accepted_promptset_hashes) so decompositions from different
-	// promptsets do not mix.
+	// Resolve the repo's effective REGISTRY-compatibility hash so
+	// the registry can tag the decomposition with the philosophy
+	// that produced it. This is the hash over the 4 SHARED phases
+	// only (fact_extraction, image_fact_extraction,
+	// concept_extraction, refinement) — see
+	// promptset.RegistryHashPromptset. Pulling repos filter on this
+	// hash (via RelevanceFilter.AcceptedPromptsets +
+	// promptset.DefaultRegistryHashes) so decompositions from
+	// incompatible promptsets (a different fact-extraction prompt)
+	// do not mix, while decompositions from promptsets that differ
+	// only in the local phases (synthesis, summarization, posture,
+	// image_picker) are still pulled because they share the same
+	// registry hash.
 	var psHash string
 	if w.promptsetResolver != nil {
-		psHash = w.promptsetResolver.EffectiveHash(ctx, repoID)
+		psHash = w.promptsetResolver.EffectiveRegistryHash(ctx, repoID)
 	}
 
 	decomp := &registry.DecompositionPackage{

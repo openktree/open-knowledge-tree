@@ -27,7 +27,6 @@ func TestRegistrySearchProvider_Search(t *testing.T) {
 	}
 
 	cfg := config.RegistryConfig{ID: "default", URL: regURL}
-	client := registry.New(cfg)
 	services := registry.NewServiceMap(registry.NewClientMap(config.ProvidersConfig{
 		Registries: []config.RegistryConfig{cfg},
 	}))

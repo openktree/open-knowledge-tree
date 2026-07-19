@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
@@ -700,8 +701,8 @@ func (w *RetrieveSourceWorker) tryRegistryImport(
 // buildRelevanceFilter assembles the per-repo RelevanceFilter the
 // cache provider applies. It consolidates the four axes that were
 // previously read inline (resolveAllowedModels,
-// GetRepositorySyncLevels, promptsetResolver.AcceptedHashes, and
-// the inbound context mapper) into one call. The contextMapper
+// GetRepositorySyncLevels, promptsetResolver.AcceptedRegistryHashes,
+// and the inbound context mapper) into one call. The contextMapper
 // argument is nil for the retrieve_source path (verbatim concept
 // import, the legacy behavior) and non-nil for the pull_all /
 // pull_remote_batch paths (which translate registry contexts to
@@ -721,14 +722,20 @@ func (w *RetrieveSourceWorker) buildRelevanceFilter(
 		pullFilter = registry.NewSyncLevelFilter(registry.ParseSyncLevel(syncLevels.RegistryPullLevel))
 	}
 
+	// The filter compares REGISTRY-compatibility hashes (the 4
+	// shared phases), not the full catalog hashes, so two
+	// promptsets that differ only in synthesis/summarization/posture/
+	// image_picker share an admit set. DefaultAccepted is seeded
+	// with the built-in so the default philosophy is always pullable.
 	var acceptedHashes []string
 	if w.promptsetResolver != nil {
-		acceptedHashes = w.promptsetResolver.AcceptedHashes(ctx, repoID)
+		acceptedHashes = w.promptsetResolver.AcceptedRegistryHashes(ctx, repoID)
 	}
 
 	return &registry.RelevanceFilter{
 		AllowedModels:      allowedModels,
 		AcceptedPromptsets: acceptedHashes,
+		DefaultAccepted:    promptset.DefaultRegistryHashes,
 		SyncLevel:          pullFilter,
 		ContextMapper:      contextMapper,
 	}

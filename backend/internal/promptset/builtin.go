@@ -37,13 +37,35 @@ var Default = Promptset{
 	Posture:             builtinPostureSystemPrompt,
 }
 
-// DefaultHash is the canonical hash of the built-in Promptset,
-// computed once at package init. Migrations and config that need a
-// "this is the built-in" sentinel use this value (or, equivalently,
-// the empty string, which the resolver treats as "use Default").
+// DefaultHash is the canonical CATALOG hash of the built-in
+// Promptset, computed once at package init. Migrations and config
+// that need a "this is the built-in" sentinel use this value (or,
+// equivalently, the empty string, which the resolver treats as "use
+// Default").
 var DefaultHash string
+
+// DefaultRegistryHash is the canonical COMPATIBILITY hash of the
+// built-in Promptset — the SHA-256 over the 4 registry-shared phase
+// fields. The registry wire format carries this on each
+// decomposition the built-in philosophy produces, and the pull
+// filter compares against it. A custom promptset whose 4 shared
+// fields match the built-in's collapses to this same hash (see
+// RegistryHashPromptset), so tweaking only the summarizer does not
+// fragment the registry graph.
+var DefaultRegistryHash string
+
+// DefaultRegistryHashes is the always-accepted list of registry
+// hashes — decompositions tagged with any hash in this list are
+// admitted by every pulling repo, regardless of the repo's
+// AcceptedPromptsets. Seeded with DefaultRegistryHash so the
+// built-in philosophy is always pullable. Operators who want to
+// broaden the default-accepted set (e.g. to include a curated
+// "blessed" custom philosophy) extend this constant.
+var DefaultRegistryHashes []string
 
 func init() {
 	Default = Default.WithHash()
 	DefaultHash = Default.Hash
+	DefaultRegistryHash = Default.RegistryHash
+	DefaultRegistryHashes = []string{DefaultRegistryHash}
 }

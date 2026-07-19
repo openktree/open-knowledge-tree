@@ -307,3 +307,135 @@ func hashPhases(t *testing.T, ps promptset.Promptset) string {
 	sum := sha256.Sum256(bytes.TrimSpace(b))
 	return hex.EncodeToString(sum[:])
 }
+
+// hashSharedPhases recomputes the canonical REGISTRY-compatibility
+// hash client-side (mirrors promptset.RegistryHashPromptset) over
+// only the 4 shared phases. Used by the e2e tests to confirm the
+// server returned the expected registry_hash.
+func hashSharedPhases(t *testing.T, ps promptset.Promptset) string {
+	t.Helper()
+	in := struct {
+		FactExtraction      string `json:"fact_extraction"`
+		ImageFactExtraction string `json:"image_fact_extraction"`
+		ConceptExtraction   string `json:"concept_extraction"`
+		Refinement          string `json:"refinement"`
+	}{
+		FactExtraction:      ps.FactExtraction,
+		ImageFactExtraction: ps.ImageFactExtraction,
+		ConceptExtraction:   ps.ConceptExtraction,
+		Refinement:          ps.Refinement,
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal registry hash input: %v", err)
+	}
+	sum := sha256.Sum256(bytes.TrimSpace(b))
+	return hex.EncodeToString(sum[:])
+}
+
+// TestPromptsets_RegistryHashSurface asserts the API surfaces a
+// registry_hash field on every promptset it returns, and that the
+// value matches a client-side recomputation over only the 4 shared
+// phases. The built-in's registry_hash must equal
+// promptset.DefaultRegistryHash.
+func TestPromptsets_RegistryHashSurface(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+	client := registerTestUser(t, env, "ps-reghash@example.com", "passw0rd!", "PS RegHash")
+
+	resp, raw := client.do("GET", "/api/v1/promptsets", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /promptsets: status %d, body %s", resp.StatusCode, string(raw))
+	}
+	var list []promptset.Promptset
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list) == 0 || list[0].Hash != promptset.DefaultHash {
+		t.Fatalf("expected built-in first, got %v", list)
+	}
+	builtin := list[0]
+	if builtin.RegistryHash == "" {
+		t.Fatal("built-in registry_hash is empty; handler did not populate it")
+	}
+	if builtin.RegistryHash != promptset.DefaultRegistryHash {
+		t.Errorf("built-in registry_hash %q != promptset.DefaultRegistryHash %q",
+			builtin.RegistryHash, promptset.DefaultRegistryHash)
+	}
+	if got := hashSharedPhases(t, builtin); got != builtin.RegistryHash {
+		t.Errorf("built-in registry_hash %q != recomputed %q", builtin.RegistryHash, got)
+	}
+}
+
+// TestPromptsets_RegistryHashCompatibleButDistinct verifies two
+// promptsets that differ ONLY in the local phases (synthesis,
+// image_picker, summarization, posture) share a registry_hash (so
+// they are registry-compatible and can exchange decompositions) but
+// have distinct catalog hashes (so they remain separate user-visible
+// rows). This is the core invariant the registry-hash split
+// establishes.
+func TestPromptsets_RegistryHashCompatibleButDistinct(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+	client := registerTestUser(t, env, "ps-compat@example.com", "passw0rd!", "PS Compat")
+
+	// Create one custom promptset.
+	bodyA, _ := json.Marshal(map[string]string{
+		"name":                  "Compat A",
+		"fact_extraction":       "shared-fact",
+		"image_fact_extraction": "shared-image-fact",
+		"concept_extraction":    "shared-concept",
+		"refinement":            "shared-refine",
+		"synthesis":             "synth A",
+		"image_picker":          "picker A",
+		"summarization":         "summary A",
+		"posture":               "posture A",
+	})
+	resp, raw := client.do("POST", "/api/v1/promptsets", bodyA)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST A: status %d, body %s", resp.StatusCode, string(raw))
+	}
+	var a promptset.Promptset
+	if err := json.Unmarshal(raw, &a); err != nil {
+		t.Fatalf("decode A: %v", err)
+	}
+
+	// Create a second promptset with the same 4 shared phases but
+	// different local phases.
+	bodyB, _ := json.Marshal(map[string]string{
+		"name":                  "Compat B",
+		"fact_extraction":       "shared-fact",
+		"image_fact_extraction": "shared-image-fact",
+		"concept_extraction":    "shared-concept",
+		"refinement":            "shared-refine",
+		"synthesis":             "synth B (different)",
+		"image_picker":          "picker B (different)",
+		"summarization":         "summary B (different)",
+		"posture":               "posture B (different)",
+	})
+	resp, raw = client.do("POST", "/api/v1/promptsets", bodyB)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST B: status %d, body %s", resp.StatusCode, string(raw))
+	}
+	var b promptset.Promptset
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatalf("decode B: %v", err)
+	}
+
+	// Catalog hashes MUST differ (two distinct rows in the catalog).
+	if a.Hash == b.Hash {
+		t.Errorf("expected distinct catalog hashes for A/B; both are %q", a.Hash)
+	}
+	// Registry hashes MUST match (compatible at the registry level).
+	if a.RegistryHash != b.RegistryHash {
+		t.Errorf("expected equal registry_hash for compatible promptsets; A=%q B=%q",
+			a.RegistryHash, b.RegistryHash)
+	}
+	// And the shared value matches a client-side recomputation.
+	if got := hashSharedPhases(t, a); got != a.RegistryHash {
+		t.Errorf("A registry_hash %q != recomputed %q", a.RegistryHash, got)
+	}
+	if got := hashSharedPhases(t, b); got != b.RegistryHash {
+		t.Errorf("B registry_hash %q != recomputed %q", b.RegistryHash, got)
+	}
+}

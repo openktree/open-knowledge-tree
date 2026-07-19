@@ -19,12 +19,28 @@ import (
 // once at Work() start and thread the resolved promptset into every
 // phase provider.
 //
-// The resolver also exposes AcceptedHashes for the registry pull
-// worker: the set of hashes a repo will admit on pull (active always
-// included, plus any in accepted_promptset_hashes). A remote
-// decomposition whose promptset_hash is not in this set is skipped,
-// which is what keeps decompositions from different promptsets from
-// mixing at the registry level.
+// The resolver exposes two hash surfaces:
+//
+//   - EffectiveHash / Effective: the FULL catalog hash (8 phases).
+//     Used to tag LOCAL DB rows (facts/concepts/links.promptset_hash)
+//     so local queries can group by full philosophy.
+//
+//   - EffectiveRegistryHash / AcceptedRegistryHashes: the
+//     REGISTRY-compatibility hash (4 shared phases only). Used to
+//     tag decompositions pushed to the registry (contribute_source)
+//     and to filter decompositions on pull (the RelevanceFilter).
+//     Two promptsets that differ only in synthesis/summarization/
+//     posture/image_picker share a RegistryHash and can exchange
+//     decompositions.
+//
+// AcceptedRegistryHashes is the set of registry hashes a repo will
+// admit on pull: the active hash plus every entry in
+// accepted_promptset_hashes, each mapped from the stored full hash
+// to its compatibility hash via the resolver. A remote decomposition
+// whose registry hash is not in this set (and not in
+// promptset.DefaultRegistryHashes) is skipped, which is what keeps
+// decompositions from incompatible promptsets from mixing at the
+// registry level.
 type PromptsetResolver struct {
 	cfg          *config.Config
 	systemQueries *store.Queries
@@ -35,9 +51,11 @@ type PromptsetResolver struct {
 // default-pool *store.Queries (the same one ModelResolver holds);
 // resolver is the promptset.Resolver built in cmd/app/api.go. Nil
 // systemQueries / resolver is safe — Effective returns the built-in
-// Default and AcceptedHashes returns just the effective hash, so a
-// deployment that hasn't wired the system pool still runs (every
-// repo inherits the built-in philosophy).
+// Default, EffectiveHash returns DefaultHash, EffectiveRegistryHash
+// returns DefaultRegistryHash, and AcceptedRegistryHashes returns
+// just the effective registry hash, so a deployment that hasn't
+// wired the system pool still runs (every repo inherits the
+// built-in philosophy).
 func NewPromptsetResolver(cfg *config.Config, systemQueries *store.Queries, resolver *promptset.Resolver) *PromptsetResolver {
 	return &PromptsetResolver{cfg: cfg, systemQueries: systemQueries, resolver: resolver}
 }
@@ -57,10 +75,12 @@ func (r *PromptsetResolver) Effective(ctx context.Context, repoID pgtype.UUID) p
 	return promptset.Default
 }
 
-// EffectiveHash returns the effective promptset hash for a repo as a
-// non-empty string (the built-in hash when no override is set). Used
-// by workers to tag fact/concept inserts with promptset_hash without
-// needing the full Promptset struct.
+// EffectiveHash returns the effective FULL catalog hash for a repo
+// as a non-empty string (the built-in hash when no override is set).
+// Used by workers to tag LOCAL fact/concept inserts with
+// promptset_hash without needing the full Promptset struct. The
+// local DB stores full hashes so per-philosophy queries (synthesis,
+// posture grouping) keep their full granularity.
 func (r *PromptsetResolver) EffectiveHash(ctx context.Context, repoID pgtype.UUID) string {
 	if r.systemQueries != nil {
 		row, err := r.systemQueries.GetRepositoryPromptset(ctx, repoID)
@@ -74,11 +94,78 @@ func (r *PromptsetResolver) EffectiveHash(ctx context.Context, repoID pgtype.UUI
 	return promptset.DefaultHash
 }
 
-// AcceptedHashes returns the set of promptset hashes a repo will
-// admit on registry pull: the effective hash plus every entry in
-// accepted_promptset_hashes. The pull worker filters remote
-// decompositions to those whose promptset_hash is in this set. When
-// the system pool is nil, returns just the effective hash.
+// EffectiveRegistryHash returns the REGISTRY-compatibility hash for
+// the repo's effective promptset — the SHA-256 over the 4 shared
+// phases (see promptset.RegistryHashPromptset). Used by
+// contribute_source to tag decompositions pushed to the registry
+// and by pull workers to seed the active entry of the accepted set.
+// Falls back to promptset.DefaultRegistryHash when the resolver is
+// nil or the effective promptset is unknown (which can only happen
+// when a repo points at a deleted custom promptset AND the global
+// default config is also unset — both fall back to the built-in).
+func (r *PromptsetResolver) EffectiveRegistryHash(ctx context.Context, repoID pgtype.UUID) string {
+	fullHash := r.EffectiveHash(ctx, repoID)
+	if r.resolver == nil {
+		return promptset.DefaultRegistryHash
+	}
+	ps := r.resolver.ResolveOrDefault(fullHash)
+	if ps.RegistryHash != "" {
+		return ps.RegistryHash
+	}
+	return promptset.RegistryHashPromptset(ps)
+}
+
+// AcceptedRegistryHashes returns the set of REGISTRY-compatibility
+// hashes a repo will admit on registry pull: the effective hash plus
+// every entry in accepted_promptset_hashes, each mapped from the
+// stored FULL catalog hash to its compatibility hash via the
+// resolver. The pull worker feeds this into RelevanceFilter.AcceptedPromptsets.
+// When the system pool is nil, returns just the effective registry
+// hash. Unknown full hashes (a repo pointing at a deleted custom
+// promptset) are dropped rather than expanded to the default — the
+// active hash already covers the "default" case via
+// EffectiveRegistryHash, and a stale accepted entry should not
+// silently broaden the admit set.
+func (r *PromptsetResolver) AcceptedRegistryHashes(ctx context.Context, repoID pgtype.UUID) []string {
+	effective := r.EffectiveRegistryHash(ctx, repoID)
+	if r.systemQueries == nil || r.resolver == nil {
+		return []string{effective}
+	}
+	row, err := r.systemQueries.GetRepositoryPromptset(ctx, repoID)
+	if err != nil {
+		return []string{effective}
+	}
+	set := map[string]bool{effective: true}
+	for _, fullHash := range row.AcceptedPromptsetHashes {
+		if fullHash == "" {
+			continue
+		}
+		ps, ok := r.resolver.Get(fullHash)
+		if !ok {
+			continue
+		}
+		rh := ps.RegistryHash
+		if rh == "" {
+			rh = promptset.RegistryHashPromptset(ps)
+		}
+		if rh != "" {
+			set[rh] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for h := range set {
+		out = append(out, h)
+	}
+	return out
+}
+
+// AcceptedHashes is a legacy alias kept for backward compatibility
+// with callers that have not been migrated to the registry-hash
+// model. New callers should use AcceptedRegistryHashes. Returns the
+// FULL catalog hashes (active + accepted), NOT the compatibility
+// hashes — do NOT feed this into RelevanceFilter.AcceptedPromptsets.
+//
+// Deprecated: use AcceptedRegistryHashes.
 func (r *PromptsetResolver) AcceptedHashes(ctx context.Context, repoID pgtype.UUID) []string {
 	effective := r.EffectiveHash(ctx, repoID)
 	if r.systemQueries == nil {

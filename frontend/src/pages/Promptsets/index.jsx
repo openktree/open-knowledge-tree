@@ -1,4 +1,4 @@
-import { createResource, createSignal, Show } from "solid-js";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
 import { api } from "../../services/api";
 import Layout from "../../components/Layout";
 import Alert from "../../components/Alert";
@@ -6,18 +6,24 @@ import Card from "../../components/Card";
 import Loading from "../../components/Loading";
 import PromptsetsTable from "./PromptsetsTable";
 import PromptsetForm from "./PromptsetForm";
-import { emptyDraft, draftFromPromptset } from "./constants";
+import { BUILTIN_SOURCE, emptyDraft, draftFromPromptset } from "./constants";
 
 // Promptsets is the route entry for /promptsets. It owns the
 // page-level state (list, draft, alert, busy) and delegates
-// rendering to PromptsetsTable + PromptsetForm. Stays under the
-// 100-line budget per the Page folder convention.
+// rendering to PromptsetsTable + PromptsetForm.
 export default function Promptsets() {
   const [promptsets, { refetch }] = createResource(() => api.listPromptsets());
   const [alert, setAlert] = createSignal(null);
   const [draft, setDraft] = createSignal(null);
   const [editing, setEditing] = createSignal(null);
   const [busyHash, setBusyHash] = createSignal(null);
+
+  // The built-in's registry_hash is the default compatibility class;
+  // passed to the form for the live "≡ default" preview.
+  const defaultRegistryHash = createMemo(() => {
+    const bi = (promptsets() ?? []).find((p) => p.source === BUILTIN_SOURCE);
+    return bi?.registry_hash ?? "";
+  });
 
   const startCreate = () => { setDraft(emptyDraft()); setEditing("create"); setAlert(null); };
   const startEdit = (ps) => { setDraft(draftFromPromptset(ps)); setEditing({ hash: ps.hash }); setAlert(null); };
@@ -67,7 +73,11 @@ export default function Promptsets() {
           <div>
             <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Promptsets</h1>
             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              A promptset is the complete set of phase prompts a repository decomposes under. The hash is the identity.
+              A promptset is the full set of phase prompts a repository decomposes under.
+              The <strong>hash</strong> is its catalog identity; the <strong>compatibility</strong> hash
+              (over the 4 shared phases — fact, image-fact, concept, refinement) decides which promptsets
+              can exchange decompositions via the registry. Promptsets that differ only in synthesis,
+              summarization, posture, or image-picker are <em>compatible</em>.
             </p>
           </div>
           <Show when={!editing()}>
@@ -77,7 +87,7 @@ export default function Promptsets() {
         <Show when={editing()}>
           <Card>
             <h3 class="text-lg font-semibold mb-3 dark:text-white">{editing() === "create" ? "Create Promptset" : "Edit Promptset"}</h3>
-            <PromptsetForm draft={draft} onChange={onChange} onSubmit={submit} onCancel={cancel} busy={() => busyHash() === "form"} submitLabel={editing() === "create" ? "Create" : "Save"} />
+            <PromptsetForm draft={draft} onChange={onChange} onSubmit={submit} onCancel={cancel} busy={() => busyHash() === "form"} submitLabel={editing() === "create" ? "Create" : "Save"} defaultRegistryHash={defaultRegistryHash} />
           </Card>
         </Show>
         <Show when={!promptsets.loading} fallback={<Loading message="Loading promptsets…" />}>

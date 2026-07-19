@@ -322,13 +322,16 @@ func (h *Promptsets) Delete(w http.ResponseWriter, r *http.Request) {
 // rowToPromptset converts a sqlc row into a Promptset for the JSON
 // response. Mirrors promptset.rowToPromptset but lives in the
 // handler package to avoid an import cycle (handler imports
-// promptset; promptset can't import handler).
+// promptset; promptset can't import handler). The RegistryHash is
+// computed from the 4 shared phase strings (deterministic — see
+// promptset.RegistryHashPromptset) so the UI can show
+// compatibility without an extra stored column.
 func rowToPromptset(r store.OktSystemPromptset) promptset.Promptset {
 	owner := ""
 	if r.OwnerID.Valid {
 		owner = r.OwnerID.String()
 	}
-	return promptset.Promptset{
+	ps := promptset.Promptset{
 		Hash:                r.Hash,
 		Name:                r.Name,
 		OwnerID:             owner,
@@ -342,6 +345,8 @@ func rowToPromptset(r store.OktSystemPromptset) promptset.Promptset {
 		Summarization:       r.Summarization,
 		Posture:             r.Posture,
 	}
+	ps.RegistryHash = promptset.RegistryHashPromptset(ps)
+	return ps
 }
 
 // joinPhases renders a []PhaseLabel as a comma-separated string for

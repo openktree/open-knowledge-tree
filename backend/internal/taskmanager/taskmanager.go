@@ -278,7 +278,7 @@ func New(
 	// page). It reuses handler.PullOneRemoteSource + the inbound
 	// context mapper so bulk pulls honor the repo's unmapped-context
 	// policy.
-	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup))
+	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup, psResolver))
 	river.AddWorker(workers, tasks.NewFactCatchupWorker(cfg.Providers.Dedup, qdrantStore, registry, systemQueries))
 	// Concept summarization is a sibling of embed_concepts (both
 	// fan out from extract_concepts). It is a no-op when summarizer

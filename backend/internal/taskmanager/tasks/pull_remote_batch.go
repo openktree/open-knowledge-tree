@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 	"github.com/riverqueue/river"
@@ -44,11 +45,12 @@ type PullRemoteBatchResult struct {
 type PullRemoteBatchWorker struct {
 	river.WorkerDefaults[PullRemoteBatchArgs]
 
-	registryClients *registry.ClientMap
-	registryServices *registry.ServiceMap
-	registry        *dbpool.Registry
-	systemQueries   *store.Queries
-	dedupEnqueuer   handler.RemoteDedupEnqueuer
+	registryClients   *registry.ClientMap
+	registryServices  *registry.ServiceMap
+	registry          *dbpool.Registry
+	systemQueries     *store.Queries
+	dedupEnqueuer     handler.RemoteDedupEnqueuer
+	promptsetResolver *PromptsetResolver
 }
 
 func NewPullRemoteBatchWorker(
@@ -57,13 +59,15 @@ func NewPullRemoteBatchWorker(
 	poolRegistry *dbpool.Registry,
 	systemQueries *store.Queries,
 	dedupEnqueuer handler.RemoteDedupEnqueuer,
+	promptsetResolver *PromptsetResolver,
 ) *PullRemoteBatchWorker {
 	return &PullRemoteBatchWorker{
-		registryClients:  registryClients,
-		registryServices: registryServices,
-		registry:         poolRegistry,
-		systemQueries:    systemQueries,
-		dedupEnqueuer:    dedupEnqueuer,
+		registryClients:   registryClients,
+		registryServices:  registryServices,
+		registry:          poolRegistry,
+		systemQueries:     systemQueries,
+		dedupEnqueuer:     dedupEnqueuer,
+		promptsetResolver: promptsetResolver,
 	}
 }
 
@@ -133,8 +137,19 @@ func (w *PullRemoteBatchWorker) Work(ctx context.Context, job *river.Job[PullRem
 			log.Printf("pull_remote_batch: auto-adding context %q: %v", registryLabel, err)
 		}
 	}
+	// Resolve the repo's accepted REGISTRY-compatibility hashes so
+	// the per-decomposition check in Service.PullRelevantDecomposition
+	// admits decompositions from compatible promptsets. DefaultAccepted
+	// is seeded with the built-in so the default philosophy is always
+	// pullable even when AcceptedPromptsets is non-empty.
+	var acceptedHashes []string
+	if w.promptsetResolver != nil {
+		acceptedHashes = w.promptsetResolver.AcceptedRegistryHashes(ctx, repoID)
+	}
 	filter := &registry.RelevanceFilter{
 		AllowedModels:      resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels()),
+		AcceptedPromptsets: acceptedHashes,
+		DefaultAccepted:    promptset.DefaultRegistryHashes,
 		SyncLevel:          pullFilter,
 		ContextMapper:      mapper,
 		AutoAdd:            autoAdd,

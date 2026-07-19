@@ -88,13 +88,17 @@ func (p *DBProvider) ListByOwner(ownerID pgtype.UUID) []Promptset {
 // into a Promptset. OwnerID is normalized to the empty string when
 // NULL (the migration allows owner_id NULL for a future "global"
 // promptset; today every custom promptset has an owner). Source is
-// set to CustomSource so the UI can badge it.
+// set to CustomSource so the UI can badge it. The Hash is read from
+// the row (the PK); the RegistryHash is computed from the 4 shared
+// phase strings so the UI and the pull filter can compare
+// compatibility without an extra stored column (the value is
+// deterministic — see RegistryHashPromptset).
 func rowToPromptset(r store.OktSystemPromptset) Promptset {
 	owner := ""
 	if r.OwnerID.Valid {
 		owner = r.OwnerID.String()
 	}
-	return Promptset{
+	ps := Promptset{
 		Hash:                r.Hash,
 		Name:                r.Name,
 		OwnerID:             owner,
@@ -108,4 +112,6 @@ func rowToPromptset(r store.OktSystemPromptset) Promptset {
 		Summarization:       r.Summarization,
 		Posture:             r.Posture,
 	}
+	ps.RegistryHash = RegistryHashPromptset(ps)
+	return ps
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -103,19 +104,18 @@ func (w *PullAllFromRegistryWorker) Work(ctx context.Context, job *river.Job[Pul
 	}
 	queries := store.New(pool.Pool)
 
-	// Resolve the repo's effective promptset hash. Imported facts
-	// and concepts are tagged with this hash so they join the repo's
-	// active philosophy. (A future step can tag with the registry
-	// decomposition's own promptset_hash once the wire format
-	// carries it; for now the pull is gated on accepted hashes, so
-	// the imported decomposition is by definition from an accepted
-	// philosophy.)
+	// Resolve the repo's effective promptset. Imported facts and
+	// concepts are tagged with the FULL catalog hash so local
+	// per-philosophy queries keep full granularity; the REGISTRY
+	// compatibility hash is used only for the pull filter (so two
+	// promptsets that differ only in local phases share an admit
+	// set and can exchange decompositions).
 	var psHashPtr *string
 	var acceptedHashes []string
 	if w.promptsetResolver != nil {
 		h := w.promptsetResolver.EffectiveHash(ctx, repoID)
 		psHashPtr = &h
-		acceptedHashes = w.promptsetResolver.AcceptedHashes(ctx, repoID)
+		acceptedHashes = w.promptsetResolver.AcceptedRegistryHashes(ctx, repoID)
 	}
 
 	// Build the inbound context mapper once per repo. The mapper
@@ -326,6 +326,7 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 	filter := &registry.RelevanceFilter{
 		AllowedModels:      resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels()),
 		AcceptedPromptsets: acceptedHashes,
+		DefaultAccepted:    promptset.DefaultRegistryHashes,
 		SyncLevel:          pullFilter,
 		ContextMapper:      mapper,
 		AutoAdd:            autoAdd,
