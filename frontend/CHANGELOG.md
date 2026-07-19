@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v1.1.0...frontend-v1.2.0) (2026-07-19)
+
+
+### Features
+
+* **promptset:** split registry-compatibility hash from catalog hash ([8f1d2af](https://github.com/openktree/open-knowledge-tree/commit/8f1d2af510e3fe4963c3a81e1e3f822586411c64))
+* **registry:** per-repo contributor identity for registry attribution ([45f28ae](https://github.com/openktree/open-knowledge-tree/commit/45f28aebe4cdeb6f350930f4115138c189052675))
+
 ## [1.1.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v1.0.0...frontend-v1.1.0) (2026-07-19)
 
 
