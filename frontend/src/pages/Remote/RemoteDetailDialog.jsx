@@ -49,16 +49,15 @@ export default function RemoteDetailDialog(props) {
   });
 
   const fetchDecompData = async (model) => {
-    // When the registry provides a presigned S3 URL, fetch the
-    // decomposition package directly from object storage — no need
-    // to proxy through the backend. Falls back to the backend
-    // proxy endpoint when no presigned URL is available (e.g.
-    // local dev with filesystem storage).
-    if (model.presigned_url) {
-      const res = await fetch(model.presigned_url);
-      if (!res.ok) throw new Error(`S3 fetch failed: ${res.status}`);
-      return res.json();
-    }
+    // Always proxy through the backend. The backend's GetDecomposition
+    // handler prefers the registry's presigned URL to fetch the
+    // decomposition directly from R2/MinIO (avoiding the registry's
+    // in-memory re-marshal and the pullSem bottleneck) and streams
+    // the raw JSON to the browser. Fetching the presigned URL from
+    // the browser directly fails with CORS on R2 — the browser
+    // can't reach the R2 endpoint with a cross-origin request
+    // unless the bucket has CORS configured, which we don't manage
+    // from the registry.
     return api.getRemoteDecomposition(props.slug, props.source.id, model.model_id);
   };
 
