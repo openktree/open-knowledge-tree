@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -40,7 +41,8 @@ func (h *SourceHandler) Search(w http.ResponseWriter, r *http.Request) {
 func (h *SourceHandler) Push(w http.ResponseWriter, r *http.Request) {
 	var data model.SourceData
 	if err := decodeBody(r, &data); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		log.Printf("push source: decode body: %v", err)
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	result, err := h.svc.PushSource(r.Context(), &data)
@@ -56,7 +58,8 @@ func (h *SourceHandler) PushDecomposition(w http.ResponseWriter, r *http.Request
 	modelID := decodeModelParam(chi.URLParam(r, "model"))
 	var decomp model.DecompositionPackage
 	if err := decodeBody(r, &decomp); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		log.Printf("push decomposition: decode body: %v", err)
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	if decomp.ModelID == "" {
