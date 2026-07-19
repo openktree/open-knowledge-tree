@@ -93,7 +93,11 @@ export default function UploadSourcePanel(props) {
         </button>
       </div>
 
-      <Alert variant={alert()?.variant} message={alert()?.message} onDismiss={() => setAlert(null)} />
+      <Alert
+        variant={alert()?.variant}
+        message={alert()?.message}
+        onDismiss={() => setAlert(null)}
+      />
 
       <form onSubmit={handleSubmit} class="space-y-3">
         <Show when={mode() === "file"}>
@@ -152,8 +156,8 @@ export default function UploadSourcePanel(props) {
         <Card class="mb-6">
           <h2 class="text-lg font-semibold mb-1 text-text-base">Upload a source</h2>
           <p class="text-sm text-text-muted mb-4">
-            Upload a file (PDF, HTML, Markdown, TXT) or paste raw text. The
-            content is parsed and decomposed into facts automatically.
+            Upload a file (PDF, HTML, Markdown, TXT) or paste raw text. The content is parsed and
+            decomposed into facts automatically.
           </p>
           {body()}
         </Card>

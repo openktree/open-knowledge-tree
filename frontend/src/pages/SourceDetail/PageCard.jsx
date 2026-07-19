@@ -1,4 +1,4 @@
-import { createSignal, Show, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import Badge from "../../components/Badge";
 import { api } from "../../services/api";
 
@@ -58,7 +58,9 @@ export default function PageCard(props) {
           fallback={
             <div
               class="aspect-[3/4] flex items-center justify-center bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-600"
-              ref={(el) => { if (el) fetchBlob(); }}
+              ref={(el) => {
+                if (el) fetchBlob();
+              }}
             >
               <span class="text-2xl font-semibold">p.{props.image.page_number}</span>
             </div>
@@ -86,9 +88,7 @@ export default function PageCard(props) {
         </div>
         <p class="text-[10px] font-mono text-gray-500 dark:text-gray-400">{dim()}</p>
         <Show when={sizeKB() !== null}>
-          <p class="text-[10px] font-mono text-gray-500 dark:text-gray-400">
-            {sizeKB()} KB
-          </p>
+          <p class="text-[10px] font-mono text-gray-500 dark:text-gray-400">{sizeKB()} KB</p>
         </Show>
       </div>
     </div>

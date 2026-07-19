@@ -1,21 +1,21 @@
-import { Show, createResource, createMemo } from "solid-js";
+import { createMemo, createResource, Show } from "solid-js";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
 import { api } from "../../services/api";
 import { getTokenSignal } from "../../store/auth";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
-import Layout from "../../components/Layout";
-import Loading from "../../components/Loading";
-import StatGrid from "./StatGrid";
 import ActionGrid from "./ActionGrid";
-import RegistryBanner from "./RegistryBanner";
 import { ACTION_CARDS } from "./constants";
+import RegistryBanner from "./RegistryBanner";
+import StatGrid from "./StatGrid";
 
 export default function Dashboard() {
   const token = getTokenSignal();
   const rbac = useRBAC();
   const repo = useRepository();
 
-  const [user] = createResource(token, (t) => t ? api.getMe() : null);
+  const [user] = createResource(token, (t) => (t ? api.getMe() : null));
 
   const slug = () => repo.currentRepo()?.slug || "";
   const repoName = () => repo.currentRepo()?.name || "No repository selected";
@@ -29,13 +29,13 @@ export default function Dashboard() {
         api.listRepoFacts(slug, "stable", "", { limit: 1 }),
         api.listRepoConcepts(slug, { limit: 1 }),
       ]);
-      const pick = (r) => (r.status === "fulfilled" ? r.value?.total ?? 0 : "\u2014");
+      const pick = (r) => (r.status === "fulfilled" ? (r.value?.total ?? 0) : "\u2014");
       return {
         sourceCount: pick(sources),
         factCount: pick(facts),
         conceptCount: pick(concepts),
       };
-    }
+    },
   );
 
   const visibleCards = createMemo(() => {

@@ -1,7 +1,7 @@
-import { Show } from "solid-js";
 import { A } from "@solidjs/router";
-import EmptyState from "../../components/EmptyState";
+import { Show } from "solid-js";
 import Button from "../../components/Button";
+import EmptyState from "../../components/EmptyState";
 
 /**
  * Network / server-error fallback for the SourceDetail
@@ -23,7 +23,8 @@ export default function FetchErrorState(props) {
   const code = () => {
     const msg = props.error?.message || "";
     if (msg.includes("not found")) return 404;
-    if (msg.includes("permission") || msg.includes("unauthorized") || msg.includes("forbidden")) return 403;
+    if (msg.includes("permission") || msg.includes("unauthorized") || msg.includes("forbidden"))
+      return 403;
     return 0;
   };
   return (

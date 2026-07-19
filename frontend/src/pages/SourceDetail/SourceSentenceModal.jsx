@@ -1,7 +1,7 @@
-import { Show, For } from "solid-js";
 import { A } from "@solidjs/router";
-import Modal from "../../components/Modal";
+import { For, Show } from "solid-js";
 import FactBadges from "../../components/FactBadges";
+import Modal from "../../components/Modal";
 
 /**
  * Centered modal listing the facts derived from a single clicked
@@ -20,9 +20,7 @@ import FactBadges from "../../components/FactBadges";
 export default function SourceSentenceModal(props) {
   const count = () => (props.facts || []).length;
   const title = () =>
-    props.sentenceIndex == null
-      ? "Facts"
-      : `Facts from sentence #${props.sentenceIndex + 1}`;
+    props.sentenceIndex == null ? "Facts" : `Facts from sentence #${props.sentenceIndex + 1}`;
 
   return (
     <Modal open={props.open} onClose={props.onClose} title={title()}>

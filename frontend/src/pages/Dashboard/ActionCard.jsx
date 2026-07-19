@@ -20,12 +20,8 @@ export default function ActionCard(props) {
           </svg>
         </div>
         <div class="flex-1 min-w-0">
-          <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">
-            {props.title}
-          </h3>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            {props.description}
-          </p>
+          <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">{props.title}</h3>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{props.description}</p>
           <span class="mt-3 inline-flex items-center gap-1 text-sm font-medium text-blue-600 dark:text-blue-400 group-hover:gap-2 transition-all">
             {props.cta}
             <svg

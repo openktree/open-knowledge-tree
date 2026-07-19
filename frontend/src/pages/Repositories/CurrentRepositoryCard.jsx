@@ -1,7 +1,7 @@
 import { Show } from "solid-js";
-import { useRepository } from "../../store/repository";
-import Card from "../../components/Card";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
+import { useRepository } from "../../store/repository";
 
 // CurrentRepositoryCard is the card pinned to the top of the
 // Repositories page showing the active repository, with a Copy ID
@@ -33,8 +33,8 @@ export default function CurrentRepositoryCard(props) {
             when={repo.currentRepo()}
             fallback={
               <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                No repository is selected. Every page in the application operates
-                inside a repository, so create or select one below to start.
+                No repository is selected. Every page in the application operates inside a
+                repository, so create or select one below to start.
               </p>
             }
           >

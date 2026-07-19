@@ -1,7 +1,7 @@
-import { For, Show, createResource, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import Card from "../../components/Card";
+import { createResource, createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import Pagination from "../../components/Pagination";
 import { api } from "../../services/api";
@@ -38,7 +38,7 @@ export default function ConceptRelations(props) {
       } catch {
         return { data: [], total: 0, limit: PAGE_SIZE, offset: 0 };
       }
-    }
+    },
   );
 
   const relations = () => relData()?.data || [];
@@ -55,7 +55,9 @@ export default function ConceptRelations(props) {
       <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <div class="flex items-center gap-2 flex-wrap">
           <h2 class="text-lg font-semibold dark:text-white">Relations</h2>
-          <Badge variant="gray">{total().toLocaleString()} related concept{total() === 1 ? "" : "s"}</Badge>
+          <Badge variant="gray">
+            {total().toLocaleString()} related concept{total() === 1 ? "" : "s"}
+          </Badge>
         </div>
         <button
           type="button"
@@ -92,7 +94,12 @@ export default function ConceptRelations(props) {
 
         <Show when={total() > limit()}>
           <div class="pt-3 border-t border-gray-200 dark:border-gray-700 mt-3">
-            <Pagination total={total()} limit={limit()} offset={offset()} onOffsetChange={handleOffset} />
+            <Pagination
+              total={total()}
+              limit={limit()}
+              offset={offset()}
+              onOffsetChange={handleOffset}
+            />
           </div>
         </Show>
       </Show>

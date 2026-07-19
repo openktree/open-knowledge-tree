@@ -1,9 +1,9 @@
 import { createResource, createSignal, For, Show } from "solid-js";
-import { api } from "../../services/api";
+import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import FormField from "../../components/FormField";
-import Alert from "../../components/Alert";
+import { api } from "../../services/api";
 import PresetPicker from "./PresetPicker";
 
 /**
@@ -160,9 +160,20 @@ export default function CreateRepositoryForm(props) {
         <PresetPicker value={seed} onChange={setSeed} />
 
         <Show when={dbList().length > 0}>
-          <FormField label="Database" type="select" name="database_name" value={databaseName()} onChange={setDatabaseName}>
+          <FormField
+            label="Database"
+            type="select"
+            name="database_name"
+            value={databaseName()}
+            onChange={setDatabaseName}
+          >
             <For each={dbList()}>
-              {(db) => <option value={db.name}>{db.name}{db.is_default ? " (default)" : ""}</option>}
+              {(db) => (
+                <option value={db.name}>
+                  {db.name}
+                  {db.is_default ? " (default)" : ""}
+                </option>
+              )}
             </For>
           </FormField>
         </Show>

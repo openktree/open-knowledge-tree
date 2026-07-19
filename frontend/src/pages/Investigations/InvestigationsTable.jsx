@@ -1,5 +1,5 @@
-import { Show, For } from "solid-js";
 import { A } from "@solidjs/router";
+import { For, Show } from "solid-js";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import InvestigationRow from "./InvestigationRow";
@@ -10,9 +10,7 @@ export default function InvestigationsTable(props) {
     <Card>
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold dark:text-white">Investigations</h2>
-        <span class="text-xs text-gray-500 dark:text-gray-400">
-          {invs().length} total
-        </span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">{invs().length} total</span>
       </div>
       <Show
         when={invs().length > 0}
@@ -29,7 +27,9 @@ export default function InvestigationsTable(props) {
                 <th class="py-3 px-4 font-medium text-gray-600 dark:text-gray-400">Title</th>
                 <th class="py-3 px-4 font-medium text-gray-600 dark:text-gray-400">Topic</th>
                 <th class="py-3 px-4 font-medium text-gray-600 dark:text-gray-400">Created</th>
-                <th class="py-3 px-4 font-medium text-gray-600 dark:text-gray-400 text-right">Actions</th>
+                <th class="py-3 px-4 font-medium text-gray-600 dark:text-gray-400 text-right">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody>

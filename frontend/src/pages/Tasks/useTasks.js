@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount } from "solid-js";
+import { createEffect, createSignal, onMount } from "solid-js";
 import { api } from "../../services/api";
 
 const PAGE_SIZE = 50;
@@ -130,9 +130,24 @@ export function useTasks() {
   });
 
   return {
-    state, setState, kind, setKind, queue, setQueue,
-    alert, setAlert, jobs, hasMore, loading, loadingMore,
-    stats, statsLoading, rescuing,
-    reload, loadMore, reloadStats, rescueStuckJobs,
+    state,
+    setState,
+    kind,
+    setKind,
+    queue,
+    setQueue,
+    alert,
+    setAlert,
+    jobs,
+    hasMore,
+    loading,
+    loadingMore,
+    stats,
+    statsLoading,
+    rescuing,
+    reload,
+    loadMore,
+    reloadStats,
+    rescueStuckJobs,
   };
 }

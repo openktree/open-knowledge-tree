@@ -188,6 +188,8 @@ and see green. (The `-skip` is for the SERPER_API_KEY env-gated test only; remov
 
 **Never run the e2e suite against your dev database.** The test harness in `backend/e2e/testutil/setup.go` runs `DROP SCHEMA IF EXISTS okt_repository CASCADE; DROP SCHEMA IF EXISTS okt_system CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;` before re-applying migrations, which deletes all users, sessions, facts, sources, and other application data. Always use the test Postgres (port 5433) or `just test-e2e`, which boots an isolated tmpfs test container.
 
+**CI runs the e2e suite on every PR** (see "CI & Lefthook" below), so `just test-e2e` is the contributor's local mirror of what the `backend-e2e` job checks. Keep it green locally before pushing — a red local run means a red PR.
+
 ## Where to Put New Artifacts
 
 | Artifact | Location |
@@ -260,4 +262,50 @@ just up
 # Pre-commit gate for frontend changes
 just check-pages        # page-size policy only
 just check-frontend     # page-size policy + production build
+
+# Lint (mirrors CI)
+just lint               # golangci-lint on backend/ + registry/
+just lint-frontend      # Biome check on frontend/
+just lint-frontend-fix  # Biome check + autofix
+
+# One-time local git hook install (pre-commit + pre-push; see "CI & Lefthook")
+just lefthook-install
 ```
+
+## CI & Lefthook
+
+Every pull request is gated by `.github/workflows/ci.yml`. The same gates run locally via [lefthook](https://github.com/evilmartians/lefthook) so a contributor never pushes something CI will reject.
+
+### CI jobs (on `pull_request` and `push: main`)
+
+| Job | Runs when paths include | What it does |
+|-----|-------------------------|--------------|
+| `lint` | `backend/**`, `registry/**`, `.golangci.yml`, workflow files | `golangci-lint` on both Go modules (config: `.golangci.yml`) |
+| `frontend-lint` | `frontend/**`, workflow files | `npx biome check` |
+| `frontend-build` | `frontend/**`, workflow files | `npm run check:pages` + `npm run build` |
+| `backend-unit` | `backend/**`, workflow files | `go build` + `go vet` + `go test ./internal/... ./cmd/...` |
+| `backend-e2e` | `backend/**`, workflow files | `go test -tags=e2e ./e2e/...` against a tmpfs Postgres on :5433 (skips the SERPER-gated test) |
+| `registry` | `registry/**`, workflow files | `go build` + `go vet` + `go test ./...` |
+| `sqlc-diff` | `backend/**`, workflow files | `sqlc generate` + `git diff --exit-code internal/store/` |
+
+Path filtering uses `dorny/paths-filter@v3` so a docs-only PR skips the backend/e2e bill.
+
+### Local hooks (lefthook)
+
+One-time install after cloning:
+
+```bash
+just lefthook-install      # or: npx lefthook install
+```
+
+Hooks defined in `lefthook.yml`:
+
+- **pre-commit** (parallel): `just check-pages`, `go vet` on staged `.go` files, `npx biome check` on staged frontend files.
+- **pre-push** (parallel): `just check-frontend` (page-size + vite build), `go build ./...` in `backend/` and `registry/`.
+
+The e2e suite and `golangci-lint` are intentionally **not** in the local hooks: e2e needs the tmpfs test-postgres, and `golangci-lint` isn't installed by default on every contributor's machine. Both run in CI. Bypass locally with `git commit --no-verify` (use sparingly — CI still catches what you skipped).
+
+### Lint configs (source of truth)
+
+- `.golangci.yml` (repo root) — permissive: `gofmt`, `goimports`, `vet`, `errcheck`, `staticcheck`, `ineffassign`, `unused`. Tighten over time; do not add strict style rules without a plan to fix the existing findings.
+- `frontend/biome.json` — Biome 2.x recommended preset with a few noisy rules disabled (`useTemplate`, `useOptionalChain`, a11y preset, unused-vars). Run `just lint-frontend-fix` to apply autofixes locally.

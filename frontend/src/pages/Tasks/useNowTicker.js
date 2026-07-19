@@ -9,7 +9,7 @@
 // On dispose (component unmount, route change) the interval is
 // cleared and the visibilitychange listener is removed so we
 // don't leak timers or listeners across navigations.
-import { createSignal, createEffect, onCleanup } from "solid-js";
+import { createEffect, createSignal, onCleanup } from "solid-js";
 
 export function useNowTicker() {
   const [now, setNow] = createSignal(Date.now());

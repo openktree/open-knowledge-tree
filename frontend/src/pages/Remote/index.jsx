@@ -1,11 +1,11 @@
 // @okt-page-allow-large: page folder; default export counts as JSX subcomponent
-import { createSignal, createMemo, Show, createResource } from "solid-js";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
+import Alert from "../../components/Alert";
+import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
-import Layout from "../../components/Layout";
-import EmptyState from "../../components/EmptyState";
-import Alert from "../../components/Alert";
 import RemoteContent from "./RemoteContent";
 
 const PAGE_SIZE = 20;
@@ -26,8 +26,8 @@ export default function Remote() {
   const [busyPullPage, setBusyPullPage] = createSignal(false);
   const [busyPullAllResults, setBusyPullAllResults] = createSignal(false);
 
-  const slug = () => repo.currentRepo() ? repo.currentRepo().slug : "";
-  const repoID = () => repo.currentRepo() ? repo.currentRepo().id : "";
+  const slug = () => (repo.currentRepo() ? repo.currentRepo().slug : "");
+  const repoID = () => (repo.currentRepo() ? repo.currentRepo().id : "");
 
   const [sources, { refetch }] = createResource(
     () => ({
@@ -43,7 +43,7 @@ export default function Remote() {
         setAlert({ variant: "error", message: err.message });
         return null;
       }
-    }
+    },
   );
 
   const onSearch = (q) => {
@@ -146,7 +146,11 @@ export default function Remote() {
       // set requires the user to narrow the search.
       const cap = 500;
       while (ids.length < cap) {
-        const page = await api.listRemoteSources(s, { q: search(), limit: pageSize, offset: pageOffset });
+        const page = await api.listRemoteSources(s, {
+          q: search(),
+          limit: pageSize,
+          offset: pageOffset,
+        });
         if (!page || !page.sources || page.sources.length === 0) break;
         for (const src of page.sources) {
           if (ids.length >= cap) break;

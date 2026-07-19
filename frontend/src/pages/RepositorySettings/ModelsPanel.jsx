@@ -1,6 +1,6 @@
-import { createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
+import { createSignal, For, Show } from "solid-js";
 import Card from "../../components/Card";
+import { api } from "../../services/api";
 
 const TASK_KIND_LABELS = {
   fact_extraction: "Fact Extraction",
@@ -45,8 +45,8 @@ export default function ModelsPanel(props) {
     <Card>
       <h3 class="text-lg font-semibold mb-1 dark:text-white">Task Models</h3>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Select which AI model runs each task for this repository. "Default"
-        inherits the global config; selecting a model overrides it per-repo.
+        Select which AI model runs each task for this repository. "Default" inherits the global
+        config; selecting a model overrides it per-repo.
       </p>
       <div class="space-y-3">
         <For each={taskModels()}>
@@ -59,9 +59,7 @@ export default function ModelsPanel(props) {
             return (
               <div class="flex items-center justify-between gap-4">
                 <div class="text-sm">
-                  <span class="font-medium text-gray-700 dark:text-gray-300">
-                    {label}
-                  </span>
+                  <span class="font-medium text-gray-700 dark:text-gray-300">{label}</span>
                   <Show when={isDefault() && defaultModel()}>
                     <span class="ml-2 text-gray-400 dark:text-gray-500">
                       (default: {defaultModel()})
@@ -75,9 +73,7 @@ export default function ModelsPanel(props) {
                   class="text-sm px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50"
                 >
                   <option value="">Default{defaultModel() ? ` (${defaultModel()})` : ""}</option>
-                  <For each={catalog()}>
-                    {(m) => <option value={m.id}>{m.id}</option>}
-                  </For>
+                  <For each={catalog()}>{(m) => <option value={m.id}>{m.id}</option>}</For>
                 </select>
               </div>
             );

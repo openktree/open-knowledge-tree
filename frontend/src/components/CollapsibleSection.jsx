@@ -1,4 +1,4 @@
-import { Show, createSignal } from "solid-js";
+import { createSignal, Show } from "solid-js";
 
 // CollapsibleSection wraps a block of content behind a clickable
 // header that toggles visibility. The header is always rendered
@@ -27,7 +27,9 @@ export default function CollapsibleSection(props) {
   };
 
   return (
-    <div class={`rounded-lg shadow-card dark:shadow-card-dark p-6 ${props.class || ""} bg-surface border border-border`}>
+    <div
+      class={`rounded-lg shadow-card dark:shadow-card-dark p-6 ${props.class || ""} bg-surface border border-border`}
+    >
       <div class="flex items-center justify-between gap-3 flex-wrap">
         <button
           type="button"
@@ -42,9 +44,7 @@ export default function CollapsibleSection(props) {
             <h2 class="text-lg font-semibold text-text-base">{props.title}</h2>
           </div>
           <Show when={props.subtitle}>
-            <p class="text-sm text-text-muted mt-1 ml-6">
-              {props.subtitle}
-            </p>
+            <p class="text-sm text-text-muted mt-1 ml-6">{props.subtitle}</p>
           </Show>
         </button>
         <Show when={props.headerRight}>

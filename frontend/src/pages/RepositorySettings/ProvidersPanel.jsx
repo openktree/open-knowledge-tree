@@ -1,7 +1,7 @@
-import { createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
-import Card from "../../components/Card";
+import { createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
+import Card from "../../components/Card";
+import { api } from "../../services/api";
 import { PROVIDER_KIND_LABEL } from "./constants";
 
 // ProvidersPanel renders the live provider catalog for a repo,
@@ -46,8 +46,8 @@ export default function ProvidersPanel(props) {
     <Card>
       <h3 class="text-lg font-semibold mb-3 dark:text-white">Providers</h3>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Toggle which search and resolution providers this repository allows.
-        Disabled providers reject searches and fetches for this repo.
+        Toggle which search and resolution providers this repository allows. Disabled providers
+        reject searches and fetches for this repo.
       </p>
       <For each={["search", "resolution"]}>
         {(kind) => (

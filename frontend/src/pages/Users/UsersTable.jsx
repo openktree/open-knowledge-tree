@@ -1,4 +1,4 @@
-import { Show, For } from "solid-js";
+import { For, Show } from "solid-js";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
@@ -32,7 +32,9 @@ export default function UsersTable(props) {
               {(user) => (
                 <tr class="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td class="py-3 px-4">
-                    <div class="font-medium dark:text-gray-200">{user.display_name || "\u2014"}</div>
+                    <div class="font-medium dark:text-gray-200">
+                      {user.display_name || "\u2014"}
+                    </div>
                     <div class="text-xs text-gray-400 dark:text-gray-500 font-mono">{user.id}</div>
                   </td>
                   <td class="py-3 px-4 text-gray-600 dark:text-gray-400">{user.email}</td>
@@ -40,7 +42,9 @@ export default function UsersTable(props) {
                     <div class="flex flex-wrap gap-1">
                       <Show
                         when={user.roles && user.roles.length > 0}
-                        fallback={<span class="text-xs text-gray-400 dark:text-gray-500">No roles</span>}
+                        fallback={
+                          <span class="text-xs text-gray-400 dark:text-gray-500">No roles</span>
+                        }
                       >
                         <For each={user.roles}>
                           {(role) => (
@@ -62,7 +66,9 @@ export default function UsersTable(props) {
                           {(role) => (
                             <Button
                               variant="ghost"
-                              onClick={() => props.onRemoveRole?.(user.id, role.role, role.repository_id || "*")}
+                              onClick={() =>
+                                props.onRemoveRole?.(user.id, role.role, role.repository_id || "*")
+                              }
                               class="text-xs px-0 py-0"
                             >
                               Remove

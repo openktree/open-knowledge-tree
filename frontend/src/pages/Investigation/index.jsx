@@ -1,15 +1,15 @@
-import { createResource, createSignal, Show } from "solid-js";
 import { useParams } from "@solidjs/router";
-import { api } from "../../services/api";
-import Layout from "../../components/Layout";
+import { createResource, createSignal, Show } from "solid-js";
 import Alert from "../../components/Alert";
-import Loading from "../../components/Loading";
 import EmptyState from "../../components/EmptyState";
-import InvestigationStepper from "./InvestigationStepper";
-import InvestigationSourcesPhase from "./InvestigationSourcesPhase";
-import InvestigationFactsPhase from "./InvestigationFactsPhase";
-import InvestigationConceptsPhase from "./InvestigationConceptsPhase";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
+import { api } from "../../services/api";
 import { ACTIVE_PHASE_IDS } from "./constants";
+import InvestigationConceptsPhase from "./InvestigationConceptsPhase";
+import InvestigationFactsPhase from "./InvestigationFactsPhase";
+import InvestigationSourcesPhase from "./InvestigationSourcesPhase";
+import InvestigationStepper from "./InvestigationStepper";
 
 export default function Investigation() {
   const params = useParams();
@@ -28,7 +28,7 @@ export default function Investigation() {
         setAlert({ variant: "error", message: err.message });
         return null;
       }
-    }
+    },
   );
 
   return (
@@ -39,10 +39,7 @@ export default function Investigation() {
           message={alert()?.message}
           onDismiss={() => setAlert(null)}
         />
-        <Show
-          when={!inv.loading}
-          fallback={<Loading message="Loading investigation..." />}
-        >
+        <Show when={!inv.loading} fallback={<Loading message="Loading investigation..." />}>
           <Show
             when={inv()}
             fallback={

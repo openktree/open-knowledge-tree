@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
-import Card from "../../components/Card";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
 import { STATE_BADGE } from "./constants";
 
 const badgeVariant = (state) => STATE_BADGE[state] || "gray";
@@ -117,7 +117,8 @@ export default function TasksStats(props) {
 
           <Show when={rescueResult()}>
             <div class="mt-2 text-xs text-green-600 dark:text-green-400">
-              Rescued {rescueResult().rescued} stuck job{rescueResult().rescued === 1 ? "" : "s"} (staleness threshold {rescueResult().threshold}).
+              Rescued {rescueResult().rescued} stuck job{rescueResult().rescued === 1 ? "" : "s"}{" "}
+              (staleness threshold {rescueResult().threshold}).
             </div>
           </Show>
 
@@ -176,9 +177,7 @@ export default function TasksStats(props) {
         </Show>
 
         <Show when={!hasData() && !props.loading}>
-          <p class="text-sm text-gray-400 dark:text-gray-500">
-            No task data available yet.
-          </p>
+          <p class="text-sm text-gray-400 dark:text-gray-500">No task data available yet.</p>
         </Show>
       </Show>
     </Card>

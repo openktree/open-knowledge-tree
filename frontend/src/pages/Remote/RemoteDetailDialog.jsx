@@ -1,8 +1,8 @@
-import { Show, For, createSignal, onCleanup, onMount } from "solid-js";
-import { api } from "../../services/api";
-import Button from "../../components/Button";
+import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import Alert from "../../components/Alert";
 import Badge from "../../components/Badge";
+import Button from "../../components/Button";
+import { api } from "../../services/api";
 
 // RemoteDetailDialog is the modal opened from a Remote row click.
 // It shows the full source metadata, the list of available
@@ -83,23 +83,42 @@ export default function RemoteDetailDialog(props) {
       // the cards are populated as soon as the dialog opens.
       const models = pkg?.decompositions || [];
       if (models.length > 0) {
-        setDecomps(Object.fromEntries(
-          models.map((m) => [m.model_id, { data: null, loading: true, error: null, expanded: false, rawOpen: false }]),
-        ));
-        await Promise.all(models.map(async (m) => {
-          try {
-            const decompPkg = await fetchDecompData(m);
-            setDecomps((prev) => ({
-              ...prev,
-              [m.model_id]: { data: decompPkg, loading: false, error: null, expanded: true, rawOpen: false },
-            }));
-          } catch (err) {
-            setDecomps((prev) => ({
-              ...prev,
-              [m.model_id]: { data: null, loading: false, error: err.message, expanded: true, rawOpen: false },
-            }));
-          }
-        }));
+        setDecomps(
+          Object.fromEntries(
+            models.map((m) => [
+              m.model_id,
+              { data: null, loading: true, error: null, expanded: false, rawOpen: false },
+            ]),
+          ),
+        );
+        await Promise.all(
+          models.map(async (m) => {
+            try {
+              const decompPkg = await fetchDecompData(m);
+              setDecomps((prev) => ({
+                ...prev,
+                [m.model_id]: {
+                  data: decompPkg,
+                  loading: false,
+                  error: null,
+                  expanded: true,
+                  rawOpen: false,
+                },
+              }));
+            } catch (err) {
+              setDecomps((prev) => ({
+                ...prev,
+                [m.model_id]: {
+                  data: null,
+                  loading: false,
+                  error: err.message,
+                  expanded: true,
+                  rawOpen: false,
+                },
+              }));
+            }
+          }),
+        );
       }
     } catch (err) {
       setError(err.message);
@@ -116,14 +135,29 @@ export default function RemoteDetailDialog(props) {
       return;
     }
     const model = (detail()?.decompositions || []).find((d) => d.model_id === modelID);
-    setDecomps({ ...cur, [modelID]: { data: null, loading: true, error: null, expanded: true, rawOpen: false } });
+    setDecomps({
+      ...cur,
+      [modelID]: { data: null, loading: true, error: null, expanded: true, rawOpen: false },
+    });
     try {
       const pkg = await fetchDecompData(model || { model_id: modelID });
       const after = decomps();
-      setDecomps({ ...after, [modelID]: { data: pkg, loading: false, error: null, expanded: true, rawOpen: false } });
+      setDecomps({
+        ...after,
+        [modelID]: { data: pkg, loading: false, error: null, expanded: true, rawOpen: false },
+      });
     } catch (err) {
       const after = decomps();
-      setDecomps({ ...after, [modelID]: { data: null, loading: false, error: err.message, expanded: true, rawOpen: false } });
+      setDecomps({
+        ...after,
+        [modelID]: {
+          data: null,
+          loading: false,
+          error: err.message,
+          expanded: true,
+          rawOpen: false,
+        },
+      });
     }
   };
 
@@ -149,7 +183,10 @@ export default function RemoteDetailDialog(props) {
     setPullResult(null);
     try {
       const result = await props.onPull(props.source);
-      setPullResult({ variant: "success", message: `Imported ${result.imported_facts} facts, ${result.imported_concepts} concepts` });
+      setPullResult({
+        variant: "success",
+        message: `Imported ${result.imported_facts} facts, ${result.imported_concepts} concepts`,
+      });
     } catch (err) {
       setPullResult({ variant: "error", message: err.message });
     } finally {
@@ -184,8 +221,19 @@ export default function RemoteDetailDialog(props) {
           <Show when={loading()}>
             <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400">
               <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                <circle
+                  class="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  stroke-width="4"
+                />
+                <path
+                  class="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                />
               </svg>
               <span>Loading source detail...</span>
             </div>
@@ -209,7 +257,9 @@ export default function RemoteDetailDialog(props) {
             message={pullResult()?.message}
             onDismiss={() => setPullResult(null)}
           />
-          <Button variant="secondary" onClick={() => props.onClose?.()}>Close</Button>
+          <Button variant="secondary" onClick={() => props.onClose?.()}>
+            Close
+          </Button>
           <Button
             variant="primary"
             onClick={handlePull}
@@ -262,14 +312,25 @@ function Decompositions(props) {
       <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2">
         Decompositions ({props.list.length})
       </h4>
-      <Show when={props.list.length > 0} fallback={
-        <p class="text-xs text-gray-500 dark:text-gray-400 italic">
-          No decompositions available for this source.
-        </p>
-      }>
+      <Show
+        when={props.list.length > 0}
+        fallback={
+          <p class="text-xs text-gray-500 dark:text-gray-400 italic">
+            No decompositions available for this source.
+          </p>
+        }
+      >
         <div class="space-y-2">
           <For each={props.list}>
-            {(d) => <DecompCard entry={props.decomps()[d.model_id]} decomp={d} onToggle={() => props.onToggle(d.model_id)} onRaw={() => props.onRaw(d.model_id)} onFetch={() => props.onFetch(d.model_id)} />}
+            {(d) => (
+              <DecompCard
+                entry={props.decomps()[d.model_id]}
+                decomp={d}
+                onToggle={() => props.onToggle(d.model_id)}
+                onRaw={() => props.onRaw(d.model_id)}
+                onFetch={() => props.onFetch(d.model_id)}
+              />
+            )}
           </For>
         </div>
       </Show>
@@ -282,25 +343,53 @@ function DecompCard(props) {
   return (
     <div class="border border-gray-200 dark:border-gray-700 rounded">
       <div class="p-2.5 flex items-center justify-between gap-2">
-        <button type="button" class="flex-1 min-w-0 text-left flex items-center gap-2" onClick={props.onToggle}>
-          <span class="text-gray-400 dark:text-gray-500 text-xs inline-block w-3 transition-transform" classList={{ "rotate-90": e()?.expanded }}>▶</span>
-          <span class="font-mono text-xs text-gray-800 dark:text-gray-200 truncate">{props.decomp.model_id}</span>
-          <span class="text-xs text-gray-500 dark:text-gray-400 shrink-0">{props.decomp.fact_count} facts</span>
+        <button
+          type="button"
+          class="flex-1 min-w-0 text-left flex items-center gap-2"
+          onClick={props.onToggle}
+        >
+          <span
+            class="text-gray-400 dark:text-gray-500 text-xs inline-block w-3 transition-transform"
+            classList={{ "rotate-90": e()?.expanded }}
+          >
+            ▶
+          </span>
+          <span class="font-mono text-xs text-gray-800 dark:text-gray-200 truncate">
+            {props.decomp.model_id}
+          </span>
+          <span class="text-xs text-gray-500 dark:text-gray-400 shrink-0">
+            {props.decomp.fact_count} facts
+          </span>
           <Show when={props.decomp.embedding_model}>
-            <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0 font-mono">emb: {props.decomp.embedding_model}</span>
+            <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0 font-mono">
+              emb: {props.decomp.embedding_model}
+            </span>
           </Show>
           <Badge variant={props.decomp.has_embeddings ? "green" : "gray"}>
             {props.decomp.has_embeddings ? "embed" : "no embed"}
           </Badge>
         </button>
         <Show when={!e()?.data && !e()?.loading}>
-          <Button variant="secondary" onClick={props.onFetch} class="text-xs">Fetch</Button>
+          <Button variant="secondary" onClick={props.onFetch} class="text-xs">
+            Fetch
+          </Button>
         </Show>
         <Show when={e()?.loading}>
           <span class="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
             <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              />
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              />
             </svg>
             Loading...
           </span>
@@ -323,7 +412,7 @@ function DecompCard(props) {
               </button>
               <Show when={e().rawOpen}>
                 <pre class="mt-2 p-2 bg-gray-50 dark:bg-gray-900 text-[10px] font-mono rounded border border-gray-200 dark:border-gray-700 overflow-x-auto whitespace-pre-wrap break-all">
-{JSON.stringify(e().data, null, 2)}
+                  {JSON.stringify(e().data, null, 2)}
                 </pre>
               </Show>
             </div>
@@ -340,13 +429,12 @@ function FactsList(props) {
       <h5 class="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
         Facts ({props.facts.length})
       </h5>
-      <Show when={props.facts.length > 0} fallback={
-        <p class="text-xs text-gray-500 dark:text-gray-400 italic">No facts.</p>
-      }>
+      <Show
+        when={props.facts.length > 0}
+        fallback={<p class="text-xs text-gray-500 dark:text-gray-400 italic">No facts.</p>}
+      >
         <ul class="space-y-1.5">
-          <For each={props.facts}>
-            {(f) => <FactRow fact={f} />}
-          </For>
+          <For each={props.facts}>{(f) => <FactRow fact={f} />}</For>
         </ul>
       </Show>
     </div>
@@ -362,17 +450,31 @@ function FactRow(props) {
         {long() && !open() ? `${props.fact.content.slice(0, 200)}…` : props.fact.content}
       </p>
       <Show when={long()}>
-        <button type="button" class="text-[10px] text-blue-600 dark:text-blue-400 hover:underline" onClick={() => setOpen(!open())}>
+        <button
+          type="button"
+          class="text-[10px] text-blue-600 dark:text-blue-400 hover:underline"
+          onClick={() => setOpen(!open())}
+        >
           {open() ? "Show less" : "Show more"}
         </button>
       </Show>
       <div class="flex flex-wrap items-center gap-3 mt-1 text-[10px] text-gray-500 dark:text-gray-400 font-mono">
-        <Show when={props.fact.sentence_index != null}><span>idx: {props.fact.sentence_index}</span></Show>
-        <Show when={props.fact.confidence != null}><span>conf: {Number(props.fact.confidence).toFixed(2)}</span></Show>
-        <Show when={props.fact.content_hash}><span>hash: {props.fact.content_hash.slice(0, 12)}…</span></Show>
+        <Show when={props.fact.sentence_index != null}>
+          <span>idx: {props.fact.sentence_index}</span>
+        </Show>
+        <Show when={props.fact.confidence != null}>
+          <span>conf: {Number(props.fact.confidence).toFixed(2)}</span>
+        </Show>
+        <Show when={props.fact.content_hash}>
+          <span>hash: {props.fact.content_hash.slice(0, 12)}…</span>
+        </Show>
         <Show when={props.fact.image_url}>
           <a href={props.fact.image_url} target="_blank" rel="noreferrer" class="hover:underline">
-            <img src={props.fact.image_url} alt={props.fact.image_caption || ""} class="h-10 inline-block rounded border border-gray-200 dark:border-gray-700 align-middle" />
+            <img
+              src={props.fact.image_url}
+              alt={props.fact.image_caption || ""}
+              class="h-10 inline-block rounded border border-gray-200 dark:border-gray-700 align-middle"
+            />
           </a>
         </Show>
       </div>
@@ -386,23 +488,28 @@ function ConceptsList(props) {
       <h5 class="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
         Concepts ({props.concepts.length})
       </h5>
-      <Show when={props.concepts.length > 0} fallback={
-        <p class="text-xs text-gray-500 dark:text-gray-400 italic">No concepts.</p>
-      }>
+      <Show
+        when={props.concepts.length > 0}
+        fallback={<p class="text-xs text-gray-500 dark:text-gray-400 italic">No concepts.</p>}
+      >
         <ul class="space-y-1.5">
           <For each={props.concepts}>
             {(c) => (
               <li class="border border-gray-200 dark:border-gray-700 rounded p-2 bg-gray-50 dark:bg-gray-900/40 text-xs">
                 <div class="flex flex-wrap items-center gap-2">
-                  <span class="font-semibold text-gray-800 dark:text-gray-200">{c.canonical_name}</span>
-                  <Show when={c.context}><span class="text-gray-500 dark:text-gray-400">@ {c.context}</span></Show>
-                  <Show when={c.ontology_class}><Badge variant="blue">{c.ontology_class}</Badge></Show>
+                  <span class="font-semibold text-gray-800 dark:text-gray-200">
+                    {c.canonical_name}
+                  </span>
+                  <Show when={c.context}>
+                    <span class="text-gray-500 dark:text-gray-400">@ {c.context}</span>
+                  </Show>
+                  <Show when={c.ontology_class}>
+                    <Badge variant="blue">{c.ontology_class}</Badge>
+                  </Show>
                 </div>
                 <Show when={c.aliases && c.aliases.length > 0}>
                   <div class="mt-1 flex flex-wrap gap-1">
-                    <For each={c.aliases}>
-                      {(a) => <Badge variant="gray">{a}</Badge>}
-                    </For>
+                    <For each={c.aliases}>{(a) => <Badge variant="gray">{a}</Badge>}</For>
                   </div>
                 </Show>
               </li>
@@ -426,7 +533,10 @@ function LinksList(props) {
             {(l) => (
               <li>
                 {l.fact_content_hash?.slice(0, 12) || "?"}… → {l.concept_name}
-                <Show when={l.concept_context}> <span class="text-gray-400">@{l.concept_context}</span></Show>
+                <Show when={l.concept_context}>
+                  {" "}
+                  <span class="text-gray-400">@{l.concept_context}</span>
+                </Show>
               </li>
             )}
           </For>
@@ -449,7 +559,7 @@ function RawSourceJSON(props) {
       </button>
       <Show when={open()}>
         <pre class="mt-2 p-2 bg-gray-50 dark:bg-gray-900 text-[10px] font-mono rounded border border-gray-200 dark:border-gray-700 overflow-x-auto whitespace-pre-wrap break-all">
-{JSON.stringify(props.detail, null, 2)}
+          {JSON.stringify(props.detail, null, 2)}
         </pre>
       </Show>
     </section>

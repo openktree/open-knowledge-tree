@@ -1,7 +1,13 @@
-import { For, Show, createMemo } from "solid-js";
-import Card from "../../components/Card";
+import { createMemo, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
-import { BREAKDOWN_TABS, OPERATION_BADGE, OPERATION_LABEL, formatNumber, formatCost } from "./constants";
+import Card from "../../components/Card";
+import {
+  BREAKDOWN_TABS,
+  formatCost,
+  formatNumber,
+  OPERATION_BADGE,
+  OPERATION_LABEL,
+} from "./constants";
 
 // AIUsageBreakdownTable renders the tabbed breakdown below the
 // chart + summary cards. The active tab selects which dataset
@@ -54,29 +60,57 @@ export default function AIUsageBreakdownTable(props) {
 
       <Show
         when={rows().length > 0}
-        fallback={<p class="text-gray-400 dark:text-gray-500 text-sm py-8 text-center">No data for this breakdown.</p>}
+        fallback={
+          <p class="text-gray-400 dark:text-gray-500 text-sm py-8 text-center">
+            No data for this breakdown.
+          </p>
+        }
       >
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-gray-200 dark:border-gray-700 text-left">
-                <For each={headers()}>{(h) => <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400">{h}</th>}</For>
-                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">Requests</th>
-                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">Input</th>
-                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">Output</th>
-                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">Est. Cost</th>
+                <For each={headers()}>
+                  {(h) => (
+                    <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400">{h}</th>
+                  )}
+                </For>
+                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">
+                  Requests
+                </th>
+                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">
+                  Input
+                </th>
+                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">
+                  Output
+                </th>
+                <th class="py-2 px-3 font-medium text-gray-500 dark:text-gray-400 text-right">
+                  Est. Cost
+                </th>
               </tr>
             </thead>
             <tbody>
               <For each={rows()}>
                 {(row) => (
                   <tr class="border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30">
-                    <td class="py-2 px-3 font-mono text-xs dark:text-gray-300">{renderPrimary(row)}</td>
-                    <td class="py-2 px-3 font-mono text-xs dark:text-gray-300">{row.model || "\u2014"}</td>
-                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">{formatNumber(row.count)}</td>
-                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">{formatNumber(row.prompt)}</td>
-                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">{formatNumber(row.completion)}</td>
-                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">{formatCost(row.cost)}</td>
+                    <td class="py-2 px-3 font-mono text-xs dark:text-gray-300">
+                      {renderPrimary(row)}
+                    </td>
+                    <td class="py-2 px-3 font-mono text-xs dark:text-gray-300">
+                      {row.model || "\u2014"}
+                    </td>
+                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">
+                      {formatNumber(row.count)}
+                    </td>
+                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">
+                      {formatNumber(row.prompt)}
+                    </td>
+                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">
+                      {formatNumber(row.completion)}
+                    </td>
+                    <td class="py-2 px-3 text-right text-xs text-gray-600 dark:text-gray-400">
+                      {formatCost(row.cost)}
+                    </td>
                   </tr>
                 )}
               </For>
@@ -93,9 +127,14 @@ export default function AIUsageBreakdownTable(props) {
 // UUID (or "Unattributed" for NULL).
 function renderPrimary(row) {
   if (row.primaryKind === "operation") {
-    return <Badge variant={OPERATION_BADGE[row.primary] || "gray"}>{OPERATION_LABEL[row.primary] || row.primary}</Badge>;
+    return (
+      <Badge variant={OPERATION_BADGE[row.primary] || "gray"}>
+        {OPERATION_LABEL[row.primary] || row.primary}
+      </Badge>
+    );
   }
-  if (!row.primary) return <span class="text-gray-400 dark:text-gray-500 italic">Unattributed</span>;
+  if (!row.primary)
+    return <span class="text-gray-400 dark:text-gray-500 italic">Unattributed</span>;
   return <span title={row.primary}>{row.primary.slice(0, 8)}</span>;
 }
 

@@ -1,20 +1,21 @@
 // @okt-page-allow-large: thin orchestrator composing 9 sibling panels; splitting further would contrive a layer
-import { createResource, createSignal, Show } from "solid-js";
+
 import { useParams } from "@solidjs/router";
-import { api } from "../../services/api";
-import Layout from "../../components/Layout";
+import { createResource, createSignal, Show } from "solid-js";
 import Alert from "../../components/Alert";
-import Loading from "../../components/Loading";
 import Card from "../../components/Card";
-import ProvidersPanel from "./ProvidersPanel";
-import RegistrySyncPanel from "./RegistrySyncPanel";
-import RegistryPanel from "./RegistryPanel";
-import ModelsPanel from "./ModelsPanel";
-import ContextsPanel from "./ContextsPanel";
-import ContextMappingsPanel from "./ContextMappingsPanel";
-import PromptsetPanel from "./PromptsetPanel";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
+import { api } from "../../services/api";
 import ContentTypesPanel from "./ContentTypesPanel";
+import ContextMappingsPanel from "./ContextMappingsPanel";
+import ContextsPanel from "./ContextsPanel";
 import ContributorPanel from "./ContributorPanel";
+import ModelsPanel from "./ModelsPanel";
+import PromptsetPanel from "./PromptsetPanel";
+import ProvidersPanel from "./ProvidersPanel";
+import RegistryPanel from "./RegistryPanel";
+import RegistrySyncPanel from "./RegistrySyncPanel";
 
 // RepositorySettings is the repo-admin settings surface (distinct
 // from the global /repositories page). Gated by repository:manage.
@@ -23,7 +24,12 @@ export default function RepositorySettings() {
   const repoID = () => params.repoID;
   const [alert, setAlert] = createSignal(null);
   const [settings, { refetch }] = createResource(repoID, (id) =>
-    id ? api.getRepositorySettings(id).catch((e) => { setAlert({ variant: "error", message: e.message }); return null; }) : null
+    id
+      ? api.getRepositorySettings(id).catch((e) => {
+          setAlert({ variant: "error", message: e.message });
+          return null;
+        })
+      : null,
   );
 
   const data = () => settings() || { providers: [], contexts: [] };
@@ -31,7 +37,11 @@ export default function RepositorySettings() {
   return (
     <Layout>
       <div class="space-y-6">
-        <Alert variant={alert()?.variant} message={alert()?.message} onDismiss={() => setAlert(null)} />
+        <Alert
+          variant={alert()?.variant}
+          message={alert()?.message}
+          onDismiss={() => setAlert(null)}
+        />
         <Show when={!settings.loading} fallback={<Loading message="Loading settings…" />}>
           <Card>
             <h2 class="text-lg font-semibold dark:text-white">Repository Settings</h2>

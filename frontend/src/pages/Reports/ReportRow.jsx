@@ -1,8 +1,8 @@
-import { createSignal, Show } from "solid-js";
 import { A } from "@solidjs/router";
-import { api } from "../../services/api";
+import { createSignal, Show } from "solid-js";
 import Button from "../../components/Button";
-import { statusVariant, formatTimestamp, statusLabel } from "./constants";
+import { api } from "../../services/api";
+import { formatTimestamp, statusLabel, statusVariant } from "./constants";
 
 export default function ReportRow(props) {
   const [confirmDelete, setConfirmDelete] = createSignal(false);
@@ -48,7 +48,10 @@ export default function ReportRow(props) {
   return (
     <tr class="border-b border-gray-100 dark:border-gray-700">
       <td class="py-2 pr-4">
-        <div class="flex items-center" style={{ "padding-left": `${(props.depth || 0) * 1.25}rem` }}>
+        <div
+          class="flex items-center"
+          style={{ "padding-left": `${(props.depth || 0) * 1.25}rem` }}
+        >
           <Show when={props.hasChildren}>
             <button
               type="button"
@@ -63,7 +66,10 @@ export default function ReportRow(props) {
             <span class="inline-block w-5 mr-1.5 flex-shrink-0" />
           </Show>
           <div>
-            <A href={`/${props.slug}/reports/${props.report.id}`} class="text-blue-600 dark:text-blue-400 hover:underline font-medium">
+            <A
+              href={`/${props.slug}/reports/${props.report.id}`}
+              class="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+            >
               {props.report.title}
             </A>
             <Show when={props.report.topic}>
@@ -73,7 +79,9 @@ export default function ReportRow(props) {
         </div>
       </td>
       <td class="py-2 pr-4">
-        <span class={`inline-block px-2 py-0.5 rounded text-xs font-medium ${statusVariant[statusLabel(props.report.status)] || ""}`}>
+        <span
+          class={`inline-block px-2 py-0.5 rounded text-xs font-medium ${statusVariant[statusLabel(props.report.status)] || ""}`}
+        >
           {statusLabel(props.report.status)}
         </span>
       </td>
@@ -84,15 +92,26 @@ export default function ReportRow(props) {
         {formatTimestamp(props.report.created_at)}
       </td>
       <td class="py-2 pr-4">
-        <Show when={!confirmDelete()} fallback={
+        <Show
+          when={!confirmDelete()}
+          fallback={
+            <span class="inline-flex gap-1">
+              <Button variant="danger" loading={busy()} onClick={handleDelete}>
+                Confirm
+              </Button>
+              <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
+                Cancel
+              </Button>
+            </span>
+          }
+        >
           <span class="inline-flex gap-1">
-            <Button variant="danger" loading={busy()} onClick={handleDelete}>Confirm</Button>
-            <Button variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button>
-          </span>
-        }>
-          <span class="inline-flex gap-1">
-            <Button variant="secondary" onClick={handleCopy}>{copied() ? "Copied" : "Copy"}</Button>
-            <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>
+            <Button variant="secondary" onClick={handleCopy}>
+              {copied() ? "Copied" : "Copy"}
+            </Button>
+            <Button variant="danger" onClick={() => setConfirmDelete(true)}>
+              Delete
+            </Button>
           </span>
         </Show>
       </td>

@@ -29,7 +29,9 @@ export default function ConceptHeader(props) {
       <div class="border rounded dark:border-gray-700 p-4 mb-4 text-sm text-gray-700 dark:text-gray-300 space-y-3">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-base font-medium dark:text-white">{props.group?.canonical_name}</span>
-          <Badge variant="gray">{totalFacts().toLocaleString()} fact{totalFacts() === 1 ? "" : "s"}</Badge>
+          <Badge variant="gray">
+            {totalFacts().toLocaleString()} fact{totalFacts() === 1 ? "" : "s"}
+          </Badge>
           <Show when={(contexts()?.length ?? 0) > 1}>
             <Badge variant="blue">{contexts().length} contexts</Badge>
           </Show>
@@ -72,9 +74,13 @@ export default function ConceptHeader(props) {
 
       <Show when={aliases().length > 0}>
         <div class="border rounded dark:border-gray-700 p-4 mb-4 relative group">
-          <div class="font-semibold text-gray-700 dark:text-gray-300 mb-2 text-xs">Aliases ({aliases().length})</div>
+          <div class="font-semibold text-gray-700 dark:text-gray-300 mb-2 text-xs">
+            Aliases ({aliases().length})
+          </div>
           <div class="flex flex-wrap gap-2">
-            <For each={aliases().slice(0, 10)}>{(alias) => <Badge variant="gray">{alias}</Badge>}</For>
+            <For each={aliases().slice(0, 10)}>
+              {(alias) => <Badge variant="gray">{alias}</Badge>}
+            </For>
             <Show when={aliases().length > 10}>
               <span class="text-xs px-2 py-0.5 text-gray-400 dark:text-gray-500 cursor-help">
                 +{aliases().length - 10} more
@@ -85,7 +91,9 @@ export default function ConceptHeader(props) {
             <div class="absolute left-0 right-0 top-full mt-1 z-30 hidden group-hover:block">
               <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded shadow-lg p-3">
                 <div class="flex flex-wrap gap-1.5">
-                  <For each={aliases().slice(10)}>{(alias) => <Badge variant="gray">{alias}</Badge>}</For>
+                  <For each={aliases().slice(10)}>
+                    {(alias) => <Badge variant="gray">{alias}</Badge>}
+                  </For>
                 </div>
               </div>
             </div>

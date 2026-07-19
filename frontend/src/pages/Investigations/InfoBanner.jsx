@@ -19,9 +19,9 @@ export default function InfoBanner() {
             Investigations are your main manual research tool
           </h3>
           <p class="mt-1.5 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
-            Create an investigation around a research topic, then choose sources to fetch.
-            Fetched sources are decomposed into facts, and those facts become concepts over time.
-            Concepts populate the graph, surfacing connections you can explore for further research.
+            Create an investigation around a research topic, then choose sources to fetch. Fetched
+            sources are decomposed into facts, and those facts become concepts over time. Concepts
+            populate the graph, surfacing connections you can explore for further research.
           </p>
         </div>
       </div>

@@ -48,8 +48,7 @@ export default function SearchResult(props) {
   const enqueue = () => props.enqueue;
   const classify = () => props.classify;
 
-  const inFlight = () =>
-    stage() === "fetching" || stage() === "polling" || enqueue()?.loading;
+  const inFlight = () => stage() === "fetching" || stage() === "polling" || enqueue()?.loading;
   const fetchDisabled = () => inFlight() || r().already_exists;
 
   const stageBadge = () => {
@@ -73,8 +72,9 @@ export default function SearchResult(props) {
   const reFetchProcessLabel = () => props.reFetchProcessLabel || "Re-fetch & Process";
 
   const hasFetchStage = () => !!stage();
-  const doneOrReFetch = () => stage() === "done" ? reFetchLabel() : fetchLabel();
-  const doneOrReFetchProcess = () => stage() === "done" ? reFetchProcessLabel() : fetchProcessLabel();
+  const doneOrReFetch = () => (stage() === "done" ? reFetchLabel() : fetchLabel());
+  const doneOrReFetchProcess = () =>
+    stage() === "done" ? reFetchProcessLabel() : fetchProcessLabel();
 
   return (
     <div class="border border-border rounded p-3">

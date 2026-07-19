@@ -1,4 +1,4 @@
-import { Show, For, createSignal } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 
 // TraceTable renders the per-chunk / per-image troubleshooting traces
 // recorded by the source_decomposition worker (chunk_traces and
@@ -15,8 +15,7 @@ export default function TraceTable(props) {
   const chunks = () => (props.output && props.output.chunk_traces) || [];
   const images = () => (props.output && props.output.image_traces) || [];
   const chunkFailures = () => chunks().filter((c) => c.error).length;
-  const imageFailures = () =>
-    images().filter((i) => i.error || i.skipped).length;
+  const imageFailures = () => images().filter((i) => i.error || i.skipped).length;
 
   return (
     <Show when={chunks().length > 0 || images().length > 0}>
@@ -54,9 +53,7 @@ function TraceBlock(props) {
         <span class="font-medium dark:text-gray-200">
           {props.label}: {props.count}{" "}
           <Show when={props.failures > 0}>
-            <span class="text-red-600 dark:text-red-400">
-              ({props.failures} failed)
-            </span>
+            <span class="text-red-600 dark:text-red-400">({props.failures} failed)</span>
           </Show>
         </span>
         <span class="text-xs text-gray-500 dark:text-gray-400">

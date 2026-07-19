@@ -1,6 +1,6 @@
 import { createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
 import Card from "../../components/Card";
+import { api } from "../../services/api";
 
 // ContributorPanel is the per-repo contributor identity section of
 // the RepositorySettings page. The repo's decompositions pushed to
@@ -78,10 +78,9 @@ export default function ContributorPanel(props) {
     <Card>
       <h3 class="text-lg font-semibold mb-1 dark:text-white">Contributor Identity</h3>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Choose how this repository is attributed when it contributes sources to the
-        registry. When anonymous, the registry records your pushes without a name. Turn
-        anonymity off and set a display name so other repositories can see who
-        contributed each decomposition.
+        Choose how this repository is attributed when it contributes sources to the registry. When
+        anonymous, the registry records your pushes without a name. Turn anonymity off and set a
+        display name so other repositories can see who contributed each decomposition.
       </p>
       <div class="space-y-3">
         <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -115,8 +114,8 @@ export default function ContributorPanel(props) {
         </Show>
         <Show when={anonymous()}>
           <p class="text-xs text-gray-400 dark:text-gray-500">
-            The registry will record your pushes with the canonical <em>anonymous</em> marker;
-            no display name is sent.
+            The registry will record your pushes with the canonical <em>anonymous</em> marker; no
+            display name is sent.
           </p>
         </Show>
         <div class="flex items-center gap-3">

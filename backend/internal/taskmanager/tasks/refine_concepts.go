@@ -203,6 +203,7 @@ func (w *RefineConceptsWorker) Work(ctx context.Context, job *river.Job[RefineCo
 	if len(candidateIDs) == 0 {
 		queries := store.New(pool.Pool)
 		listCtx, listCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer listCancel()
 		var rows []store.OktRepositoryConceptCandidate
 		if args.SourceID != "" {
 			var srcID pgtype.UUID

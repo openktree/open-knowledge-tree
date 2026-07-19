@@ -1,15 +1,15 @@
-import { createSignal, createMemo, Show, createResource } from "solid-js";
-import { api } from "../../services/api";
-import { useRBAC } from "../../store/rbac";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
 import Layout from "../../components/Layout";
 import Tabs from "../../components/Tabs";
-import SearchProvidersTab from "./SearchProvidersTab";
-import FetchProvidersTab from "./FetchProvidersTab";
+import { api } from "../../services/api";
+import { useRBAC } from "../../store/rbac";
 import AIProvidersTab from "./AIProvidersTab";
-import EmbeddingProvidersTab from "./EmbeddingProvidersTab";
+import { DEFAULT_TAB, PROVIDER_TABS } from "./constants";
 import DecompositionProvidersTab from "./DecompositionProvidersTab";
+import EmbeddingProvidersTab from "./EmbeddingProvidersTab";
+import FetchProvidersTab from "./FetchProvidersTab";
 import ProvidersGate from "./ProvidersGate";
-import { PROVIDER_TABS, DEFAULT_TAB } from "./constants";
+import SearchProvidersTab from "./SearchProvidersTab";
 
 export default function Providers() {
   const rbac = useRBAC();
@@ -18,32 +18,22 @@ export default function Providers() {
   const canViewAI = createMemo(() => rbac.hasPermission("ai_provider", "read"));
   const canViewDecomposition = createMemo(() => rbac.hasPermission("decomposition", "read"));
 
-  const [providers] = createResource(
-    canViewProviders,
-    (can) => can
-      ? api.listProviders().catch(() => ({ search: [], resolution: [] }))
-      : null
+  const [providers] = createResource(canViewProviders, (can) =>
+    can ? api.listProviders().catch(() => ({ search: [], resolution: [] })) : null,
   );
 
-  const [aiProviders] = createResource(
-    canViewAI,
-    (can) => can
-      ? api.listAIProviders().catch(() => ({ providers: [] }))
-      : null
+  const [aiProviders] = createResource(canViewAI, (can) =>
+    can ? api.listAIProviders().catch(() => ({ providers: [] })) : null,
   );
 
-  const [embeddingProviders] = createResource(
-    canViewAI,
-    (can) => can
-      ? api.listEmbeddingProviders().catch(() => ({ active: null, providers: [] }))
-      : null
+  const [embeddingProviders] = createResource(canViewAI, (can) =>
+    can ? api.listEmbeddingProviders().catch(() => ({ active: null, providers: [] })) : null,
   );
 
-  const [decompositionProviders] = createResource(
-    canViewDecomposition,
-    (can) => can
+  const [decompositionProviders] = createResource(canViewDecomposition, (can) =>
+    can
       ? api.listDecompositionProviders().catch(() => ({ chunking: [], fact_extraction: [] }))
-      : null
+      : null,
   );
 
   const aiList = () => (aiProviders() && aiProviders().providers) || [];
@@ -72,7 +62,11 @@ export default function Providers() {
         </ProvidersGate>
       </Show>
       <Show when={tab() === "decomposition"}>
-        <ProvidersGate can={canViewDecomposition} loaded={decompositionProviders} permission="decomposition providers">
+        <ProvidersGate
+          can={canViewDecomposition}
+          loaded={decompositionProviders}
+          permission="decomposition providers"
+        >
           <DecompositionProvidersTab providers={decompositionProviders} />
         </ProvidersGate>
       </Show>

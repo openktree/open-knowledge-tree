@@ -19,24 +19,19 @@ import Card from "../../components/Card";
 export default function FlareSkipCandidates(props) {
   const candidates = () => props.candidates || [];
 
-  const isStrong = (c) =>
-    c.flare_successes === 0 && c.flare_failures >= 3;
+  const isStrong = (c) => c.flare_successes === 0 && c.flare_failures >= 3;
 
   return (
     <Show when={candidates().length > 0}>
       <Card class="mb-6">
         <div class="flex items-center gap-2 mb-1">
-          <h2 class="text-lg font-semibold dark:text-white">
-            FlareSolverr skip-list candidates
-          </h2>
+          <h2 class="text-lg font-semibold dark:text-white">FlareSolverr skip-list candidates</h2>
           <Badge variant="yellow">advisory</Badge>
         </div>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-          Hosts where FlareSolverr was tried at least once. A host
-          with failures and zero successes is a candidate to pin
-          out of the FlareSolverr tier (the strategy does not
-          enforce a skip list yet). Surfacing the data now so the
-          blacklist is ready to wire.
+          Hosts where FlareSolverr was tried at least once. A host with failures and zero successes
+          is a candidate to pin out of the FlareSolverr tier (the strategy does not enforce a skip
+          list yet). Surfacing the data now so the blacklist is ready to wire.
         </p>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -56,15 +51,9 @@ export default function FlareSkipCandidates(props) {
                     <td class="py-2 pr-4 font-mono text-xs text-gray-700 dark:text-gray-300">
                       {c.host}
                     </td>
-                    <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">
-                      {c.total_attempts}
-                    </td>
-                    <td class="py-2 pr-4 text-red-600 dark:text-red-400">
-                      {c.flare_failures}
-                    </td>
-                    <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">
-                      {c.flare_successes}
-                    </td>
+                    <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">{c.total_attempts}</td>
+                    <td class="py-2 pr-4 text-red-600 dark:text-red-400">{c.flare_failures}</td>
+                    <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">{c.flare_successes}</td>
                     <td class="py-2">
                       <Show
                         when={isStrong(c)}

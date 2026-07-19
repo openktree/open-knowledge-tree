@@ -1,9 +1,9 @@
 import { createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
+import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import FormField from "../../components/FormField";
-import Alert from "../../components/Alert";
+import { api } from "../../services/api";
 import InfoBanner from "./InfoBanner";
 
 export default function CreateInvestigationForm(props) {
@@ -40,10 +40,7 @@ export default function CreateInvestigationForm(props) {
     <Card class="relative">
       <div class="flex items-center gap-2 mb-4">
         <h2 class="text-lg font-semibold dark:text-white">Create Investigation</h2>
-        <div
-          onMouseEnter={() => setShowInfo(true)}
-          onMouseLeave={() => setShowInfo(false)}
-        >
+        <div onMouseEnter={() => setShowInfo(true)} onMouseLeave={() => setShowInfo(false)}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             class="h-4 w-4 text-gray-400 dark:text-gray-500 cursor-help"

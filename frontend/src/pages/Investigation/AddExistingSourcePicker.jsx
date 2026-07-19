@@ -1,10 +1,10 @@
-import { createResource, createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
-import CollapsibleSection from "../../components/CollapsibleSection";
-import Button from "../../components/Button";
-import SearchInput from "../../components/SearchInput";
+import { createResource, createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
-import { statusVariant, formatTimestamp } from "../Sources/constants";
+import Button from "../../components/Button";
+import CollapsibleSection from "../../components/CollapsibleSection";
+import SearchInput from "../../components/SearchInput";
+import { api } from "../../services/api";
+import { formatTimestamp, statusVariant } from "../Sources/constants";
 
 export default function AddExistingSourcePicker(props) {
   const [q, setQ] = createSignal("");
@@ -23,7 +23,7 @@ export default function AddExistingSourcePicker(props) {
       } catch {
         return { data: [], total: 0, limit: 100, offset: 0 };
       }
-    }
+    },
   );
 
   const sources = () => srcData()?.data || [];
@@ -50,7 +50,13 @@ export default function AddExistingSourcePicker(props) {
       onToggle={setOpen}
     >
       <div class="space-y-3">
-        <SearchInput placeholder="Search repo sources..." onSearch={(v) => { setQ(v); setOffset(0); }} />
+        <SearchInput
+          placeholder="Search repo sources..."
+          onSearch={(v) => {
+            setQ(v);
+            setOffset(0);
+          }}
+        />
         <Show when={error()}>
           <p class="text-xs text-red-500">{error()}</p>
         </Show>
@@ -65,7 +71,9 @@ export default function AddExistingSourcePicker(props) {
               <div class="border rounded dark:border-gray-700 p-2 flex items-center justify-between gap-2">
                 <div class="min-w-0 flex-1">
                   <p class="text-sm truncate dark:text-gray-200">
-                    {src.parsed_title && src.parsed_title.trim().length > 0 ? src.parsed_title : src.url}
+                    {src.parsed_title && src.parsed_title.trim().length > 0
+                      ? src.parsed_title
+                      : src.url}
                   </p>
                   <div class="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-gray-500 dark:text-gray-400">
                     <Badge variant={statusVariant(src.status)}>{src.status}</Badge>

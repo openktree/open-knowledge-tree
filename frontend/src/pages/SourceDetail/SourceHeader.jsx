@@ -1,7 +1,13 @@
-import { Show } from "solid-js";
 import { A } from "@solidjs/router";
+import { Show } from "solid-js";
 import Badge from "../../components/Badge";
-import { parseStatusVariant, parseStatusCopy, oaStatusVariant, oaStatusCopy, UNTITLED_FALLBACK } from "./constants";
+import {
+  oaStatusCopy,
+  oaStatusVariant,
+  parseStatusCopy,
+  parseStatusVariant,
+  UNTITLED_FALLBACK,
+} from "./constants";
 
 /**
  * Header strip for the SourceDetail page. Renders the
@@ -29,19 +35,16 @@ export default function SourceHeader(props) {
   return (
     <header class="space-y-3">
       <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-        <A
-          href={`/${props.slug}/sources`}
-          class="text-blue-600 dark:text-blue-400 hover:underline"
-        >
+        <A href={`/${props.slug}/sources`} class="text-blue-600 dark:text-blue-400 hover:underline">
           ← All sources
         </A>
         <span>·</span>
-        <span class="font-mono truncate" title={source()?.url}>{source()?.url}</span>
+        <span class="font-mono truncate" title={source()?.url}>
+          {source()?.url}
+        </span>
       </div>
 
-      <h1 class="text-2xl font-semibold text-gray-900 dark:text-white leading-tight">
-        {title()}
-      </h1>
+      <h1 class="text-2xl font-semibold text-gray-900 dark:text-white leading-tight">{title()}</h1>
 
       <div class="flex items-center gap-2 flex-wrap">
         <Badge variant={parseStatusVariant[status()] || "gray"}>

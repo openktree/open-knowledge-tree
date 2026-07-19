@@ -1,0 +1,50 @@
+# lefthook.yml — local git hooks for the Open Knowledge Tree repo.
+#
+# One-time install:
+#   just lefthook-install
+# (or: `npx lefthook install` from the repo root)
+#
+# Hooks are intentionally fast: they run the gates that don't need a
+# database. The full e2e suite (`just test-e2e`) and the strict lint
+# (`just lint`, which needs golangci-lint installed) are left to CI on
+# the PR. The pre-push hook does a build gate for both Go modules and
+# the frontend so a broken push never reaches CI.
+#
+# Skipped here on purpose:
+#   - e2e (needs the tmpfs test-postgres on :5433)
+#   - golangci-lint (not every contributor has it installed; CI runs it)
+#   - sqlc generate diff (CI runs it; needs sqlc installed)
+#
+# To bypass a hook temporarily: `git commit --no-verify` (use sparingly;
+# CI will still catch what you skipped).
+
+pre-commit:
+  parallel: true
+  commands:
+    page-size:
+      run: just check-pages
+    go-vet:
+      glob: "*.go"
+      run: |
+        files=$(echo {staged_files} | tr ' ' '\n' | grep '\.go$' || true)
+        if [ -z "$files" ]; then exit 0; fi
+        # Decide which module each staged .go belongs to and vet it.
+        # Each cd runs in its own shell line, so they don't stack.
+        backend_files=$(echo "$files" | grep '^backend/' || true)
+        registry_files=$(echo "$files" | grep '^registry/' || true)
+        if [ -n "$backend_files" ]; then (cd backend && go vet ./...); fi
+        if [ -n "$registry_files" ]; then (cd registry && go vet ./...); fi
+    biome:
+      root: frontend/
+      glob: "*.{js,jsx,ts,tsx,cjs,mjs}"
+      run: npx biome check {staged_files}
+
+pre-push:
+  parallel: true
+  commands:
+    frontend-build:
+      run: just check-frontend
+    backend-build:
+      run: cd backend && go build ./...
+    registry-build:
+      run: cd registry && go build ./...

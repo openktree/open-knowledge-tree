@@ -36,8 +36,8 @@ export default function SourcesList(props) {
         </div>
       </div>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Sources created in this repository. Open a row to read the extracted
-        content, view images, and copy a shareable link.
+        Sources created in this repository. Open a row to read the extracted content, view images,
+        and copy a shareable link.
       </p>
 
       <Show
@@ -51,16 +51,18 @@ export default function SourcesList(props) {
       >
         <Show
           when={!props.loading()}
-          fallback={
-            <p class="text-sm text-gray-400 dark:text-gray-500">Loading sources...</p>
-          }
+          fallback={<p class="text-sm text-gray-400 dark:text-gray-500">Loading sources...</p>}
         >
           <Show
             when={rows().length > 0}
             fallback={
               <EmptyState
                 title={props.search() ? "No sources match your search." : "No sources yet."}
-                description={props.search() ? "Try a different query, or clear the search box." : "Add one above or use the Providers page to search and retrieve content."}
+                description={
+                  props.search()
+                    ? "Try a different query, or clear the search box."
+                    : "Add one above or use the Providers page to search and retrieve content."
+                }
               />
             }
           >
@@ -72,7 +74,8 @@ export default function SourcesList(props) {
                 onOffsetChange={props.onOffsetChange}
               />
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-                Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())} of {props.total().toLocaleString()}
+                Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())}{" "}
+                of {props.total().toLocaleString()}
               </p>
               <div class="space-y-2 mt-3">
                 <For each={rows()}>
@@ -80,7 +83,12 @@ export default function SourcesList(props) {
                     <SourceRow
                       source={source}
                       slug={props.slug()}
-                      canProcess={props.canProcess() && source.status === "fetched" && source.parsed_text && source.parsed_text.trim().length > 0}
+                      canProcess={
+                        props.canProcess() &&
+                        source.status === "fetched" &&
+                        source.parsed_text &&
+                        source.parsed_text.trim().length > 0
+                      }
                       processDisabled={source.status === "processed"}
                       processing={props.processingID() === source.id}
                       onProcess={() => props.onProcess(source)}

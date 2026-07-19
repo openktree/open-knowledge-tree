@@ -153,6 +153,29 @@ check-pages:
 check-frontend: check-pages
 	cd frontend && npm run build
 
+# Frontend lint via Biome (check only, no writes).
+# Run from the repo root. CI runs the same command.
+lint-frontend:
+	cd frontend && npx biome check
+
+# Frontend lint + autofix (use to clean up locally before committing).
+lint-frontend-fix:
+	cd frontend && npx biome check --write
+
+# Go lint via golangci-lint for both Go modules.
+# Requires golangci-lint on PATH (https://golangci-lint.run/usage/install/).
+# CI runs the same config (.golangci.yml at repo root).
+lint:
+	cd backend && golangci-lint run ./...
+	cd registry && golangci-lint run ./...
+
+# One-time install of lefthook git hooks (pre-commit + pre-push).
+# Safe to re-run; lefthook reconciles the hooks dir.
+# After installing, every `git commit` / `git push` runs the gates
+# defined in lefthook.yml. Bypass with `git commit --no-verify`.
+lefthook-install:
+	npx --yes lefthook install
+
 api-logs:
 	docker compose -f backend/docker-compose.yml --env-file .env --profile dev logs -f api-dev
 

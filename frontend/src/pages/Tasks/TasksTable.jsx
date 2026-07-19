@@ -1,9 +1,9 @@
 import { For } from "solid-js";
-import Card from "../../components/Card";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
-import { STATE_BADGE, formatDurationMs } from "./constants";
-import { useNowTicker, resolveJobDuration } from "./useNowTicker";
+import Card from "../../components/Card";
+import { formatDurationMs, STATE_BADGE } from "./constants";
+import { resolveJobDuration, useNowTicker } from "./useNowTicker";
 
 // TasksTable renders the jobs list. The page owns the data; this
 // component is controlled via props and calls back via onSelectJob.
@@ -32,12 +32,16 @@ export default function TasksTable(props) {
           <For each={props.jobs}>
             {(job) => (
               <tr class="border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30">
-                <td class="py-2 px-3 font-mono text-xs text-gray-600 dark:text-gray-400">{job.id}</td>
+                <td class="py-2 px-3 font-mono text-xs text-gray-600 dark:text-gray-400">
+                  {job.id}
+                </td>
                 <td class="py-2 px-3 font-mono text-xs dark:text-gray-300">{job.kind}</td>
                 <td class="py-2 px-3">
                   <Badge variant={STATE_BADGE[job.state] || "gray"}>{job.state}</Badge>
                 </td>
-                <td class="py-2 px-3 font-mono text-xs text-gray-500 dark:text-gray-400">{job.queue}</td>
+                <td class="py-2 px-3 font-mono text-xs text-gray-500 dark:text-gray-400">
+                  {job.queue}
+                </td>
                 <td class="py-2 px-3 text-xs text-gray-500 dark:text-gray-400">
                   {job.attempt}/{job.max_attempts}
                 </td>
@@ -52,7 +56,9 @@ export default function TasksTable(props) {
                   {formatDurationMs(resolveJobDuration(job, now()))}
                 </td>
                 <td class="py-2 px-3">
-                  <Button variant="link" onClick={() => props.onSelectJob(job)}>View</Button>
+                  <Button variant="link" onClick={() => props.onSelectJob(job)}>
+                    View
+                  </Button>
                 </td>
               </tr>
             )}

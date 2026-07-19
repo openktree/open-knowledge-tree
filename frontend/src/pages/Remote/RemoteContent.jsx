@@ -1,11 +1,11 @@
 import { For, Show } from "solid-js";
-import Card from "../../components/Card";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import Pagination from "../../components/Pagination";
 import SearchInput from "../../components/SearchInput";
-import RemoteRow from "./RemoteRow";
 import RemoteDetailDialog from "./RemoteDetailDialog";
+import RemoteRow from "./RemoteRow";
 
 export default function RemoteContent(props) {
   const rows = () => props.sources()?.sources || [];
@@ -63,11 +63,10 @@ export default function RemoteContent(props) {
           </div>
         </div>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-          Sources available on the remote knowledge registry. Click a row to browse its
-          metadata and available decompositions, or click "Pull" to import a source with its
-          facts and concepts into this repository. "Pull Page" imports every source on the
-          current page; "Pull All Results" paginates through every source matching your
-          search and imports them all.
+          Sources available on the remote knowledge registry. Click a row to browse its metadata and
+          available decompositions, or click "Pull" to import a source with its facts and concepts
+          into this repository. "Pull Page" imports every source on the current page; "Pull All
+          Results" paginates through every source matching your search and imports them all.
         </p>
 
         <Show
@@ -89,8 +88,16 @@ export default function RemoteContent(props) {
               when={rows().length > 0}
               fallback={
                 <EmptyState
-                  title={props.search() ? "No remote sources match your search." : "No remote sources found."}
-                  description={props.search() ? "Try a different query, or clear the search box." : "The registry appears to be empty or unreachable."}
+                  title={
+                    props.search()
+                      ? "No remote sources match your search."
+                      : "No remote sources found."
+                  }
+                  description={
+                    props.search()
+                      ? "Try a different query, or clear the search box."
+                      : "The registry appears to be empty or unreachable."
+                  }
                 />
               }
             >
@@ -101,7 +108,8 @@ export default function RemoteContent(props) {
                 onOffsetChange={props.onOffsetChange}
               />
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-                Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())} of {props.total().toLocaleString()}
+                Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())}{" "}
+                of {props.total().toLocaleString()}
               </p>
               <div class="space-y-2 mt-3">
                 <For each={rows()}>

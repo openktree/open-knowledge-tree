@@ -1,6 +1,6 @@
 import { createMemo, createSignal, Show } from "solid-js";
-import Layout from "../../components/Layout";
 import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
 import { useRBAC } from "../../store/rbac";
 import AIUsageContent from "./AIUsageContent";
 
@@ -33,7 +33,8 @@ export default function AIUsage() {
           <div>
             <h1 class="text-2xl font-bold text-gray-900 dark:text-white">AI Usage</h1>
             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Token consumption and estimated cost over time, per model, provider, repository, and source.
+              Token consumption and estimated cost over time, per model, provider, repository, and
+              source.
             </p>
           </div>
           <AIUsageContent

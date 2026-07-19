@@ -24,8 +24,6 @@ export function AltBadge(props) {
     return t.length > ALT_BADGE_LIMIT ? t.slice(0, ALT_BADGE_LIMIT - 1) + "…" : t;
   };
   return (
-    <Badge variant={hasAlt() ? "green" : "gray"}>
-      {hasAlt() ? `alt: ${display()}` : "no alt"}
-    </Badge>
+    <Badge variant={hasAlt() ? "green" : "gray"}>{hasAlt() ? `alt: ${display()}` : "no alt"}</Badge>
   );
 }

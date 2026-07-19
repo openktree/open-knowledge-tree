@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check:pages": "node scripts/check-page-size.mjs"
+    "check:pages": "node scripts/check-page-size.mjs",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write"
   },
   "dependencies": {
     "@solidjs/router": "^0.15.0",
@@ -18,6 +21,7 @@
     "solid-js": "^1.9.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",

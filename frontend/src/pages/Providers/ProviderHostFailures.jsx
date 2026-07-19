@@ -43,8 +43,12 @@ export default function ProviderHostFailures(props) {
               <Badge variant="yellow">advisory</Badge>
             </div>
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-              Hosts where <code class="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">{entry.providerId}</code> was tried at least once.
-              A host with failures and zero successes is a candidate to pin out of this tier.
+              Hosts where{" "}
+              <code class="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">
+                {entry.providerId}
+              </code>{" "}
+              was tried at least once. A host with failures and zero successes is a candidate to pin
+              out of this tier.
             </p>
             <Show when={entry.hosts.length > 0}>
               <div class="overflow-x-auto">
@@ -68,12 +72,8 @@ export default function ProviderHostFailures(props) {
                           <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">
                             {h.total_attempts}
                           </td>
-                          <td class="py-2 pr-4 text-red-600 dark:text-red-400">
-                            {h.failures}
-                          </td>
-                          <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">
-                            {h.successes}
-                          </td>
+                          <td class="py-2 pr-4 text-red-600 dark:text-red-400">{h.failures}</td>
+                          <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">{h.successes}</td>
                           <td class="py-2">
                             <Show
                               when={isStrong(h)}
@@ -98,11 +98,17 @@ export default function ProviderHostFailures(props) {
 
 const providerLabel = (pid) => {
   switch (pid) {
-    case "fetch": return "HTTP Fetch";
-    case "tls": return "TLS Impersonation";
-    case "unpaywall": return "Unpaywall";
-    case "flaresolverr": return "FlareSolverr";
-    case "url_safety": return "URL Safety (SSRF guard)";
-    default: return pid;
+    case "fetch":
+      return "HTTP Fetch";
+    case "tls":
+      return "TLS Impersonation";
+    case "unpaywall":
+      return "Unpaywall";
+    case "flaresolverr":
+      return "FlareSolverr";
+    case "url_safety":
+      return "URL Safety (SSRF guard)";
+    default:
+      return pid;
   }
 };

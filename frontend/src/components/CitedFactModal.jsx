@@ -1,15 +1,13 @@
-import { Show, For } from "solid-js";
 import { A } from "@solidjs/router";
-import Modal from "./Modal";
-import FactBadges from "./FactBadges";
+import { For, Show } from "solid-js";
 import { postureStyle } from "../pages/ReportDetail/constants";
+import FactBadges from "./FactBadges";
+import Modal from "./Modal";
 
 export default function CitedFactModal(props) {
   const count = () => (props.facts || []).length;
   const title = () =>
-    props.sentenceIndex == null
-      ? "Facts"
-      : `Facts from sentence #${props.sentenceIndex + 1}`;
+    props.sentenceIndex == null ? "Facts" : `Facts from sentence #${props.sentenceIndex + 1}`;
 
   // The sentence text the clicked facts were matched against. The
   // backend stores it on every report_annotation row (sentence_text),
@@ -21,12 +19,9 @@ export default function CitedFactModal(props) {
 
   return (
     <Modal open={props.open} onClose={props.onClose} title={title()}>
-      <Show when={count() > 0}
-        fallback={
-          <p class="text-text-muted italic">
-            No facts matched this sentence.
-          </p>
-        }
+      <Show
+        when={count() > 0}
+        fallback={<p class="text-text-muted italic">No facts matched this sentence.</p>}
       >
         <div class="space-y-3">
           <Show when={sentenceText()}>

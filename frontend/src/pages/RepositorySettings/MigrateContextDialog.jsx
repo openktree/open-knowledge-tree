@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
-import { api } from "../../services/api";
-import Modal from "../../components/Modal";
 import Button from "../../components/Button";
+import Modal from "../../components/Modal";
+import { api } from "../../services/api";
 
 // MigrateContextDialog lets the admin pick a target context and
 // enqueues a migrate_context job. The server merges concepts under
@@ -28,7 +28,9 @@ export default function MigrateContextDialog(props) {
     setBusy(true);
     setStatus("queued");
     try {
-      const res = await api.migrateRepositoryContext(props.repoID(), props.sourceContext, { target_context: target() });
+      const res = await api.migrateRepositoryContext(props.repoID(), props.sourceContext, {
+        target_context: target(),
+      });
       setJobID(res.job_id);
       setStatus("running");
       poll();
@@ -66,10 +68,9 @@ export default function MigrateContextDialog(props) {
       <div class="space-y-4">
         <p class="text-sm text-gray-600 dark:text-gray-300">
           Re-assign every concept currently under{" "}
-          <span class="font-medium">{props.sourceContext}</span> to another
-          context. Concepts whose (name, target) already exists are merged
-          (facts + aliases combined); others are re-pointed. Re-embedding and
-          relations refresh run after.
+          <span class="font-medium">{props.sourceContext}</span> to another context. Concepts whose
+          (name, target) already exists are merged (facts + aliases combined); others are
+          re-pointed. Re-embedding and relations refresh run after.
         </p>
         <div>
           <label class="block mb-1 text-sm font-medium dark:text-gray-300">Target context</label>

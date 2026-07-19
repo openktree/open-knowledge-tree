@@ -1,11 +1,11 @@
-import { createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
-import { useRepository } from "../../store/repository";
+import { createSignal, For, Show } from "solid-js";
 import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import FormField from "../../components/FormField";
 import SearchResult from "../../components/SearchResult";
+import { api } from "../../services/api";
+import { useRepository } from "../../store/repository";
 
 export default function TestSearchPanel(props) {
   const repo = useRepository();
@@ -20,9 +20,8 @@ export default function TestSearchPanel(props) {
   const [classifyResults, setClassifyResults] = createSignal({});
   const [enqueueResults, setEnqueueResults] = createSignal({});
 
-  const searchProviders = () => (props.providers().search || []).filter(
-    (p) => p.enabled_for_repo !== false
-  );
+  const searchProviders = () =>
+    (props.providers().search || []).filter((p) => p.enabled_for_repo !== false);
 
   // allAlreadyAdded is true when every loaded result is tagged
   // already_exists. The UI uses it to render a prominent
@@ -121,11 +120,10 @@ export default function TestSearchPanel(props) {
     <Card class="mb-6">
       <h2 class="text-lg font-semibold mb-1 dark:text-white">Test Search</h2>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Run a search query through a configured search provider. Use the
-        Fetch button on a result to enqueue a retrieve_source job, or
-        Fetch &amp; Process to also chain the source_decomposition job once
-        the fetch lands. Results already in the current repository are
-        marked with an "Already added" badge.
+        Run a search query through a configured search provider. Use the Fetch button on a result to
+        enqueue a retrieve_source job, or Fetch &amp; Process to also chain the source_decomposition
+        job once the fetch lands. Results already in the current repository are marked with an
+        "Already added" badge.
       </p>
 
       <form onSubmit={handleSearch} class="flex gap-2 mb-4">
@@ -135,9 +133,7 @@ export default function TestSearchPanel(props) {
           onChange={setSelectedSearchProvider}
           inputClass="min-w-0"
         >
-          <For each={searchProviders()}>
-            {(p) => <option value={p.id}>{p.name}</option>}
-          </For>
+          <For each={searchProviders()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
         </FormField>
         <FormField
           value={searchQuery()}
@@ -154,9 +150,7 @@ export default function TestSearchPanel(props) {
 
       <Show when={searchResults()}>
         <Show when={searchTotal() > 0}>
-          <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">
-            {searchTotal()} total results
-          </p>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{searchTotal()} total results</p>
         </Show>
         <div class="space-y-3">
           <For each={searchResults()}>
@@ -176,7 +170,12 @@ export default function TestSearchPanel(props) {
             <Show
               when={allAlreadyAdded()}
               fallback={
-                <Button variant="secondary" onClick={handleLoadMore} loading={loadingMore()} loadingText="Loading...">
+                <Button
+                  variant="secondary"
+                  onClick={handleLoadMore}
+                  loading={loadingMore()}
+                  loadingText="Loading..."
+                >
                   Load more
                 </Button>
               }
@@ -185,7 +184,12 @@ export default function TestSearchPanel(props) {
                 <p class="text-sm text-amber-800 dark:text-amber-300 mb-2">
                   All results on this page are already in your library.
                 </p>
-                <Button variant="primary" onClick={handleLoadMore} loading={loadingMore()} loadingText="Loading...">
+                <Button
+                  variant="primary"
+                  onClick={handleLoadMore}
+                  loading={loadingMore()}
+                  loadingText="Loading..."
+                >
                   Load more
                 </Button>
               </div>

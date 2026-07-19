@@ -1,14 +1,14 @@
 import { createResource, createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
-import { useRepository } from "../../store/repository";
-import Layout from "../../components/Layout";
 import Alert from "../../components/Alert";
 import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
 import Loading from "../../components/Loading";
+import { api } from "../../services/api";
+import { useRepository } from "../../store/repository";
 import CreateRepositoryForm from "./CreateRepositoryForm";
+import CurrentRepositoryCard from "./CurrentRepositoryCard";
 import RepositoriesTable from "./RepositoriesTable";
 import RepositoryDetails from "./RepositoryDetails";
-import CurrentRepositoryCard from "./CurrentRepositoryCard";
 
 /**
  * Repositories management page.
@@ -24,7 +24,7 @@ export default function Repositories() {
 
   const [repos] = createResource(
     () => [repo.loaded(), repo.repositories()],
-    () => api.listRepositories().catch(() => ({ repositories: [] }))
+    () => api.listRepositories().catch(() => ({ repositories: [] })),
   );
 
   const data = () => repos() || { repositories: [] };
@@ -38,10 +38,7 @@ export default function Repositories() {
           onDismiss={() => setAlert(null)}
         />
 
-        <Show
-          when={repo.loaded()}
-          fallback={<Loading message="Loading repositories..." />}
-        >
+        <Show when={repo.loaded()} fallback={<Loading message="Loading repositories..." />}>
           <CurrentRepositoryCard onAlert={setAlert} />
 
           <Show when={data().repositories.length === 0}>

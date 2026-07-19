@@ -1,6 +1,6 @@
-import { createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
+import { createSignal, For, Show } from "solid-js";
 import Card from "../../components/Card";
+import { api } from "../../services/api";
 
 // RegistryPanel is the per-repo registry integration card on the
 // Repository Settings page. It bundles three controls:
@@ -83,9 +83,7 @@ export default function RegistryPanel(props) {
   const saveAllowedModels = async (models) => {
     setBusyModels(true);
     try {
-      const body = models === null
-        ? { allowed_models: null }
-        : { allowed_models: models };
+      const body = models === null ? { allowed_models: null } : { allowed_models: models };
       await api.setRepositoryRegistry(props.repoID(), body);
       props.onChanged?.();
     } catch (err) {
@@ -103,8 +101,7 @@ export default function RegistryPanel(props) {
         fallback={
           <p class="text-sm text-yellow-600 dark:text-yellow-400">
             No registry is configured. Set <code>providers.registry.url</code> or{" "}
-            <code>providers.registries</code> in your config before enabling the
-            integration.
+            <code>providers.registries</code> in your config before enabling the integration.
           </p>
         }
       >
@@ -112,10 +109,12 @@ export default function RegistryPanel(props) {
           {/* On/off toggle */}
           <div class="flex items-start justify-between gap-4">
             <div class="text-sm text-gray-500 dark:text-gray-400">
-              Use a remote knowledge registry as a cache. When enabled, the
-              retrieve worker checks the registry before fetching and the{" "}
-              <a href="#/remote" class="underline">Remote</a> browse/pull page is
-              available for this repository.
+              Use a remote knowledge registry as a cache. When enabled, the retrieve worker checks
+              the registry before fetching and the{" "}
+              <a href="#/remote" class="underline">
+                Remote
+              </a>{" "}
+              browse/pull page is available for this repository.
             </div>
             <button
               type="button"
@@ -134,10 +133,7 @@ export default function RegistryPanel(props) {
           {/* Registry selector — only when more than one is configured */}
           <Show when={options().length > 1}>
             <div class="flex items-center justify-between gap-4">
-              <label
-                for="registry-select"
-                class="text-sm text-gray-500 dark:text-gray-400"
-              >
+              <label for="registry-select" class="text-sm text-gray-500 dark:text-gray-400">
                 Which registry should this repository use?
               </label>
               <select
@@ -147,9 +143,7 @@ export default function RegistryPanel(props) {
                 onChange={changeRegistry}
                 class="text-sm px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50"
               >
-                <For each={options()}>
-                  {(id) => <option value={id}>{id}</option>}
-                </For>
+                <For each={options()}>{(id) => <option value={id}>{id}</option>}</For>
               </select>
             </div>
           </Show>
@@ -161,9 +155,9 @@ export default function RegistryPanel(props) {
                 Auto-contribute (share back)
               </div>
               <div class="mt-1">
-                When enabled, sources are pushed to the remote knowledge registry
-                automatically as soon as they finish processing. The retrieved
-                sources and facts are shared publicly with other researchers.
+                When enabled, sources are pushed to the remote knowledge registry automatically as
+                soon as they finish processing. The retrieved sources and facts are shared publicly
+                with other researchers.
                 <Show when={!enabled()}>
                   <span class="block mt-1 text-yellow-600 dark:text-yellow-400">
                     Requires the remote registry integration to be enabled.
@@ -188,9 +182,7 @@ export default function RegistryPanel(props) {
           {/* Allowed models (per-repo whitelist) */}
           <div class="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-700">
             <div class="text-sm text-gray-500 dark:text-gray-400">
-              <div class="font-medium text-gray-700 dark:text-gray-300">
-                Allowed cache models
-              </div>
+              <div class="font-medium text-gray-700 dark:text-gray-300">Allowed cache models</div>
               <div class="mt-1">
                 Which decomposition models to import from the registry cache.
                 {!isPerRepo() && allowedModelsDefault().length > 0
@@ -217,9 +209,7 @@ export default function RegistryPanel(props) {
                 class="text-sm px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50"
               >
                 <option value="">Add model…</option>
-                <For each={catalog()}>
-                  {(m) => <option value={m.id}>{m.id}</option>}
-                </For>
+                <For each={catalog()}>{(m) => <option value={m.id}>{m.id}</option>}</For>
               </select>
             </div>
           </div>

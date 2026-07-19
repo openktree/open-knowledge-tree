@@ -19,9 +19,7 @@ export default function AIProvidersTab(props) {
           />
         }
       >
-        <For each={aiProviders()}>
-          {(p) => <AIProviderCard provider={p} />}
-        </For>
+        <For each={aiProviders()}>{(p) => <AIProviderCard provider={p} />}</For>
       </Show>
     </div>
   );
@@ -38,16 +36,12 @@ function AIProviderCard(props) {
             <h2 class="text-lg font-semibold dark:text-white">{p().name}</h2>
             <ConfiguredBadge configured={p().configured} requires={p().requires} />
           </div>
-          <p class="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">
-            {p().id}
-          </p>
+          <p class="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">{p().id}</p>
         </div>
       </div>
 
       <Show when={p().description}>
-        <p class="text-sm text-gray-700 dark:text-gray-300 mb-4">
-          {p().description}
-        </p>
+        <p class="text-sm text-gray-700 dark:text-gray-300 mb-4">{p().description}</p>
       </Show>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
@@ -79,9 +73,7 @@ function AIProviderCard(props) {
               </span>
             }
           >
-            <span class="text-green-600 dark:text-green-400 text-xs">
-              configured and active
-            </span>
+            <span class="text-green-600 dark:text-green-400 text-xs">configured and active</span>
           </Show>
         </DetailRow>
       </div>

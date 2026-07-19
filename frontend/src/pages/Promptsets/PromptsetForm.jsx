@@ -1,5 +1,5 @@
 import { createMemo, createResource, For, Show } from "solid-js";
-import { PHASE_LABELS, PHASE_KEYS, REGISTRY_SHARED_KEYS, computeRegistryHash } from "./constants";
+import { computeRegistryHash, PHASE_KEYS, PHASE_LABELS, REGISTRY_SHARED_KEYS } from "./constants";
 
 // PromptsetForm renders the 8 phase textareas + the name field for
 // create/edit. Controlled: the parent owns the draft state and
@@ -33,7 +33,7 @@ export default function PromptsetForm(props) {
   // the 4 shared phase fields changes. createResource handles the
   // async crypto.subtle.digest call.
   const sharedFingerprint = createMemo(() =>
-    REGISTRY_SHARED_KEYS.map((k) => phase(k)).join("\u0000")
+    REGISTRY_SHARED_KEYS.map((k) => phase(k)).join("\u0000"),
   );
   const [registryHash] = createResource(sharedFingerprint, computeRegistryHash);
   const defaultHash = () => props.defaultRegistryHash?.() ?? "";
@@ -43,9 +43,7 @@ export default function PromptsetForm(props) {
   return (
     <div class="space-y-4">
       <div>
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          Name
-        </label>
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
         <input
           type="text"
           value={name()}
@@ -62,16 +60,18 @@ export default function PromptsetForm(props) {
             {registryHash() ? registryHash().slice(0, 16) + "…" : "…"}
           </span>
           <Show when={isDefaultCompatible()}>
-            <span class="px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200" title="Shares the 4 registry-shared phases with the built-in — decompositions are exchangeable via the registry.">
+            <span
+              class="px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200"
+              title="Shares the 4 registry-shared phases with the built-in — decompositions are exchangeable via the registry."
+            >
               ≡ default
             </span>
           </Show>
         </div>
         <p class="text-gray-400 dark:text-gray-500 mt-1">
-          Computed over only the 4 shared phases (fact, image-fact, concept, refinement).
-          Editing the local-only phases (synthesis, image-picker, summarization, posture)
-          does not change it — those phases run locally and their output is not pushed to
-          the registry.
+          Computed over only the 4 shared phases (fact, image-fact, concept, refinement). Editing
+          the local-only phases (synthesis, image-picker, summarization, posture) does not change it
+          — those phases run locally and their output is not pushed to the registry.
         </p>
       </div>
       <For each={PHASE_KEYS}>
@@ -80,7 +80,12 @@ export default function PromptsetForm(props) {
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               {PHASE_LABELS[key]}
               <Show when={REGISTRY_SHARED_KEYS.includes(key)}>
-                <span class="ml-1 text-xs text-gray-400 dark:text-gray-500" title="This phase feeds the registry-compatibility hash.">·shared</span>
+                <span
+                  class="ml-1 text-xs text-gray-400 dark:text-gray-500"
+                  title="This phase feeds the registry-compatibility hash."
+                >
+                  ·shared
+                </span>
               </Show>
             </label>
             <textarea

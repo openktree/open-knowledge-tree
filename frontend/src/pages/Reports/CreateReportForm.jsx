@@ -1,9 +1,9 @@
-import { createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
+import { createSignal, For, Show } from "solid-js";
+import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import FormField from "../../components/FormField";
-import Alert from "../../components/Alert";
+import { api } from "../../services/api";
 
 export default function CreateReportForm(props) {
   const [title, setTitle] = createSignal("");
@@ -24,7 +24,13 @@ export default function CreateReportForm(props) {
     setError("");
     try {
       if (file()) {
-        await api.uploadReportFile(props.slug, file(), title().trim(), topic().trim(), parentId().trim());
+        await api.uploadReportFile(
+          props.slug,
+          file(),
+          title().trim(),
+          topic().trim(),
+          parentId().trim(),
+        );
       } else {
         await api.createReport(props.slug, {
           title: title().trim(),
@@ -57,8 +63,19 @@ export default function CreateReportForm(props) {
     <Card>
       <h2 class="text-lg font-semibold mb-4 dark:text-white">New Report</h2>
       <form onSubmit={handleSubmit} class="space-y-4">
-        <FormField label="Title" value={title()} onChange={setTitle} placeholder="Report title" required />
-        <FormField label="Topic (optional)" value={topic()} onChange={setTopic} placeholder="Topic" />
+        <FormField
+          label="Title"
+          value={title()}
+          onChange={setTitle}
+          placeholder="Report title"
+          required
+        />
+        <FormField
+          label="Topic (optional)"
+          value={topic()}
+          onChange={setTopic}
+          placeholder="Topic"
+        />
         <Show when={parentOptions().length > 0}>
           <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -70,9 +87,7 @@ export default function CreateReportForm(props) {
               class="w-full rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-2 text-sm"
             >
               <option value="">— Top level —</option>
-              <For each={parentOptions()}>
-                {(r) => <option value={r.id}>{r.title}</option>}
-              </For>
+              <For each={parentOptions()}>{(r) => <option value={r.id}>{r.title}</option>}</For>
             </select>
           </div>
         </Show>

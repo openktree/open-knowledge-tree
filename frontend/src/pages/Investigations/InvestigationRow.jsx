@@ -1,9 +1,9 @@
-import { Show, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import { api } from "../../services/api";
+import { createSignal, Show } from "solid-js";
+import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import FormField from "../../components/FormField";
-import Alert from "../../components/Alert";
+import { api } from "../../services/api";
 
 export default function InvestigationRow(props) {
   const [editing, setEditing] = createSignal(false);
@@ -14,9 +14,7 @@ export default function InvestigationRow(props) {
   const [error, setError] = createSignal("");
 
   const created = () =>
-    props.inv.created_at
-      ? new Date(props.inv.created_at).toLocaleDateString()
-      : "\u2014";
+    props.inv.created_at ? new Date(props.inv.created_at).toLocaleDateString() : "\u2014";
 
   const href = () => `/${props.slug}/investigations/${props.inv.id}`;
 
@@ -65,8 +63,12 @@ export default function InvestigationRow(props) {
               <FormField label="Topic" value={topic()} onChange={setTopic} />
               <Alert variant="error" message={error()} onDismiss={() => setError("")} />
               <div class="flex gap-2">
-                <Button type="submit" disabled={busy()} loading={busy()}>Save</Button>
-                <Button variant="secondary" onClick={() => setEditing(false)} disabled={busy()}>Cancel</Button>
+                <Button type="submit" disabled={busy()} loading={busy()}>
+                  Save
+                </Button>
+                <Button variant="secondary" onClick={() => setEditing(false)} disabled={busy()}>
+                  Cancel
+                </Button>
               </div>
             </form>
           }
@@ -83,7 +85,9 @@ export default function InvestigationRow(props) {
       <td class="py-3 px-4 align-top text-right">
         <div class="flex justify-end gap-1">
           <Show when={!editing()}>
-            <Button variant="secondary" onClick={() => setEditing(true)}>Edit</Button>
+            <Button variant="secondary" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
           </Show>
           <Show
             when={!confirmDelete()}
@@ -92,13 +96,19 @@ export default function InvestigationRow(props) {
                 <Button variant="danger" onClick={onDelete} disabled={busy()} loading={busy()}>
                   Confirm delete
                 </Button>
-                <Button variant="secondary" onClick={() => setConfirmDelete(false)} disabled={busy()}>
+                <Button
+                  variant="secondary"
+                  onClick={() => setConfirmDelete(false)}
+                  disabled={busy()}
+                >
                   Cancel
                 </Button>
               </span>
             }
           >
-            <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>
+            <Button variant="danger" onClick={() => setConfirmDelete(true)}>
+              Delete
+            </Button>
           </Show>
         </div>
       </td>

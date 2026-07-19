@@ -1,8 +1,8 @@
 import { For } from "solid-js";
-import Card from "../../components/Card";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
 import FormField from "../../components/FormField";
-import { STATE_OPTIONS, KIND_OPTIONS, QUEUE_OPTIONS } from "./constants";
+import { KIND_OPTIONS, QUEUE_OPTIONS, STATE_OPTIONS } from "./constants";
 
 // TasksFilters renders the state/kind/queue dropdowns and the
 // Refresh button. The page owns the filter signals; this
@@ -20,9 +20,7 @@ export default function TasksFilters(props) {
           onChange={props.onStateChange}
           class="min-w-[160px]"
         >
-          <For each={STATE_OPTIONS}>
-            {(opt) => <option value={opt.value}>{opt.label}</option>}
-          </For>
+          <For each={STATE_OPTIONS}>{(opt) => <option value={opt.value}>{opt.label}</option>}</For>
         </FormField>
         <FormField
           type="select"
@@ -31,9 +29,7 @@ export default function TasksFilters(props) {
           onChange={props.onKindChange}
           class="min-w-[160px]"
         >
-          <For each={KIND_OPTIONS}>
-            {(opt) => <option value={opt.value}>{opt.label}</option>}
-          </For>
+          <For each={KIND_OPTIONS}>{(opt) => <option value={opt.value}>{opt.label}</option>}</For>
         </FormField>
         <FormField
           type="select"
@@ -42,12 +38,15 @@ export default function TasksFilters(props) {
           onChange={props.onQueueChange}
           class="min-w-[160px]"
         >
-          <For each={QUEUE_OPTIONS}>
-            {(opt) => <option value={opt.value}>{opt.label}</option>}
-          </For>
+          <For each={QUEUE_OPTIONS}>{(opt) => <option value={opt.value}>{opt.label}</option>}</For>
         </FormField>
         <div class="flex items-end">
-          <Button variant="secondary" onClick={props.onRefresh} loading={props.loading} loadingText="...">
+          <Button
+            variant="secondary"
+            onClick={props.onRefresh}
+            loading={props.loading}
+            loadingText="..."
+          >
             Refresh
           </Button>
         </div>

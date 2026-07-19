@@ -1,10 +1,10 @@
-import { Show, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import { api } from "../../services/api";
-import Button from "../../components/Button";
+import { createSignal, Show } from "solid-js";
 import Badge from "../../components/Badge";
+import Button from "../../components/Button";
+import { api } from "../../services/api";
+import { formatTimestamp, statusVariant } from "../Sources/constants";
 import SourceTaskStatus from "./SourceTaskStatus";
-import { statusVariant, formatTimestamp } from "../Sources/constants";
 
 export default function InvestigationSourceRow(props) {
   const src = () => props.source;
@@ -46,7 +46,15 @@ export default function InvestigationSourceRow(props) {
           <div class="flex items-center gap-2 mt-1 flex-wrap text-xs text-gray-500 dark:text-gray-400">
             <Badge variant={statusVariant(src().status)}>{src().status}</Badge>
             <Show when={src().parse_status}>
-              <Badge variant={src().parse_status === "ok" ? "green" : src().parse_status === "failed" ? "red" : "yellow"}>
+              <Badge
+                variant={
+                  src().parse_status === "ok"
+                    ? "green"
+                    : src().parse_status === "failed"
+                      ? "red"
+                      : "yellow"
+                }
+              >
                 {src().parse_status}
               </Badge>
             </Show>
@@ -67,7 +75,9 @@ export default function InvestigationSourceRow(props) {
               loading={props.processing}
               loadingText="..."
               onClick={() => props.onProcess(src())}
-              title={jobRunning() ? "A fetch/decomposition job is still running for this source" : ""}
+              title={
+                jobRunning() ? "A fetch/decomposition job is still running for this source" : ""
+              }
             >
               {jobRunning() ? "Running..." : "Process"}
             </Button>
@@ -77,11 +87,7 @@ export default function InvestigationSourceRow(props) {
           </Button>
         </div>
       </div>
-      <SourceTaskStatus
-        slug={props.slug}
-        sourceID={src().id}
-        onRunningChange={setJobRunning}
-      />
+      <SourceTaskStatus slug={props.slug} sourceID={src().id} onRunningChange={setJobRunning} />
     </div>
   );
 }

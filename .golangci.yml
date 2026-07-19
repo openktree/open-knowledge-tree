@@ -1,0 +1,41 @@
+# Permissive golangci-lint config used by CI and `just lint`.
+# Goal: gate new breakage without retroactively churning the codebase.
+#
+# This is the golangci-lint **v1** schema. CI pins
+# golangci/golangci-lint-action@v6 with version v1.62 to match.
+# To upgrade to golangci-lint v2, bump the action to @v7+ and migrate
+# this file to the v2 schema (https://golangci-lint.run/usage/migration/).
+#
+# Run separately per module:
+#   cd backend && golangci-lint run ./...
+#   cd registry && golangci-lint run ./...
+run:
+  timeout: 5m
+  go: "1.25"
+
+linters:
+  enable:
+    - gofmt
+    - goimports
+    - vet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - unused
+
+linters-settings:
+  goimports:
+    local-prefixes:
+      - github.com/openktree/open-knowledge-tree/backend
+      - github.com/openktree/knowledge-registry
+  staticcheck:
+    checks: ["all", "-ST1000", "-ST1003", "-SA1029"]
+
+issues:
+  exclude-use-default: true
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # e2e tests legitimately use json.Unmarshal into ad-hoc structs
+    - path: _test\.go
+      linters: [errcheck]

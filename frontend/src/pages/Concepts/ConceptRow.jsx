@@ -1,5 +1,5 @@
-import { For, Show } from "solid-js";
 import { A } from "@solidjs/router";
+import { For, Show } from "solid-js";
 import Badge from "../../components/Badge";
 
 // ConceptRow renders a single concept group in the repo-level
@@ -28,10 +28,14 @@ export default function ConceptRow(props) {
             <div class="flex items-center gap-2 flex-wrap">
               <span class="font-medium dark:text-white">{props.concept?.canonical_name}</span>
               <For each={contexts()}>{(ctx) => <Badge variant="blue">{ctx.context}</Badge>}</For>
-              <Badge variant="gray">{totalFacts()} fact{totalFacts() === 1 ? "" : "s"}</Badge>
+              <Badge variant="gray">
+                {totalFacts()} fact{totalFacts() === 1 ? "" : "s"}
+              </Badge>
             </div>
             <Show when={props.concept?.description}>
-              <div class="text-xs text-gray-500 dark:text-gray-400">{props.concept.description}</div>
+              <div class="text-xs text-gray-500 dark:text-gray-400">
+                {props.concept.description}
+              </div>
             </Show>
           </div>
         }
@@ -44,7 +48,9 @@ export default function ConceptRow(props) {
           <div class="flex items-center gap-2 flex-wrap">
             <span class="font-medium dark:text-white">{props.concept?.canonical_name}</span>
             <For each={contexts()}>{(ctx) => <Badge variant="blue">{ctx.context}</Badge>}</For>
-            <Badge variant="gray">{totalFacts()} fact{totalFacts() === 1 ? "" : "s"}</Badge>
+            <Badge variant="gray">
+              {totalFacts()} fact{totalFacts() === 1 ? "" : "s"}
+            </Badge>
           </div>
           <Show when={props.concept?.description}>
             <div class="text-xs text-gray-500 dark:text-gray-400">{props.concept.description}</div>

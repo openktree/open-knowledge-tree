@@ -1,6 +1,6 @@
 import { For, Show } from "solid-js";
-import Card from "../../components/Card";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import Pagination from "../../components/Pagination";
 import SearchInput from "../../components/SearchInput";
@@ -52,7 +52,11 @@ export default function ConceptsContent(props) {
           fallback={
             <EmptyState
               title={props.search() ? "No concepts match your search." : "No concepts yet."}
-              description={props.search() ? "Try a different query, or clear the search box." : "Concepts are extracted automatically once facts are processed and deduplicated. Process sources to generate facts, then wait for the concept-extraction pipeline to run."}
+              description={
+                props.search()
+                  ? "Try a different query, or clear the search box."
+                  : "Concepts are extracted automatically once facts are processed and deduplicated. Process sources to generate facts, then wait for the concept-extraction pipeline to run."
+              }
             />
           }
         >
@@ -64,7 +68,8 @@ export default function ConceptsContent(props) {
               onOffsetChange={props.onOffsetChange}
             />
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-              Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())} of {props.total().toLocaleString()}
+              Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())}{" "}
+              of {props.total().toLocaleString()}
             </p>
             <div class="space-y-2 mt-3">
               <For each={rows()}>

@@ -6,7 +6,9 @@ const paddingClasses = {
 
 export default function Card(props) {
   return (
-    <div class={`bg-surface border border-border rounded-lg shadow-card dark:shadow-card-dark ${paddingClasses[props.padding || "md"]} ${props.class || ""}`}>
+    <div
+      class={`bg-surface border border-border rounded-lg shadow-card dark:shadow-card-dark ${paddingClasses[props.padding || "md"]} ${props.class || ""}`}
+    >
       {props.children}
     </div>
   );

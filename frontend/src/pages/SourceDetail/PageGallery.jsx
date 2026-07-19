@@ -19,16 +19,13 @@ export default function PageGallery(props) {
         PDF page renders ({props.images().length})
       </h2>
       <p class="text-xs text-gray-500 dark:text-gray-400">
-        Per-page renders of the source PDF, served from the storage
-        backend. Pages that have not been mirrored yet show a
-        placeholder card with the page number, dimensions, and
-        recorded byte size.
+        Per-page renders of the source PDF, served from the storage backend. Pages that have not
+        been mirrored yet show a placeholder card with the page number, dimensions, and recorded
+        byte size.
       </p>
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
         <For each={props.images()}>
-          {(img) => (
-            <PageCard image={img} slug={props.slug} sourceID={props.sourceID} />
-          )}
+          {(img) => <PageCard image={img} slug={props.slug} sourceID={props.sourceID} />}
         </For>
       </div>
     </div>

@@ -227,9 +227,10 @@ function tryDecodeEntity(raw, at) {
 function decodeEntity(name) {
   if (!name) return "";
   if (name[0] === "#") {
-    const code = name[1] === "x" || name[1] === "X"
-      ? parseInt(name.slice(2), 16)
-      : parseInt(name.slice(1), 10);
+    const code =
+      name[1] === "x" || name[1] === "X"
+        ? parseInt(name.slice(2), 16)
+        : parseInt(name.slice(1), 10);
     if (!Number.isFinite(code)) return "";
     try {
       return String.fromCodePoint(code);
@@ -241,7 +242,7 @@ function decodeEntity(name) {
     amp: "&",
     lt: "<",
     gt: ">",
-    quot: "\"",
+    quot: '"',
     apos: "'",
     nbsp: "\u00a0",
     ndash: "\u2013",

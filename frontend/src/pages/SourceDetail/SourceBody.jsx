@@ -1,7 +1,7 @@
-import { createSignal, Show, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import Button from "../../components/Button";
-import { api } from "../../services/api";
 import CitedView from "../../components/CitedView";
+import { api } from "../../services/api";
 
 /**
  * Body of the SourceDetail page. Renders the parsed Markdown as

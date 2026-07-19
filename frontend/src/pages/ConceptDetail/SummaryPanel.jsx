@@ -1,11 +1,11 @@
-import { For, Show, createResource, createSignal } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import Card from "../../components/Card";
+import { createResource, createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
-import { api } from "../../services/api";
 import { renderMarkdown } from "../../lib/markdown";
 import { normalizeCitations } from "../../lib/normalizeCitations";
+import { api } from "../../services/api";
 
 // SummaryPanel renders the concept summaries for a single
 // (concept, context) pair — the output of the summarize_concepts
@@ -50,7 +50,7 @@ export default function SummaryPanel(props) {
       } catch {
         return { data: [], total: 0 };
       }
-    }
+    },
   );
 
   const summaries = () => summaryData()?.data || [];
@@ -74,7 +74,10 @@ export default function SummaryPanel(props) {
     const a = e.target.closest("a");
     if (!a) return;
     const href = a.getAttribute("href") || "";
-    if (href.startsWith("/") && (/\/facts\/[0-9a-fA-F-]{36}/.test(href) || /\/concepts\/[0-9a-fA-F-]{36}/.test(href))) {
+    if (
+      href.startsWith("/") &&
+      (/\/facts\/[0-9a-fA-F-]{36}/.test(href) || /\/concepts\/[0-9a-fA-F-]{36}/.test(href))
+    ) {
       e.preventDefault();
       navigate(href);
     }
@@ -93,8 +96,13 @@ export default function SummaryPanel(props) {
           aria-controls="concept-summaries-body"
         >
           <span class="text-lg font-semibold dark:text-white">Summaries</span>
-          <Badge variant="gray">{total().toLocaleString()} slice{total() === 1 ? "" : "s"}</Badge>
-          <span class="text-xs text-gray-400 dark:text-gray-500 transition-transform group-hover:text-gray-600 dark:group-hover:text-gray-300" style={collapsed() ? "transform: rotate(-90deg)" : ""}>
+          <Badge variant="gray">
+            {total().toLocaleString()} slice{total() === 1 ? "" : "s"}
+          </Badge>
+          <span
+            class="text-xs text-gray-400 dark:text-gray-500 transition-transform group-hover:text-gray-600 dark:group-hover:text-gray-300"
+            style={collapsed() ? "transform: rotate(-90deg)" : ""}
+          >
             ▾
           </span>
         </button>
@@ -133,11 +141,14 @@ export default function SummaryPanel(props) {
                         <Badge variant="yellow">open · {summary.fact_count} facts</Badge>
                       </Show>
                       <Show when={summary.model}>
-                        <span class="text-xs text-gray-400 dark:text-gray-500">{summary.model}</span>
+                        <span class="text-xs text-gray-400 dark:text-gray-500">
+                          {summary.model}
+                        </span>
                       </Show>
                       <Show when={summary.updated_at}>
                         <span class="text-xs text-gray-400 dark:text-gray-500">
-                          {summary.is_complete ? "frozen" : "updated"} {new Date(summary.updated_at).toLocaleString()}
+                          {summary.is_complete ? "frozen" : "updated"}{" "}
+                          {new Date(summary.updated_at).toLocaleString()}
                         </span>
                       </Show>
                     </div>
