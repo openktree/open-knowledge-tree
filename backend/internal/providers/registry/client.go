@@ -288,6 +288,64 @@ func (c *Client) PullDecomposition(ctx context.Context, sourceID, modelID string
 	return &decomp, nil
 }
 
+// FetchDecompositionPresigned fetches a decomposition directly from
+// the registry's object storage using a presigned URL. It is the
+// fast path for the UI's source detail dialog: the registry's
+// PullDecomposition buffers the S3 object in memory and re-marshals
+// it (~80-100MB peak for a 19MB payload, blocks the pullSem slot
+// for seconds), while this path issues a tiny presigned URL and
+// streams the raw bytes straight from R2/S3 to the caller.
+//
+// Returns the presigned URL and the raw response body. The
+// caller's HTTP client should have a reasonable read timeout —
+// for very large payloads this avoids holding the registry's
+// pullSem during the entire transfer.
+//
+// Falls back to "" + nil when the registry doesn't issue a
+// presigned URL for this decomposition (filesystem backend, dev
+// mode, or older registry). Callers should fall back to
+// PullDecomposition in that case.
+func (c *Client) FetchDecompositionPresigned(ctx context.Context, sourceID, modelID string) (string, []byte, error) {
+	if c.baseURL == "" {
+		return "", nil, ErrRegistryDisabled
+	}
+	pkg, err := c.PullSource(ctx, sourceID)
+	if err != nil {
+		return "", nil, fmt.Errorf("registry: fetching source package for presign: %w", err)
+	}
+	var ref *DecompRef
+	for i := range pkg.Decompositions {
+		if pkg.Decompositions[i].ModelID == modelID {
+			ref = &pkg.Decompositions[i]
+			break
+		}
+	}
+	if ref == nil {
+		return "", nil, fmt.Errorf("registry: decomposition %s/%s not found", sourceID, modelID)
+	}
+	if ref.PresignedURL == "" {
+		return "", nil, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref.PresignedURL, nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("registry: creating presigned fetch request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("registry: fetching presigned decomposition: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("registry: presigned fetch returned status %d: %s", resp.StatusCode, string(body))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, fmt.Errorf("registry: reading presigned body: %w", err)
+	}
+	return ref.PresignedURL, body, nil
+}
+
 // PushSource pushes a source to the registry. Returns the source ID.
 // The content fields (parsedText, parsedMarkdown) are stored in the
 // registry's S3 object so pulling repos can import the extracted

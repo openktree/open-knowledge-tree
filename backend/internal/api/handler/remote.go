@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -160,11 +161,14 @@ func (h *Remote) GetSource(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, pkg)
 }
 
-// GetDecomposition proxies the registry's
-// GET /api/v1/sources/{id}/decompositions/{model} so the frontend
-// can browse a single model's facts/concepts on demand without
-// going direct to the registry. Returns the raw
-// *DecompositionPackage as JSON. Gated on remote:read.
+// GetDecomposition serves a single model's facts/concepts/links
+// for the UI's source detail dialog. It prefers the registry's
+// presigned R2 URL (fast path: registry issues a tiny presigned
+// URL, backend fetches the raw blob from object storage and
+// returns it as JSON) and falls back to the registry's
+// PullDecomposition (which buffers + re-marshals the blob in
+// the registry VM) when no presigned URL is available
+// (filesystem backend, dev mode). Gated on remote:read.
 func (h *Remote) GetDecomposition(w http.ResponseWriter, r *http.Request) {
 	client, _, ok, msg := h.resolveClient(r)
 	if !ok {
@@ -188,9 +192,30 @@ func (h *Remote) GetDecomposition(w http.ResponseWriter, r *http.Request) {
 	if decoded, err := url.PathUnescape(modelID); err == nil {
 		modelID = decoded
 	}
-	pkg, err := client.PullDecomposition(r.Context(), remoteID, modelID)
+
+	// Fast path: registry issues a presigned URL, backend fetches
+	// the blob from R2 directly. Avoids the registry's pullSem
+	// (bounded at 8) and the S3->registry->backend double-buffer
+	// that pinned ~80-100MB in the registry VM per concurrent
+	// pull. The response body is the same shape (a
+	// *DecompositionPackage JSON), so the frontend is unchanged.
+	_, body, err := client.FetchDecompositionPresigned(r.Context(), remoteID, modelID)
+	if err == nil && body != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	// Fallback: no presigned URL (filesystem backend, dev, or
+	// older registry). Use the registry's PullDecomposition which
+	// buffers + re-marshals. Log a warning so the operator knows
+	// the slow path is active.
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "pulling decomposition from registry: "+err.Error())
+		log.Printf("remote: presigned fast path failed for %s/%s, falling back to registry re-marshal: %v", remoteID, modelID, err)
+	}
+	pkg, pullErr := client.PullDecomposition(r.Context(), remoteID, modelID)
+	if pullErr != nil {
+		httputil.WriteError(w, http.StatusBadGateway, "pulling decomposition from registry: "+pullErr.Error())
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, pkg)
