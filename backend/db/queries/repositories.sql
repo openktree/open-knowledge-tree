@@ -162,3 +162,30 @@ WHERE id = $1;
 
 -- name: DeleteRepository :one
 DELETE FROM repositories WHERE id = $1 RETURNING *;
+
+-- name: GetRepositoryContributor :one
+-- Single-row lookup of the per-repo contributor identity
+-- (display_name + anonymous flag). Read by contribute_source to
+-- decide what to send on PushSource: when anonymous=true the
+-- worker sends display_name="" + anonymous=true (the registry's
+-- canonical "anonymous" marker); when anonymous=false it sends
+-- the stored display_name so pulling repos can see who
+-- contributed the source. Defaults to (NULL, TRUE) for repos
+-- that haven't configured attribution (the migration's back-fill).
+SELECT contributor_display_name, contributor_anonymous FROM repositories WHERE id = $1;
+
+-- name: SetRepositoryContributor :exec
+-- Upsert the per-repo contributor identity. Called by the
+-- SetContributor handler (PUT .../settings/contributor). The
+-- handler validates the combination before this call: when
+-- anonymous=TRUE the display_name MUST be NULL/empty (the handler
+-- passes NULL so the column stays clean); when anonymous=FALSE
+-- the display_name MUST be a non-empty trimmed string of <=120
+-- chars. Omitted fields are not supported here — the handler
+-- resolves "keep current" before calling this, so the SQL always
+-- writes both columns.
+UPDATE repositories
+SET contributor_display_name = $2,
+    contributor_anonymous = $3,
+    updated_at = now()
+WHERE id = $1;

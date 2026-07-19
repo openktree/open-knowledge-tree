@@ -654,6 +654,24 @@ func (h *RepositorySettings) GetSettings(w http.ResponseWriter, r *http.Request)
 		allowedContentTypesVal = nil
 	}
 
+	// Per-repo contributor identity (migration 0050). Surfaced so
+	// the settings page load shows the current state without a
+	// second round-trip. Defaults to (nil, true) — anonymous — for
+	// repos that haven't configured attribution.
+	contributor, contributorErr := h.deps.Store.GetRepositoryContributor(r.Context(), repoID)
+	var contributorDisplayName interface{}
+	contributorAnonymous := true
+	if contributorErr == nil {
+		contributorAnonymous = contributor.ContributorAnonymous
+		if contributor.ContributorDisplayName != nil {
+			contributorDisplayName = *contributor.ContributorDisplayName
+		} else {
+			contributorDisplayName = nil
+		}
+	} else {
+		log.Printf("repository_settings: reading contributor for GetSettings: %v", contributorErr)
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"providers":             liveList,
 		"orphaned_providers":    orphanList,
@@ -676,6 +694,8 @@ func (h *RepositorySettings) GetSettings(w http.ResponseWriter, r *http.Request)
 		"registry_push_level":   pushLevel,
 		"registry_pull_level":   pullLevel,
 		"allowed_content_types": allowedContentTypesVal,
+		"contributor_display_name": contributorDisplayName,
+		"contributor_anonymous":    contributorAnonymous,
 	})
 }
 
@@ -2089,4 +2109,147 @@ func globalPromptsetDefault(h *RepositorySettings, fallback string) string {
 		return h.deps.Config.Providers.PromptsetDefault
 	}
 	return fallback
+}
+
+// maxContributorDisplayNameLen is the longest display name the
+// SetContributor handler accepts. The column is TEXT (no DB-level
+// cap); this is the application-level guard against a 1MB payload.
+const maxContributorDisplayNameLen = 120
+
+// GetContributor handles GET /repositories/{repoID}/settings/contributor.
+//
+// Returns the repo's contributor identity: display_name (string or
+// null) and anonymous (bool). Defaults to (null, true) — anonymous
+// — for repos that haven't configured attribution. The
+// contribute_source worker reads this (via the store query, not
+// this HTTP endpoint) to decide what to send on PushSource.
+func (h *RepositorySettings) GetContributor(w http.ResponseWriter, r *http.Request) {
+	repoID, ok := parseRepoID(w, r)
+	if !ok {
+		return
+	}
+	row, err := h.deps.Store.GetRepositoryContributor(r.Context(), repoID)
+	if err != nil {
+		// The row must exist (the repo was created via
+		// CreateRepository, which inserted it); treat any error
+		// as a 500 rather than fabricating a default.
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read contributor identity")
+		return
+	}
+	var name interface{}
+	if row.ContributorDisplayName != nil {
+		name = *row.ContributorDisplayName
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"display_name": name,
+		"anonymous":    row.ContributorAnonymous,
+	})
+}
+
+// SetContributor handles PUT /repositories/{repoID}/settings/contributor.
+//
+// Updates the repo's contributor identity. The body is
+// { "display_name": string|null, "anonymous": bool }. Both fields
+// are optional; omitting one leaves it unchanged.
+//
+// Validation:
+//   - When anonymous=true, display_name MUST be null or empty. The
+//     handler clears the stored name (writes NULL) so the column
+//     stays clean and the contribute worker sends the canonical
+//     "anonymous" marker (display_name="" + anonymous=true).
+//   - When anonymous=false, display_name MUST be a non-empty
+//     trimmed string of <=120 chars.
+//   - At least one field must be present.
+func (h *RepositorySettings) SetContributor(w http.ResponseWriter, r *http.Request) {
+	repoID, ok := parseRepoID(w, r)
+	if !ok {
+		return
+	}
+	// Read the raw body first so we can detect field presence
+	// (Go's *string / *bool can't distinguish absent from null).
+	rawBody, rawErr := io.ReadAll(r.Body)
+	if rawErr != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	var body struct {
+		DisplayName *string `json:"display_name"`
+		Anonymous   *bool   `json:"anonymous"`
+	}
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var rawPresent struct {
+		DisplayName json.RawMessage `json:"display_name"`
+		Anonymous   json.RawMessage `json:"anonymous"`
+	}
+	_ = json.Unmarshal(rawBody, &rawPresent)
+	namePresent := len(rawPresent.DisplayName) > 0
+	anonPresent := len(rawPresent.Anonymous) > 0
+	if !namePresent && !anonPresent {
+		httputil.WriteError(w, http.StatusBadRequest, "must set display_name or anonymous")
+		return
+	}
+
+	// Resolve current values so an omitted field keeps its value.
+	cur, err := h.deps.Store.GetRepositoryContributor(r.Context(), repoID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read current contributor identity")
+		return
+	}
+	newAnonymous := cur.ContributorAnonymous
+	if anonPresent {
+		newAnonymous = *body.Anonymous
+	}
+	// Resolve the new display_name. When namePresent, the client
+	// either sent a string or null. When absent, keep the current
+	// stored value (a *string we read back from the row).
+	var newNamePtr *string
+	if namePresent {
+		if body.DisplayName != nil {
+			trimmed := strings.TrimSpace(*body.DisplayName)
+			newNamePtr = &trimmed
+		} else {
+			newNamePtr = nil // explicit null
+		}
+	} else {
+		newNamePtr = cur.ContributorDisplayName
+	}
+
+	// Combination validation.
+	if newAnonymous {
+		// anonymous=true ⇒ display_name must be empty/null. Clear
+		// it so the column stays clean.
+		newNamePtr = nil
+	} else {
+		// anonymous=false ⇒ display_name must be non-empty and
+		// within the length cap.
+		if newNamePtr == nil || *newNamePtr == "" {
+			httputil.WriteError(w, http.StatusBadRequest, "display_name is required when anonymous is false")
+			return
+		}
+		if len(*newNamePtr) > maxContributorDisplayNameLen {
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("display_name must be at most %d characters", maxContributorDisplayNameLen))
+			return
+		}
+	}
+
+	if err := h.deps.Store.SetRepositoryContributor(r.Context(), store.SetRepositoryContributorParams{
+		ID:                     repoID,
+		ContributorDisplayName: newNamePtr,
+		ContributorAnonymous:   newAnonymous,
+	}); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update contributor identity")
+		return
+	}
+
+	var respName interface{}
+	if newNamePtr != nil {
+		respName = *newNamePtr
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"display_name": respName,
+		"anonymous":    newAnonymous,
+	})
 }

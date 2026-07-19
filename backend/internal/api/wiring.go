@@ -684,6 +684,8 @@ func (h *Handler) repoRoutes(r chi.Router) {
 			r.Put("/settings/content-types", h.repoPerm("repository", "manage", h.repoSettings.SetContentTypes))
 		r.Get("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.GetPromptset))
 		r.Put("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.SetPromptset))
+		r.Get("/settings/contributor", h.repoPerm("repository", "manage", h.repoSettings.GetContributor))
+		r.Put("/settings/contributor", h.repoPerm("repository", "manage", h.repoSettings.SetContributor))
 
 			// Remote registry browse / pull.
 			if h.remote != nil {

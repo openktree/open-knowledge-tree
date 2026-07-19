@@ -375,7 +375,15 @@ func (c *Client) FetchDecompositionRaw(ctx context.Context, sourceID, modelID st
 // The content fields (parsedText, parsedMarkdown) are stored in the
 // registry's S3 object so pulling repos can import the extracted
 // content without re-fetching the URL.
-func (c *Client) PushSource(ctx context.Context, sourceURL, doi, sha256, title, parsedText, parsedMarkdown string) (string, error) {
+//
+// contributor carries the repo's attribution identity (display_name
+// + anonymous flag). When anonymous is true the caller passes
+// display_name="" so the registry records the canonical "anonymous"
+// marker; when false the display_name is the human-readable label
+// pulling repos see on the source. A nil contributor is treated as
+// anonymous (legacy behavior — the registry received no contributor
+// field before this argument shipped).
+func (c *Client) PushSource(ctx context.Context, sourceURL, doi, sha256, title, parsedText, parsedMarkdown string, contributor *Contributor) (string, error) {
 	if c.baseURL == "" {
 		return "", ErrRegistryDisabled
 	}
@@ -388,6 +396,12 @@ func (c *Client) PushSource(ctx context.Context, sourceURL, doi, sha256, title, 
 			"text":    parsedText,
 			"markdown": parsedMarkdown,
 		},
+	}
+	if contributor != nil {
+		body["contributor"] = map[string]interface{}{
+			"display_name": contributor.DisplayName,
+			"anonymous":    contributor.Anonymous,
+		}
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -416,6 +430,17 @@ func (c *Client) PushSource(ctx context.Context, sourceURL, doi, sha256, title, 
 		return "", fmt.Errorf("registry: decoding push source response: %w", err)
 	}
 	return result.ID, nil
+}
+
+// Contributor is the attribution identity a repo attaches to the
+// sources it pushes to the registry. Carried on PushSource so
+// pulling repos can see who contributed a decomposition. When
+// Anonymous is true, DisplayName should be empty (the caller
+// normalizes this — see Client.PushSource); the registry records
+// the canonical "anonymous" marker and pulling repos see no name.
+type Contributor struct {
+	DisplayName string `json:"display_name"`
+	Anonymous   bool   `json:"anonymous"`
 }
 
 // PushDecomposition pushes a decomposition package to the registry.

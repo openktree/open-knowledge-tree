@@ -1,4 +1,4 @@
-// @okt-page-allow-large: thin orchestrator composing 8 sibling panels; splitting further would contrive a layer
+// @okt-page-allow-large: thin orchestrator composing 9 sibling panels; splitting further would contrive a layer
 import { createResource, createSignal, Show } from "solid-js";
 import { useParams } from "@solidjs/router";
 import { api } from "../../services/api";
@@ -14,6 +14,7 @@ import ContextsPanel from "./ContextsPanel";
 import ContextMappingsPanel from "./ContextMappingsPanel";
 import PromptsetPanel from "./PromptsetPanel";
 import ContentTypesPanel from "./ContentTypesPanel";
+import ContributorPanel from "./ContributorPanel";
 
 // RepositorySettings is the repo-admin settings surface (distinct
 // from the global /repositories page). Gated by repository:manage.
@@ -77,6 +78,13 @@ export default function RepositorySettings() {
           <ContentTypesPanel
             repoID={repoID}
             allowedContentTypes={() => data().allowed_content_types}
+            onChanged={refetch}
+            onAlert={setAlert}
+          />
+          <ContributorPanel
+            repoID={repoID}
+            displayName={() => data().contributor_display_name}
+            anonymous={() => data().contributor_anonymous}
             onChanged={refetch}
             onAlert={setAlert}
           />

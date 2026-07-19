@@ -376,6 +376,8 @@ type Repository struct {
 	ActivePromptsetHash     *string            `json:"active_promptset_hash"`
 	AcceptedPromptsetHashes []string           `json:"accepted_promptset_hashes"`
 	AllowedContentTypes     []string           `json:"allowed_content_types"`
+	ContributorDisplayName  *string            `json:"contributor_display_name"`
+	ContributorAnonymous    bool               `json:"contributor_anonymous"`
 }
 
 type Session struct {

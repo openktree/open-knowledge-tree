@@ -823,6 +823,27 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
+
+  // getRepositoryContributor returns the repo's contributor
+  // identity ({ display_name: string|null, anonymous: bool }).
+  // Used by the RepositorySettings ContributorPanel so the admin
+  // can see whether pushes to the registry are attributed to a
+  // display name or sent anonymously.
+  getRepositoryContributor(slug) {
+    return request(`/repositories/${slug}/settings/contributor`);
+  },
+
+  // setRepositoryContributor updates the repo's contributor
+  // identity. Body: { display_name?: string|null, anonymous?: bool }.
+  // When anonymous=true the server clears display_name; when
+  // anonymous=false display_name must be a non-empty string.
+  // Omit either field to leave it unchanged.
+  setRepositoryContributor(slug, body) {
+    return request(`/repositories/${slug}/settings/contributor`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
 };
 
 // usageQS builds the query string shared by the AI usage endpoints.

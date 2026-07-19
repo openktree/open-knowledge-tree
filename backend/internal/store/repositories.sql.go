@@ -14,7 +14,7 @@ import (
 const createRepository = `-- name: CreateRepository :one
 INSERT INTO repositories (name, slug, description, owner_id, database_name, tier)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types
+RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types, contributor_display_name, contributor_anonymous
 `
 
 type CreateRepositoryParams struct {
@@ -57,12 +57,14 @@ func (q *Queries) CreateRepository(ctx context.Context, arg CreateRepositoryPara
 		&i.ActivePromptsetHash,
 		&i.AcceptedPromptsetHashes,
 		&i.AllowedContentTypes,
+		&i.ContributorDisplayName,
+		&i.ContributorAnonymous,
 	)
 	return i, err
 }
 
 const deleteRepository = `-- name: DeleteRepository :one
-DELETE FROM repositories WHERE id = $1 RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types
+DELETE FROM repositories WHERE id = $1 RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types, contributor_display_name, contributor_anonymous
 `
 
 func (q *Queries) DeleteRepository(ctx context.Context, id pgtype.UUID) (Repository, error) {
@@ -89,6 +91,8 @@ func (q *Queries) DeleteRepository(ctx context.Context, id pgtype.UUID) (Reposit
 		&i.ActivePromptsetHash,
 		&i.AcceptedPromptsetHashes,
 		&i.AllowedContentTypes,
+		&i.ContributorDisplayName,
+		&i.ContributorAnonymous,
 	)
 	return i, err
 }
@@ -141,7 +145,7 @@ func (q *Queries) GetRepositoryAutoContribute(ctx context.Context, id pgtype.UUI
 }
 
 const getRepositoryByID = `-- name: GetRepositoryByID :one
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories WHERE id = $1
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types, contributor_display_name, contributor_anonymous FROM repositories WHERE id = $1
 `
 
 func (q *Queries) GetRepositoryByID(ctx context.Context, id pgtype.UUID) (Repository, error) {
@@ -168,12 +172,14 @@ func (q *Queries) GetRepositoryByID(ctx context.Context, id pgtype.UUID) (Reposi
 		&i.ActivePromptsetHash,
 		&i.AcceptedPromptsetHashes,
 		&i.AllowedContentTypes,
+		&i.ContributorDisplayName,
+		&i.ContributorAnonymous,
 	)
 	return i, err
 }
 
 const getRepositoryBySlug = `-- name: GetRepositoryBySlug :one
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories WHERE slug = $1
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types, contributor_display_name, contributor_anonymous FROM repositories WHERE slug = $1
 `
 
 func (q *Queries) GetRepositoryBySlug(ctx context.Context, slug string) (Repository, error) {
@@ -200,7 +206,33 @@ func (q *Queries) GetRepositoryBySlug(ctx context.Context, slug string) (Reposit
 		&i.ActivePromptsetHash,
 		&i.AcceptedPromptsetHashes,
 		&i.AllowedContentTypes,
+		&i.ContributorDisplayName,
+		&i.ContributorAnonymous,
 	)
+	return i, err
+}
+
+const getRepositoryContributor = `-- name: GetRepositoryContributor :one
+SELECT contributor_display_name, contributor_anonymous FROM repositories WHERE id = $1
+`
+
+type GetRepositoryContributorRow struct {
+	ContributorDisplayName *string `json:"contributor_display_name"`
+	ContributorAnonymous   bool    `json:"contributor_anonymous"`
+}
+
+// Single-row lookup of the per-repo contributor identity
+// (display_name + anonymous flag). Read by contribute_source to
+// decide what to send on PushSource: when anonymous=true the
+// worker sends display_name="" + anonymous=true (the registry's
+// canonical "anonymous" marker); when anonymous=false it sends
+// the stored display_name so pulling repos can see who
+// contributed the source. Defaults to (NULL, TRUE) for repos
+// that haven't configured attribution (the migration's back-fill).
+func (q *Queries) GetRepositoryContributor(ctx context.Context, id pgtype.UUID) (GetRepositoryContributorRow, error) {
+	row := q.db.QueryRow(ctx, getRepositoryContributor, id)
+	var i GetRepositoryContributorRow
+	err := row.Scan(&i.ContributorDisplayName, &i.ContributorAnonymous)
 	return i, err
 }
 
@@ -323,7 +355,7 @@ func (q *Queries) GetRepositorySyncLevels(ctx context.Context, id pgtype.UUID) (
 }
 
 const listAllRepositories = `-- name: ListAllRepositories :many
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories ORDER BY created_at DESC
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types, contributor_display_name, contributor_anonymous FROM repositories ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAllRepositories(ctx context.Context) ([]Repository, error) {
@@ -356,6 +388,8 @@ func (q *Queries) ListAllRepositories(ctx context.Context) ([]Repository, error)
 			&i.ActivePromptsetHash,
 			&i.AcceptedPromptsetHashes,
 			&i.AllowedContentTypes,
+			&i.ContributorDisplayName,
+			&i.ContributorAnonymous,
 		); err != nil {
 			return nil, err
 		}
@@ -368,7 +402,7 @@ func (q *Queries) ListAllRepositories(ctx context.Context) ([]Repository, error)
 }
 
 const listRepositoriesByOwner = `-- name: ListRepositoriesByOwner :many
-SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types FROM repositories WHERE owner_id = $1 ORDER BY created_at DESC
+SELECT id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types, contributor_display_name, contributor_anonymous FROM repositories WHERE owner_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListRepositoriesByOwner(ctx context.Context, ownerID pgtype.UUID) ([]Repository, error) {
@@ -401,6 +435,8 @@ func (q *Queries) ListRepositoriesByOwner(ctx context.Context, ownerID pgtype.UU
 			&i.ActivePromptsetHash,
 			&i.AcceptedPromptsetHashes,
 			&i.AllowedContentTypes,
+			&i.ContributorDisplayName,
+			&i.ContributorAnonymous,
 		); err != nil {
 			return nil, err
 		}
@@ -470,6 +506,34 @@ type SetRepositoryAutoContributeParams struct {
 // SetAutoContribute handler (PUT .../settings/auto-contribute).
 func (q *Queries) SetRepositoryAutoContribute(ctx context.Context, arg SetRepositoryAutoContributeParams) error {
 	_, err := q.db.Exec(ctx, setRepositoryAutoContribute, arg.ID, arg.AutoContribute)
+	return err
+}
+
+const setRepositoryContributor = `-- name: SetRepositoryContributor :exec
+UPDATE repositories
+SET contributor_display_name = $2,
+    contributor_anonymous = $3,
+    updated_at = now()
+WHERE id = $1
+`
+
+type SetRepositoryContributorParams struct {
+	ID                     pgtype.UUID `json:"id"`
+	ContributorDisplayName *string     `json:"contributor_display_name"`
+	ContributorAnonymous   bool        `json:"contributor_anonymous"`
+}
+
+// Upsert the per-repo contributor identity. Called by the
+// SetContributor handler (PUT .../settings/contributor). The
+// handler validates the combination before this call: when
+// anonymous=TRUE the display_name MUST be NULL/empty (the handler
+// passes NULL so the column stays clean); when anonymous=FALSE
+// the display_name MUST be a non-empty trimmed string of <=120
+// chars. Omitted fields are not supported here — the handler
+// resolves "keep current" before calling this, so the SQL always
+// writes both columns.
+func (q *Queries) SetRepositoryContributor(ctx context.Context, arg SetRepositoryContributorParams) error {
+	_, err := q.db.Exec(ctx, setRepositoryContributor, arg.ID, arg.ContributorDisplayName, arg.ContributorAnonymous)
 	return err
 }
 
@@ -564,7 +628,7 @@ const updateRepository = `-- name: UpdateRepository :one
 UPDATE repositories
 SET name = $2, description = $3, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types
+RETURNING id, name, slug, description, owner_id, database_name, tier, created_at, updated_at, registry_id, auto_contribute, registry_enabled, unmapped_context_policy, catch_all_context, allowed_models, registry_push_level, registry_pull_level, active_promptset_hash, accepted_promptset_hashes, allowed_content_types, contributor_display_name, contributor_anonymous
 `
 
 type UpdateRepositoryParams struct {
@@ -597,6 +661,8 @@ func (q *Queries) UpdateRepository(ctx context.Context, arg UpdateRepositoryPara
 		&i.ActivePromptsetHash,
 		&i.AcceptedPromptsetHashes,
 		&i.AllowedContentTypes,
+		&i.ContributorDisplayName,
+		&i.ContributorAnonymous,
 	)
 	return i, err
 }
