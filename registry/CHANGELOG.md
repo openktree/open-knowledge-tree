@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.1.0...registry-v1.2.0) (2026-07-19)
+
+
+### Features
+
+* promptsets system + registry search/cache adapters + content-type gate ([8d2d2db](https://github.com/openktree/open-knowledge-tree/commit/8d2d2dbad257fa6ac6b68d93a9c6c64c10531fbb))
+* **registry:** bound heavy-op concurrency and enable autostop on prod ([95e2bb8](https://github.com/openktree/open-knowledge-tree/commit/95e2bb8683c19cfa474b16b620002f6a99317b69))
+
+
+### Bug Fixes
+
+* **registry:** scale prod VM to shared-cpu-2x / 4GB ([d8f8dea](https://github.com/openktree/open-knowledge-tree/commit/d8f8dea2fc91daeb57aa46be78df9e676516b752))
+* **registry:** surface decode errors and drop 30s ReadTimeout ([a412c74](https://github.com/openktree/open-knowledge-tree/commit/a412c74c404cba61593b8086232d342996b6723a))
+
 ## [1.1.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.0.0...registry-v1.1.0) (2026-07-18)
 
 
