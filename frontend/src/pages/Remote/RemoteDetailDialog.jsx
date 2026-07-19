@@ -49,15 +49,27 @@ export default function RemoteDetailDialog(props) {
   });
 
   const fetchDecompData = async (model) => {
-    // Always proxy through the backend. The backend's GetDecomposition
-    // handler prefers the registry's presigned URL to fetch the
-    // decomposition directly from R2/MinIO (avoiding the registry's
-    // in-memory re-marshal and the pullSem bottleneck) and streams
-    // the raw JSON to the browser. Fetching the presigned URL from
-    // the browser directly fails with CORS on R2 — the browser
-    // can't reach the R2 endpoint with a cross-origin request
-    // unless the bucket has CORS configured, which we don't manage
-    // from the registry.
+    // Direct-from-R2 fast path: when the registry provides a
+    // presigned S3 URL on the decomp list, fetch the decomposition
+    // directly from object storage. The R2 bucket has CORS
+    // configured to allow the frontend origins (prod and
+    // localhost dev), so the browser can make the cross-origin
+    // request. This skips the backend entirely — no proxy hop,
+    // no backend memory buffer, no backend CPU on the parse.
+    //
+    // Falls back to the backend proxy endpoint when:
+    //   - the registry doesn't issue a presigned URL (filesystem
+    //     backend, dev mode, or older registry)
+    //   - the direct fetch fails for any reason (network error,
+    //     expired URL, CORS misconfig on a new origin)
+    if (model.presigned_url) {
+      try {
+        const res = await fetch(model.presigned_url);
+        if (res.ok) return res.json();
+      } catch (err) {
+        // fall through to proxy
+      }
+    }
     return api.getRemoteDecomposition(props.slug, props.source.id, model.model_id);
   };
 
