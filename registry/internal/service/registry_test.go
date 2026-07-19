@@ -95,7 +95,7 @@ func newTestRegistry(t *testing.T, storeDelay time.Duration) (*Registry, *mockSt
 		t.Fatalf("creating default repo: %v", err)
 	}
 	ms := &mockStorage{storeDelay: storeDelay}
-	r := New(s, ms, 3600)
+	r := New(s, ms, 3600, 0, 0)
 	return r, ms
 }
 

@@ -84,7 +84,7 @@ func main() {
 		log.Fatalf("unknown storage backend: %s", cfg.Storage.Backend)
 	}
 
-	svc := service.New(mstore, fstore, cfg.S3.PresignTTL)
+	svc := service.New(mstore, fstore, cfg.S3.PresignTTL, cfg.Concurrency.Push, cfg.Concurrency.Pull)
 	router := api.NewRouter(svc, mstore, cfg)
 
 	if err := svc.EnsureDefaultRepo(context.Background()); err != nil {
@@ -108,6 +108,7 @@ func main() {
 		}
 	}
 	log.Printf("  auth mode: %s", cfg.Auth.AuthMode)
+	log.Printf("  concurrency: push=%d, pull=%d", cfg.Concurrency.Push, cfg.Concurrency.Pull)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

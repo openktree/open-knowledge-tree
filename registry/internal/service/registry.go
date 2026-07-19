@@ -38,17 +38,60 @@ type Registry struct {
 	store      store.MetadataStore
 	storage    Storage
 	presignTTL time.Duration
+	// pushSem/pullSem bound the number of in-flight heavy-memory
+	// operations. Each push/pull of a decomposition can hold ~80–
+	// 100MB (request body + re-marshalled JSON + struct
+	// amplification of the embeddings map). Without a cap, a
+	// burst of concurrent pushes OOM-kills the VM; the semaphore
+	// queues excess requests until an in-flight one completes.
+	// nil = unbounded (tests, opt-out).
+	pushSem chan struct{}
+	pullSem chan struct{}
 }
 
-func New(mstore store.MetadataStore, s3store Storage, presignTTL int) *Registry {
+// New constructs a Registry. push/pull are the concurrency caps
+// for heavy-memory operations (0 or negative = unbounded).
+func New(mstore store.MetadataStore, s3store Storage, presignTTL int, push, pull int) *Registry {
 	ttl := time.Duration(presignTTL) * time.Second
 	if ttl <= 0 {
 		ttl = 1 * time.Hour
 	}
-	return &Registry{
+	r := &Registry{
 		store:      mstore,
 		storage:    s3store,
 		presignTTL: ttl,
+	}
+	if push > 0 {
+		r.pushSem = make(chan struct{}, push)
+	}
+	if pull > 0 {
+		r.pullSem = make(chan struct{}, pull)
+	}
+	return r
+}
+
+// acquire blocks until a semaphore slot is available or ctx is
+// cancelled. Returns nil on success, ctx.Err() on cancellation
+// (in which case no slot was acquired).
+func acquire(ctx context.Context, sem chan struct{}) error {
+	if sem == nil {
+		return nil
+	}
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func release(sem chan struct{}) {
+	if sem == nil {
+		return
+	}
+	select {
+	case <-sem:
+	default:
 	}
 }
 
@@ -273,6 +316,11 @@ func (r *Registry) findExistingSource(ctx context.Context, data *model.SourceDat
 }
 
 func (r *Registry) PushDecomposition(ctx context.Context, sourceID string, decomp *model.DecompositionPackage) (*model.PushResult, error) {
+	if err := acquire(ctx, r.pushSem); err != nil {
+		return nil, fmt.Errorf("waiting for push concurrency slot: %w", err)
+	}
+	defer release(r.pushSem)
+
 	now := time.Now().UTC()
 	originalModelID := decomp.ModelID
 	sanitizedModelID := sanitizeModelID(originalModelID)
@@ -366,6 +414,11 @@ func (r *Registry) PushDecomposition(ctx context.Context, sourceID string, decom
 }
 
 func (r *Registry) PullSource(ctx context.Context, sourceID string) (*model.SourcePackage, error) {
+	if err := acquire(ctx, r.pullSem); err != nil {
+		return nil, fmt.Errorf("waiting for pull concurrency slot: %w", err)
+	}
+	defer release(r.pullSem)
+
 	s3Key := SourceKey(sourceID)
 	data, _, err := r.storage.ReadAll(ctx, s3Key)
 	if err != nil {
@@ -416,6 +469,11 @@ func (r *Registry) PullSource(ctx context.Context, sourceID string) (*model.Sour
 }
 
 func (r *Registry) PullDecomposition(ctx context.Context, sourceID, modelID string) (*model.DecompositionPackage, error) {
+	if err := acquire(ctx, r.pullSem); err != nil {
+		return nil, fmt.Errorf("waiting for pull concurrency slot: %w", err)
+	}
+	defer release(r.pullSem)
+
 	s3Key := DecompKey(sourceID, sanitizeModelID(modelID))
 	data, _, err := r.storage.ReadAll(ctx, s3Key)
 	if err != nil {
