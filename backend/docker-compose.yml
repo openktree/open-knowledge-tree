@@ -17,7 +17,6 @@ x-flaresolverr-health: &flaresolverr-health
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: okt-postgres
     # max_connections=300: the dev stack runs every queue (LLM
     # extraction/summarization/synthesis at 100 workers each)
     # against one Postgres, so the default 100 saturates under
@@ -60,7 +59,6 @@ services:
   # on the api/api-dev containers (already done below).
   postgres-tasks:
     image: postgres:16-alpine
-    container_name: okt-postgres-tasks
     environment:
       POSTGRES_USER: okt
       POSTGRES_PASSWORD: okt_dev
@@ -116,7 +114,6 @@ services:
   # healthcheck definition stays in one place.
   flaresolverr:
     image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
-    container_name: okt-flaresolverr
     ports:
       - "8191:8191"
     healthcheck: *flaresolverr-health
@@ -126,7 +123,6 @@ services:
 
   flaresolverr2:
     image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
-    container_name: okt-flaresolverr2
     ports:
       - "8192:8191"
     healthcheck: *flaresolverr-health
@@ -136,7 +132,6 @@ services:
 
   flaresolverr3:
     image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
-    container_name: okt-flaresolverr3
     ports:
       - "8193:8191"
     healthcheck: *flaresolverr-health
@@ -148,7 +143,6 @@ services:
     build:
       context: ../registry
       dockerfile: Dockerfile.dev
-    container_name: okt-registry-dev
     environment:
       REGISTRY_PORT: "8081"
       REGISTRY_DATABASE_DRIVER: sqlite
@@ -184,7 +178,6 @@ services:
   # serper/openalex env-gated pattern).
   qdrant:
     image: qdrant/qdrant:v1.18
-    container_name: okt-qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -214,7 +207,6 @@ services:
 
   api:
     build: .
-    container_name: okt-api
     command: --mode=api
     environment:
       DATABASE_HOST: postgres
@@ -331,7 +323,6 @@ services:
 
   frontend:
     build: ../frontend
-    container_name: okt-frontend
     ports:
       - "3000:80"
     depends_on:
@@ -343,7 +334,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: okt-api-dev
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
@@ -421,7 +411,6 @@ services:
       context: ../frontend
       dockerfile: Dockerfile
       target: builder
-    container_name: okt-frontend-dev
     command: npx vite --host 0.0.0.0 --port 5173
     environment:
       VITE_API_TARGET: http://api-dev:8080
@@ -436,7 +425,6 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: okt-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -456,7 +444,6 @@ services:
 
   test-postgres:
     image: postgres:16-alpine
-    container_name: okt-test-postgres
     environment:
       POSTGRES_USER: okt
       POSTGRES_PASSWORD: okt_test
@@ -491,7 +478,6 @@ services:
     build:
       context: ../docs
       dockerfile: Dockerfile
-    container_name: okt-docs
     ports:
       - "3002:80"
     restart: unless-stopped

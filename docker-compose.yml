@@ -31,7 +31,6 @@ x-flaresolverr-health: &flaresolverr-health
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: okt-postgres
     # max_connections=300: see backend/docker-compose.yml for rationale.
     command: postgres -c max_connections=300
     environment:
@@ -54,7 +53,6 @@ services:
   # (okt_tasks) on first boot, so no init script is needed.
   postgres-tasks:
     image: postgres:16-alpine
-    container_name: okt-postgres-tasks
     environment:
       POSTGRES_USER: okt
       POSTGRES_PASSWORD: okt_dev
@@ -72,28 +70,24 @@ services:
 
   flaresolverr:
     image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
-    container_name: okt-flaresolverr
     ports:
       - "8191:8191"
     healthcheck: *flaresolverr-health
 
   flaresolverr2:
     image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
-    container_name: okt-flaresolverr2
     ports:
       - "8192:8191"
     healthcheck: *flaresolverr-health
 
   flaresolverr3:
     image: ${FLARESOLVERR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
-    container_name: okt-flaresolverr3
     ports:
       - "8193:8191"
     healthcheck: *flaresolverr-health
 
   qdrant:
     image: qdrant/qdrant:v1.18
-    container_name: okt-qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -114,7 +108,6 @@ services:
 
   api:
     image: ghcr.io/openktree/api:${OKT_TAG:-latest}
-    container_name: okt-api
     command: --mode=api
     environment:
       DATABASE_HOST: postgres
@@ -164,7 +157,6 @@ services:
 
   frontend:
     image: ghcr.io/openktree/frontend:${OKT_TAG:-latest}
-    container_name: okt-frontend
     ports:
       - "3000:80"
     depends_on:

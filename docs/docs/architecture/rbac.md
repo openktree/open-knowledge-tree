@@ -59,4 +59,4 @@ func (h *Handler) perm(resource, action string, next http.HandlerFunc) http.Hand
 just bootstrap-admin user@example.com
 ```
 
-This inserts the grouping row (sysadmin role on the `system` domain) and restarts `okt-api-dev` so the in-memory enforcer reloads. Idempotent.
+This inserts the grouping row (sysadmin role on the `system` domain) and restarts the dev API service so the in-memory enforcer reloads. Idempotent.

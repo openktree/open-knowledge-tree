@@ -193,4 +193,4 @@ To promote a user to system admin (sysadmin role on the `system` domain, giving 
 just bootstrap-admin user@example.com
 ```
 
-This is idempotent and restarts `okt-api-dev` so the in-memory enforcer reloads. See [Operator guide](/docs/architecture/overview).
+This is idempotent and restarts the dev API service so the in-memory enforcer reloads. See [Operator guide](/docs/architecture/overview).

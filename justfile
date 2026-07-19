@@ -154,13 +154,13 @@ check-frontend: check-pages
 	cd frontend && npm run build
 
 api-logs:
-	docker logs okt-api-dev
+	docker compose -f backend/docker-compose.yml --env-file .env --profile dev logs -f api-dev
 
 frontend-logs:
-	docker logs okt-frontend-dev
+	docker compose -f backend/docker-compose.yml --env-file .env --profile dev logs -f frontend-dev
 
 registry-logs:
-	docker logs okt-registry-dev
+	docker compose -f backend/docker-compose.yml --env-file .env --profile dev logs -f registry-dev
 
 # Lazy Shortcuts
 al: api-logs

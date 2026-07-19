@@ -121,9 +121,9 @@ just docs
 just bootstrap-admin carlos@example.com
 
 # Tail logs.
-just api-logs         # okt-api-dev
-just frontend-logs    # okt-frontend-dev
-just registry-logs    # okt-registry-dev
+just api-logs         # api-dev service (dev profile)
+just frontend-logs    # frontend-dev service (dev profile)
+just registry-logs    # registry-dev service (dev profile)
 ```
 
 See the `justfile` at the repo root for the full list of recipes.
