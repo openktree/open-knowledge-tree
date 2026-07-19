@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
@@ -202,9 +203,21 @@ func (s *Service) PullRelevantDecomposition(ctx context.Context, sourceID, model
 	if !f.AllowsModel(modelID) {
 		return nil, false, nil
 	}
-	decomp, err := s.client.PullDecomposition(ctx, sourceID, modelID)
+	// Fast path: fetch raw bytes via the registry's presigned R2
+	// URL (or fall back to the registry's PullDecomposition when
+	// presigning is unavailable). This skips the registry's
+	// in-memory re-marshal (peak ~80-100MB for a 19MB payload)
+	// and the pullSem bottleneck — the same fix the UI's source
+	// detail dialog now uses. The cache provider, retrieve_source
+	// worker, pull_all worker, and pull_remote_batch worker all
+	// flow through this method, so the fix benefits all four.
+	raw, err := s.client.FetchDecompositionRaw(ctx, sourceID, modelID)
 	if err != nil {
 		return nil, false, err
+	}
+	decomp := &DecompositionPackage{}
+	if err := json.Unmarshal(raw, decomp); err != nil {
+		return nil, false, fmt.Errorf("registry: decoding decomposition: %w", err)
 	}
 	if !f.AllowsPromptset(decomp.PromptsetHash) {
 		return nil, false, nil

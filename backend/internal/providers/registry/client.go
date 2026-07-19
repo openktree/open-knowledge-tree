@@ -346,6 +346,31 @@ func (c *Client) FetchDecompositionPresigned(ctx context.Context, sourceID, mode
 	return ref.PresignedURL, body, nil
 }
 
+// FetchDecompositionRaw fetches the raw JSON bytes of a
+// decomposition, preferring the registry's presigned R2 URL (fast
+// path: registry issues a tiny presigned URL, caller fetches the
+// raw blob from object storage) and falling back to the registry's
+// PullDecomposition endpoint (which buffers + re-marshals the blob
+// in the registry VM) when no presigned URL is available. Returns
+// the raw JSON bytes ready for json.Unmarshal in the caller.
+func (c *Client) FetchDecompositionRaw(ctx context.Context, sourceID, modelID string) ([]byte, error) {
+	_, body, err := c.FetchDecompositionPresigned(ctx, sourceID, modelID)
+	if err != nil || body == nil {
+		// Fallback: no presigned URL (filesystem backend, dev, or
+		// older registry). Use the registry's PullDecomposition
+		// which buffers + re-marshals.
+		pkg, pullErr := c.PullDecomposition(ctx, sourceID, modelID)
+		if pullErr != nil {
+			if err != nil {
+				return nil, fmt.Errorf("presigned fast path failed: %w; registry fallback failed: %v", err, pullErr)
+			}
+			return nil, fmt.Errorf("registry: pulling decomposition: %w", pullErr)
+		}
+		return json.Marshal(pkg)
+	}
+	return body, nil
+}
+
 // PushSource pushes a source to the registry. Returns the source ID.
 // The content fields (parsedText, parsedMarkdown) are stored in the
 // registry's S3 object so pulling repos can import the extracted
