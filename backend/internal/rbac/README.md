@@ -10,8 +10,13 @@ the pgx adapter that persists casbin_rule rows to Postgres.
   any handler that consults the RBAC service lets the call
   through. Granted to one or more users via the
   admin endpoint (`PUT /api/v1/admin/users/roles` with
-  `role=sysadmin`) or at bootstrap from
-  `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars.
+  `role=sysadmin`), at bootstrap from
+  `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars
+  (`bootstrap.EnsureDefaultAdmin`), or — by default, for a
+  smooth first-boot experience — to the first user to
+  register on an empty users table
+  (`bootstrap.auto_promote_first_user`, see
+  `internal/api/handler/auth.go`'s `Register` handler).
 
 * **Repository scope**: four object-typed roles —
   `repoadmin`, `editor`, `viewer`, `curator`. None of

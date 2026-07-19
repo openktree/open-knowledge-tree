@@ -13,8 +13,8 @@ If you just want the list of tools and their arguments, skip to [MCP Tools Refer
 ## Prerequisites
 
 - A running OKT instance. For local dev, `just dev` boots the full stack on `http://localhost:8080` (see [Local Dev](/docs/local-dev/overview)).
-- A user account on that instance. Register one at `POST /api/v1/auth/register` or via the frontend.
-- Your user must hold a role that grants permission on the repository you want to query (see [Architecture > RBAC](/docs/architecture/rbac)). The bootstrap admin shortcut is `just bootstrap-admin you@example.com`.
+- A user account on that instance. Register one at `POST /api/v1/auth/register` or via the frontend. By default the **first** user to register is auto-promoted to sysadmin (`bootstrap.auto_promote_first_user`), so on a fresh `docker compose up` you already have `*/*` — no extra step. For a public deployment, set `OKT_BOOTSTRAP_AUTO_PROMOTE=false` and use `just bootstrap-admin you@example.com` (dev profile only) or the `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars instead.
+- Your user must hold a role that grants permission on the repository you want to query (see [Architecture > RBAC](/docs/architecture/rbac)).
 
 ## How an MCP client authenticates
 
@@ -179,7 +179,7 @@ From here, follow the typical agent workflow in [MCP Overview](/docs/mcp/overvie
 ## Troubleshooting
 
 - **`401 Unauthorized` on the MCP endpoint** — the access token is missing, expired, or signed with the wrong secret. Re-run the OAuth flow; check `cfg.Auth.JWTSecret` matches what signed the token.
-- **`403` / tool error "permission denied"** — your user's role on the repository doesn't grant the required action. Use `just bootstrap-admin you@example.com` for a system admin (gives `*/*`), or assign a repository-scoped role via the admin API.
+- **`403` / tool error "permission denied"** — your user's role on the repository doesn't grant the required action. The first user to register on a fresh install is auto-sysadmin by default; otherwise use `just bootstrap-admin you@example.com` (dev profile only) for a system admin (gives `*/*`), or assign a repository-scoped role via the admin API.
 - **`invalid_request` from `/oauth/authorize`** — missing or non-S256 `code_challenge`. OAuth 2.1 mandates PKCE with S256; "plain" is not supported.
 - **Authorize flow never reaches consent** — the `redirect_uri` in the authorize request is not in the registered client's `redirect_uris`. Re-register the client with the correct URI.
 - **Client says "no tools found"** — confirm the well-known URLs respond (`curl http://localhost:8080/.well-known/oauth-authorization-server`). Some clients cache discovery; restart the client after a server change.

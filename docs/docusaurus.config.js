@@ -44,7 +44,7 @@ const config = {
           {
             type: "docSidebar",
             sidebarId: "reference",
-            label: "Reference",
+            label: "Docs",
             position: "left",
           },
           {

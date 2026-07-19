@@ -476,12 +476,24 @@ One-time startup data creation. Each step is idempotent and only acts when its t
 
 ```yaml
 bootstrap:
-  default_repository: true       # Create a starter repository on first boot
-  default_admin: false           # Seed a sysadmin (credentials via env vars)
+  default_repository: true         # Create a starter repository on first boot
+  auto_promote_first_user: true    # First /auth/register on empty users → sysadmin
+  default_admin: false             # Seed a sysadmin (credentials via env vars)
   # OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL: admin@example.com
   # OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD: change-me
   # OKT_BOOTSTRAP_DEFAULT_ADMIN_DISPLAY_NAME: "Default Admin"
 ```
+
+| Field | Env var | Default | Purpose |
+|-------|---------|---------|---------|
+| `auto_promote_first_user` | `OKT_BOOTSTRAP_AUTO_PROMOTE` | `true` | When true, the first successful `POST /api/v1/auth/register` on an empty users table grants the sysadmin role on the `system` domain to that user. Smooth out-of-the-box path for `docker compose up` + register. **Turn off for public deployments** so an attacker cannot become sysadmin by registering first. The env var accepts `true`/`false`/`1`/`0` (case-insensitive). |
+| `default_admin` | `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` | `false` | When true, seeds a sysadmin at boot from the `OKT_BOOTSTRAP_DEFAULT_ADMIN_{EMAIL,PASSWORD,DISPLAY_NAME}` env vars when the users table is empty. Skipped if any env var is missing or the users table is non-empty. |
+
+When both `auto_promote_first_user` and `default_admin` are enabled,
+`default_admin` wins: it runs at boot before any `Register` call, so the
+users table is non-empty by the time autopromote's `CountUsers() == 1`
+guard would fire. A log line is emitted when autopromote fires so an
+operator notices if it fires unexpectedly on a public deployment.
 
 ### `repository_presets`
 

@@ -19,7 +19,9 @@ cp .env.example .env   # then edit .env: add SERPER_API_KEY and a chat-model key
 docker compose up      # that's it
 ```
 
-Then open **<http://localhost:3000>** (frontend). The API is at
+Then open **<http://localhost:3000>** (frontend) and register — the **first**
+account is automatically your system admin (safe on localhost; see
+`.env.example` for the public-deploy toggle). The API is at
 <http://localhost:8080>.
 
 | Port  | Service |
@@ -117,7 +119,9 @@ just check-frontend
 # Docusaurus dev server (localhost:3001).
 just docs
 
-# Promote a user to system admin by email.
+# Promote an already-registered user to system admin by email (dev profile
+# only; on a fresh stack the first user to register is auto-promoted by
+# default — see bootstrap.auto_promote_first_user).
 just bootstrap-admin carlos@example.com
 
 # Tail logs.

@@ -3,12 +3,14 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	"github.com/openktree/open-knowledge-tree/backend/internal/auth"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -61,6 +63,32 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create user")
 		return
+	}
+
+	// First-user autopromotion: when the bootstrap flag is on and
+	// the users table was empty just before this insert (so the row
+	// we just wrote is the only one), grant sysadmin on the system
+	// domain so a fresh `docker compose up` + register yields a
+	// usable admin with no env vars or psql surgery. The count==1
+	// check (rather than count==0 pre-insert) avoids a race between
+	// two concurrent first-registrations: only the insert that
+	// landed first sees count==1, the second sees count==2 and is
+	// not promoted. If EnsureDefaultAdmin already seeded a user at
+	// boot, count will be >=2 here and the guard never trips, so
+	// the explicit default_admin path wins when configured. A log
+	// line is emitted so an operator notices if it fires
+	// unexpectedly on a public deployment.
+	if a.deps.Config.Bootstrap.AutoPromoteFirstUser {
+		count, err := a.deps.Store.CountUsers(r.Context())
+		if err != nil {
+			log.Printf("warn: autopromote CountUsers failed for %s: %v", user.ID, err)
+		} else if count == 1 {
+			if err := a.deps.RBAC.AddRoleForUser(string(user.ID), rbac.RoleSysAdmin, rbac.DomainSystem); err != nil {
+				log.Printf("warn: autopromote AddRoleForUser failed for %s: %v", user.ID, err)
+			} else {
+				log.Printf("bootstrap: autopromoted first registered user %q to sysadmin (system). Set bootstrap.auto_promote_first_user=false (or OKT_BOOTSTRAP_AUTO_PROMOTE=false) on a public deployment.", user.Email)
+			}
+		}
 	}
 
 	httputil.WriteJSON(w, http.StatusCreated, user)

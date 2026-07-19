@@ -187,10 +187,62 @@ Returns the protected resource metadata.
 
 ## Bootstrap admin
 
-To promote a user to system admin (sysadmin role on the `system` domain, giving `*/*`):
+There are two ways to get a sysadmin on a fresh install — pick one based on
+whether the deployment is reachable from the public internet.
+
+### First-user autopromotion (default, localhost dev)
+
+`bootstrap.auto_promote_first_user` (default `true`) makes the **first**
+successful `POST /api/v1/auth/register` on an empty users table grant the
+sysadmin role on the `system` domain to that user. So:
+
+1. `docker compose up`
+2. Open [http://localhost:3000](http://localhost:3000) and register.
+3. You're sysadmin. Done — no env vars, no scripts.
+
+Bindable from `.env` via `OKT_BOOTSTRAP_AUTO_PROMOTE` (accepts
+`true`/`false`/`1`/`0`). A log line is emitted when it fires so an
+operator notices if it fires unexpectedly.
+
+### Explicit admin from env vars (public deployments)
+
+For a publicly-exposed deployment, set `OKT_BOOTSTRAP_AUTO_PROMOTE=false`
+in `.env` and use the `default_admin` flag + the
+`OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars so an attacker cannot become
+sysadmin by registering first:
+
+```yaml
+bootstrap:
+  auto_promote_first_user: false
+  default_admin: true
+```
+
+```bash
+OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL=admin@example.com
+OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD=         # generate a strong one
+OKT_BOOTSTRAP_DEFAULT_ADMIN_DISPLAY_NAME=Default Admin
+```
+
+The admin is seeded at boot (`bootstrap.EnsureDefaultAdmin`) when the
+users table is empty. Once any user exists, the step is a no-op (the env
+vars may be removed or rotated safely).
+
+When both `auto_promote_first_user` and `default_admin` are enabled,
+`default_admin` wins: it runs at boot before any `Register` call, so the
+users table is non-empty by the time autopromote's `CountUsers() == 1`
+guard would fire.
+
+### Promoting an existing user (dev only)
+
+To promote an already-registered user to system admin (sysadmin role on
+the `system` domain, giving `*/*`):
 
 ```bash
 just bootstrap-admin user@example.com
 ```
 
-This is idempotent and restarts the dev API service so the in-memory enforcer reloads. See [Operator guide](/docs/architecture/overview).
+This is idempotent and restarts the **dev** API service so the in-memory
+enforcer reloads. It targets the dev compose profile
+(`backend/docker-compose.yml --profile dev`); there is no
+production-stack equivalent short of `psql` surgery or having an existing
+admin call `PUT /api/v1/admin/users/roles`. See [Operator guide](/docs/architecture/overview).

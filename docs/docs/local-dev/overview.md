@@ -48,7 +48,16 @@ This starts:
 | Postgres (tasks) | `okt` | `okt_dev` | 5434 |
 | MinIO | `minioadmin` | `minioadmin` | 9000/9001 |
 
-A default admin user + repository are created on first boot via `EnsureDefaultAdmin` + `EnsureDefaultRepository` (`backend/cmd/app/api.go:203-208`).
+A default repository is created on first boot via `EnsureDefaultRepository`
+(`backend/cmd/app/api.go:643-645`). The admin path is smoother: by default
+the **first user to register** is auto-promoted to sysadmin via the
+`bootstrap.auto_promote_first_user` flag (logic in
+`backend/internal/api/handler/auth.go`'s `Register` handler). For an
+explicit operator-chosen admin instead, set `bootstrap.default_admin: true`
++ the `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars, which runs
+`EnsureDefaultAdmin` at boot (`backend/cmd/app/api.go:293-295`). When both
+are enabled, `default_admin` wins (it runs first, so the users table is
+non-empty by the time autopromote's `CountUsers() == 1` guard would fire).
 
 ## Environment variables
 

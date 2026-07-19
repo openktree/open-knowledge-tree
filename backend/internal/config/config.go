@@ -157,7 +157,33 @@ type BootstrapConfig struct {
 	// non-empty. Once the admin is seeded, disabling the flag
 	// has no effect (the user persists); the env vars may be
 	// removed or rotated safely.
+	//
+	// When both DefaultAdmin and AutoPromoteFirstUser are enabled,
+	// DefaultAdmin wins: it runs at boot before any Register call,
+	// so the users table is already non-empty by the time the first
+	// Register fires and autopromote's count==1 guard never trips.
 	DefaultAdmin bool `mapstructure:"default_admin"`
+
+	// AutoPromoteFirstUser, when true, makes the first successful
+	// POST /api/v1/auth/register on an empty users table grant the
+	// sysadmin role on the system domain to the newly-created
+	// user. This is the smooth out-of-the-box path: a fresh
+	// `docker compose up` produces a usable sysadmin the moment
+	// the operator registers their first account, with no env vars
+	// or psql surgery required.
+	//
+	// The check uses CountUsers() *after* the insert, so only the
+	// registration whose insert landed first sees count==1; a
+	// concurrent second registration sees count==2 and is not
+	// promoted. The guard also means the step is a one-time event:
+	// once any user exists (including one seeded by DefaultAdmin),
+	// no future registration is auto-promoted.
+	//
+	// For a publicly-exposed deployment, set this to false and use
+	// DefaultAdmin with the OKT_BOOTSTRAP_DEFAULT_ADMIN_* env vars
+	// so an attacker cannot become sysadmin by registering first.
+	// Bindable from .env via OKT_BOOTSTRAP_AUTO_PROMOTE (see Load).
+	AutoPromoteFirstUser bool `mapstructure:"auto_promote_first_user"`
 }
 
 // DefaultAdminEnv returns the admin credentials resolved from the
@@ -1382,6 +1408,23 @@ func Load(configPath string) (*Config, error) {
 	}
 	if v := os.Getenv("REGISTRY_READ_API_KEY"); v != "" {
 		cfg.Providers.Registry.ReadAPIKey = v
+	}
+
+	// OKT_BOOTSTRAP_AUTO_PROMOTE env-var alias for
+	// bootstrap.auto_promote_first_user. Viper's AutomaticEnv maps
+	// BOOTSTRAP_AUTO_PROMOTE_FIRST_USER to the YAML key, but the
+	// shorter OKT_-prefixed name is what .env.example documents and
+	// what operators expect (matching the OKT_BOOTSTRAP_DEFAULT_ADMIN_*
+	// family). Read directly and write the config value, same pattern
+	// as the REGISTRY_* aliases above. Accepts true/false/1/0
+	// (case-insensitive); an empty value preserves the YAML setting.
+	if v := strings.TrimSpace(os.Getenv("OKT_BOOTSTRAP_AUTO_PROMOTE")); v != "" {
+		switch strings.ToLower(v) {
+		case "true", "1", "yes", "on":
+			cfg.Bootstrap.AutoPromoteFirstUser = true
+		case "false", "0", "no", "off":
+			cfg.Bootstrap.AutoPromoteFirstUser = false
+		}
 	}
 
 	// Normalize the registries list: when the operator only set the

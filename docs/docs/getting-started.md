@@ -25,6 +25,15 @@ SERPER_API_KEY=<your-serper-key>
 OPENROUTER_API_KEY=<your-openrouter-key>
 OPENALEX_EMAIL=<your-email>
 UNPAYWALL_EMAIL=<your-email>
+
+# Optional: first-boot admin (see step 3 below).
+# By default the FIRST user to register is auto-promoted to sysadmin
+# — safe for localhost. For a public deployment, uncomment and set
+# OKT_BOOTSTRAP_AUTO_PROMOTE=false plus the explicit admin below.
+# OKT_BOOTSTRAP_AUTO_PROMOTE=true
+# OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL=admin@example.com
+# OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD=<generate-a-strong-one>
+# OKT_BOOTSTRAP_DEFAULT_ADMIN_DISPLAY_NAME=Default Admin
 ```
 
 Replace the `<your-...>` values with real ones. You need **at minimum**:
@@ -47,7 +56,7 @@ UNPAYWALL_EMAIL=<your-email>
 "@ | Out-File -Encoding utf8 .env
 ```
 
-Or just open a text editor, paste the content above, and save as `.env` in the `okt` folder. Make sure the file is named `.env` and not `.env.txt`.
+Or just open a text editor, paste the content above, and save as `.env` in the `okt` folder. Make sure the file is named `.env` and not `.env.txt`. The `#`-prefixed bootstrap lines are optional — see step 3 below.
 
 ## 2. Boot the stack
 
@@ -70,7 +79,16 @@ This pulls pre-built images from GitHub Container Registry and starts everything
 
 ## 3. Open the frontend
 
-Go to **[http://localhost:3000](http://localhost:3000)**. A default admin user and repository are created on first boot.
+Go to **[http://localhost:3000](http://localhost:3000)** and register. The
+**first** account you create is automatically promoted to system admin
+(sysadmin) — this is safe on a localhost dev stack and is the smooth
+out-of-the-box path: no env vars, no `psql` surgery, no scripts. A starter
+repository is also created for you on first boot.
+
+> For a **public** deployment, set `OKT_BOOTSTRAP_AUTO_PROMOTE=false` in
+> `.env` and use the `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars to seed an
+> explicit admin instead, so an attacker cannot become sysadmin by
+> registering first. See [Configuration Reference](/docs/reference/config).
 
 ## Provider setup
 

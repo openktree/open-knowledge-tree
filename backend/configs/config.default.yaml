@@ -757,7 +757,7 @@ providers:
 
 # Bootstrap controls one-time startup data creation. Each step is
 # idempotent and only acts when its target table is empty, so the
-# settings are safe to leave on across restarts. The two steps are
+# settings are safe to leave on across restarts. The steps are
 # independent and may be enabled/disabled separately.
 #
 # `default_repository` creates a single starter repository the
@@ -766,6 +766,16 @@ providers:
 # path in GET /repositories picks the calling user, so the first
 # user to register always has a starter repo.
 #
+# `auto_promote_first_user`, when true, makes the first successful
+# POST /api/v1/auth/register on an empty users table grant the
+# sysadmin role on the system domain to that user. This is the
+# smooth out-of-the-box path: `docker compose up` + register at
+# :3000 → you're sysadmin, no env vars or psql needed. Safe on a
+# localhost dev stack. For a publicly-exposed deployment, set this
+# to false (or OKT_BOOTSTRAP_AUTO_PROMOTE=false in .env) and use
+# `default_admin` with the OKT_BOOTSTRAP_DEFAULT_ADMIN_* env vars
+# below so an attacker cannot become sysadmin by registering first.
+#
 # `default_admin` seeds a system administrator the first time
 # the app boots against an empty users table. The credentials
 # are read from the OKT_BOOTSTRAP_DEFAULT_ADMIN_{EMAIL,PASSWORD,
@@ -773,8 +783,13 @@ providers:
 # of the YAML schema). The step is skipped if the env vars are
 # missing, the users table isn't empty, or the flag is off.
 # Once the admin is seeded, the flag is no longer consulted.
+# When both `default_admin` and `auto_promote_first_user` are
+# enabled, default_admin wins (it runs at boot before any
+# Register call, so the users table is non-empty by the time
+# autopromote's count==1 guard would fire).
 bootstrap:
   default_repository: true
+  auto_promote_first_user: true
   default_admin: false
   # OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL: admin@example.com
   # OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD: change-me

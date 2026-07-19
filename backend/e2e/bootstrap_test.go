@@ -558,3 +558,264 @@ func resetUsersTable(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatalf("truncate users: %v", err)
 	}
 }
+
+// TestAuthRegisterAutopromotesFirstUser verifies that when
+// bootstrap.auto_promote_first_user is true and the users table
+// is empty, the first POST /api/v1/auth/register grants the
+// sysadmin role on the system domain to the new user. This is
+// the smooth out-of-the-box path: `docker compose up` + register
+// at :3000 → you're sysadmin, no env vars or psql needed.
+//
+// NewTestEnv starts with an empty users table (resetTestDatabase
+// drops all schemas) and Bootstrap.AutoPromoteFirstUser defaults
+// to false, so the test flips the flag explicitly. It registers
+// via the raw HTTP API (not registerTestUser, which would grant
+// sysadmin via GrantUserRole and mask the autopromote effect),
+// logs in, and asserts the admin-only GET /admin/users succeeds.
+func TestAuthRegisterAutopromotesFirstUser(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	env.Config.Bootstrap.AutoPromoteFirstUser = true
+
+	client := newAuthClient(env.BaseURL)
+
+	// Register the first user — should be auto-promoted.
+	resp, _ := client.register("first@example.com", "password123", "First")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register: expected 201, got %d", resp.StatusCode)
+	}
+
+	// Log in to get a session token.
+	resp, body := client.login("first@example.com", "password123")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &loginResp); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+	if loginResp.Token == "" {
+		t.Fatal("expected non-empty token")
+	}
+	client.token = loginResp.Token
+
+	// The admin-only GET /admin/users must succeed — this is
+	// the real proof of sysadmin: the route is gated on
+	// role:manage, which EnforceSystemAdmin short-circuits for
+	// sysadmin on the system domain.
+	resp, body = client.do("GET", "/api/v1/admin/users", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin list users: expected 200 (autopromote should have granted sysadmin), got %d: %s", resp.StatusCode, body)
+	}
+
+	// Belt-and-suspenders: confirm the casbin_rule table actually
+	// has the g, <uid>, sysadmin, system row.
+	var me struct {
+		ID string `json:"id"`
+	}
+	resp, body = client.do("GET", "/api/v1/users/me", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /users/me: expected 200, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &me); err != nil {
+		t.Fatalf("decode /users/me: %v", err)
+	}
+	var groupingCount int
+	if err := env.DB.QueryRow(context.Background(),
+		`SELECT count(*) FROM casbin_rule WHERE p_type='g' AND v0=$1 AND v1='sysadmin' AND v2='system'`,
+		me.ID,
+	).Scan(&groupingCount); err != nil {
+		t.Fatalf("count casbin grouping: %v", err)
+	}
+	if groupingCount != 1 {
+		t.Fatalf("expected 1 sysadmin grouping row for %s, got %d", me.ID, groupingCount)
+	}
+}
+
+// TestAuthRegisterDoesNotAutopromoteSecondUser verifies the
+// count==1 guard: after the first user exists (and was
+// auto-promoted), a second registration is NOT promoted. The
+// second user can log in but cannot reach the admin endpoint.
+func TestAuthRegisterDoesNotAutopromoteSecondUser(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	env.Config.Bootstrap.AutoPromoteFirstUser = true
+
+	first := newAuthClient(env.BaseURL)
+	resp, _ := first.register("first@example.com", "password123", "First")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register first: expected 201, got %d", resp.StatusCode)
+	}
+
+	// Register a second user — should NOT be promoted.
+	second := newAuthClient(env.BaseURL)
+	resp, _ = second.register("second@example.com", "password123", "Second")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register second: expected 201, got %d", resp.StatusCode)
+	}
+	resp, body := second.login("second@example.com", "password123")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login second: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &loginResp); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+	second.token = loginResp.Token
+
+	// The second user must NOT reach the admin endpoint.
+	resp, body = second.do("GET", "/api/v1/admin/users", nil)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("second user reached /admin/users — autopromote should NOT have fired for count==2")
+	}
+
+	// And no casbin grouping row for the second user.
+	var me struct {
+		ID string `json:"id"`
+	}
+	resp, body = second.do("GET", "/api/v1/users/me", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /users/me (second): expected 200, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &me); err != nil {
+		t.Fatalf("decode /users/me: %v", err)
+	}
+	var groupingCount int
+	if err := env.DB.QueryRow(context.Background(),
+		`SELECT count(*) FROM casbin_rule WHERE p_type='g' AND v0=$1 AND v1='sysadmin'`,
+		me.ID,
+	).Scan(&groupingCount); err != nil {
+		t.Fatalf("count casbin grouping: %v", err)
+	}
+	if groupingCount != 0 {
+		t.Fatalf("expected 0 sysadmin grouping rows for second user, got %d", groupingCount)
+	}
+}
+
+// TestAuthRegisterNoAutopromoteWhenFlagOff verifies the flag
+// gate: with auto_promote_first_user=false (the test env's
+// default), the first registration is NOT promoted. This is
+// the public-deployment posture.
+func TestAuthRegisterNoAutopromoteWhenFlagOff(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	env.Config.Bootstrap.AutoPromoteFirstUser = false
+
+	client := newAuthClient(env.BaseURL)
+	resp, _ := client.register("solo@example.com", "password123", "Solo")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register: expected 201, got %d", resp.StatusCode)
+	}
+	resp, body := client.login("solo@example.com", "password123")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &loginResp); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+	client.token = loginResp.Token
+
+	// Even though this is the only user, the flag is off, so
+	// no sysadmin grant. The admin endpoint must deny.
+	resp, body = client.do("GET", "/api/v1/admin/users", nil)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("flag-off user reached /admin/users — autopromote should not have fired")
+	}
+
+	// And no grouping row.
+	var me struct {
+		ID string `json:"id"`
+	}
+	resp, body = client.do("GET", "/api/v1/users/me", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /users/me: expected 200, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &me); err != nil {
+		t.Fatalf("decode /users/me: %v", err)
+	}
+	var groupingCount int
+	if err := env.DB.QueryRow(context.Background(),
+		`SELECT count(*) FROM casbin_rule WHERE p_type='g' AND v0=$1 AND v1='sysadmin'`,
+		me.ID,
+	).Scan(&groupingCount); err != nil {
+		t.Fatalf("count casbin grouping: %v", err)
+	}
+	if groupingCount != 0 {
+		t.Fatalf("expected 0 sysadmin grouping rows when flag off, got %d", groupingCount)
+	}
+}
+
+// TestAuthRegisterNoAutopromoteWhenDefaultAdminSeeded verifies
+// the two mechanisms compose: when default_admin seeds an admin
+// at boot, the users table is non-empty by the time the first
+// Register fires, so autopromote's count==1 guard never trips.
+// The self-registered user is a normal roleless user.
+func TestAuthRegisterNoAutopromoteWhenDefaultAdminSeeded(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+
+	t.Setenv("OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL", "seeded-admin@example.com")
+	t.Setenv("OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD", "supersecret123")
+	t.Setenv("OKT_BOOTSTRAP_DEFAULT_ADMIN_DISPLAY_NAME", "Seeded Admin")
+	env.Config.Bootstrap.DefaultAdmin = true
+	env.Config.Bootstrap.AutoPromoteFirstUser = true
+
+	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC)
+	if err != nil {
+		t.Fatalf("ensure admin: %v", err)
+	}
+	if !res.Created {
+		t.Fatalf("expected default admin to be seeded, got %+v", res)
+	}
+
+	// Now register a new user via the HTTP API. The users
+	// table already has 1 row (the seeded admin), so after
+	// this insert CountUsers==2 and autopromote must NOT fire.
+	client := newAuthClient(env.BaseURL)
+	resp, _ := client.register("late@example.com", "password123", "Late")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register: expected 201, got %d", resp.StatusCode)
+	}
+	resp, body := client.login("late@example.com", "password123")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &loginResp); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+	client.token = loginResp.Token
+
+	// The self-registered user must NOT be sysadmin.
+	resp, body = client.do("GET", "/api/v1/admin/users", nil)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("late user reached /admin/users — autopromote should not have fired when default_admin already seeded a user")
+	}
+
+	// And no sysadmin grouping row for the late user.
+	var me struct {
+		ID string `json:"id"`
+	}
+	resp, body = client.do("GET", "/api/v1/users/me", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /users/me: expected 200, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &me); err != nil {
+		t.Fatalf("decode /users/me: %v", err)
+	}
+	var groupingCount int
+	if err := env.DB.QueryRow(context.Background(),
+		`SELECT count(*) FROM casbin_rule WHERE p_type='g' AND v0=$1 AND v1='sysadmin'`,
+		me.ID,
+	).Scan(&groupingCount); err != nil {
+		t.Fatalf("count casbin grouping: %v", err)
+	}
+	if groupingCount != 0 {
+		t.Fatalf("expected 0 sysadmin grouping rows for late user, got %d", groupingCount)
+	}
+}
