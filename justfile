@@ -143,14 +143,54 @@ test-e2e:
 reset-repo ident:
 	cd backend && set -a && . ../.env && set +a && go run ./scripts/reset-repo {{ident}}
 
+# Re-annotate every report in a repository. Use after applying a
+# chunker change (e.g. migration 0051) that shifts sentence_index
+# values, or after raising max_facts_per_sentence, or any time you
+# want the hybrid lexical retrieval to re-run against the existing
+# report bodies. Hits the dev API on :8080 with the passed token.
+#
+#   just reannotate-reports my-repo-slug
+#   JUST_TOKEN=eyJ... just reannotate-reports my-repo-slug
+#
+# Requires curl + jq. Lists every report in the repo, then POSTs the
+# /annotate endpoint for each. The API enqueues an annotate_report
+# job per report; the worker picks them up and the report transitions
+# pending -> processing -> annotated. The token must have
+# report:update permission on the repo (a sys admin or a repo writer).
+reannotate-reports slug:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	TOKEN="$${JUST_TOKEN:-}"
+	if [ -z "$${TOKEN}" ]; then
+		echo "Set JUST_TOKEN to a valid API access token (report:update permission on {{slug}})." >&2
+		echo "Example: JUST_TOKEN=eyJ... just reannotate-reports {{slug}}" >&2
+		exit 1
+	fi
+	base="http://localhost:8080/api/v1/repositories/{{slug}}/reports"
+	echo "Listing reports in {{slug}}..."
+	ids=$$(curl -fsS -H "Authorization: Bearer $${TOKEN}" "$${base}?limit=200" | jq -r '.data[].id')
+	count=$$(echo "$${ids}" | grep -c . )
+	echo "Found $${count} report(s). Enqueuing re-annotation for each..."
+	for id in $${ids}; do
+		status=$$(curl -sS -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $${TOKEN}" "$${base}/$${id}/annotate")
+		echo "  $${id}: HTTP $${status}"
+	done
+	echo "Done. Reports will transition pending -> processing -> annotated as the worker drains the queue."
+
 # Enforces the Frontend Page Size Policy in AGENTS.md.
 # Fails (non-zero) when any flat page in frontend/src/pages/ exceeds the size budget.
 # Run from the repo root.
 check-pages:
 	cd frontend && npm run check:pages
 
-# Pre-commit gate: page size policy + frontend production build.
-check-frontend: check-pages
+# Frontend JS unit tests (vitest). Covers the lib modules
+# (wrapSentences, sentences, citedCopy) that the page-size gate
+# doesn't exercise. Run from the repo root.
+frontend-test:
+	cd frontend && npm test
+
+# Pre-commit gate: page size policy + JS unit tests + frontend production build.
+check-frontend: check-pages frontend-test
 	cd frontend && npm run build
 
 api-logs:

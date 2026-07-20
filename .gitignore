@@ -134,6 +134,30 @@ docs/build/
 docs/.docusaurus/
 
 # -----------------------------------------------------------------------------
+# AI plugin tooling (ai-plugins/)
+# -----------------------------------------------------------------------------
+# The ai-plugins/ directory hosts generated plugin files synced from
+# .opencode/agent/*.md. Only the sync scripts + generated output are
+# tracked; node_modules and local installs are not.
+ai-plugins/node_modules/
+
+# -----------------------------------------------------------------------------
+# Standalone Go utilities built into the repo root (e.g. dedup-stable)
+# -----------------------------------------------------------------------------
+# These are local scratch binaries built with `go build ./cmd/<name>`; the
+# source under backend/cmd/<name>/ is tracked, the binary is not.
+/backend/dedup-stable
+/backend/cmd/*/output
+
+# -----------------------------------------------------------------------------
+# Experiment reports (regenerable outputs under scripts/experiments/)
+# -----------------------------------------------------------------------------
+# The sweep scripts under scripts/experiments/dedup-threshold-sweep/ write
+# HTML+JSON reports into a reports/ subdir; those are regenerable and not
+# tracked. The scripts and READMEs are tracked.
+/scripts/experiments/dedup-threshold-sweep/reports/
+
+# -----------------------------------------------------------------------------
 # Local-only synthesis inputs for the examples parser
 # -----------------------------------------------------------------------------
 # The *.example.md files at the repo root are raw synthesis exports pasted

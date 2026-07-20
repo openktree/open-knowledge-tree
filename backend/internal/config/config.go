@@ -852,12 +852,29 @@ func (s SynthesisConfig) MaxRelatedSynthesesOr(def int) int {
 // "supporting", not "duplicate". MaxFactsPerSentence caps how many
 // matches a single sentence keeps (the top-N by score). MinSentenceRunes
 // skips headings/fragments too short to be worth embedding.
+//
+// LexicalSimilarityFloor gates the hybrid lexical fallback: facts the
+// tsvector search surfaces (because they share numeric/unit tokens with
+// the sentence) are re-checked against the sentence embedding and
+// dropped if their cosine similarity is below this floor. This prevents
+// apples-to-oranges matches where a sentence quoting "0.9 kg weight
+// gain" would otherwise surface a fact about "0.9 kg CO2 emissions"
+// purely on the numeric token match. The default (0.6) is intentionally
+// more lenient than the primary SimilarityThreshold (0.84) so the
+// lexical path still catches the "same number, different surrounding
+// prose" case that pure semantic search misses, but strict enough to
+// reject facts whose only overlap with the sentence is the bare
+// number. Set it to 0.0 to disable the semantic gate entirely (accept
+// every lexical hit) or to a value close to the primary threshold to
+// require near-semantic overlap too. A per-repo override lives in
+// repository_report_settings.lexical_similarity_floor.
 type ReportsConfig struct {
-	Enabled             bool                  `mapstructure:"enabled"`
-	SimilarityThreshold float64               `mapstructure:"similarity_threshold"`   // 0.84
-	MaxFactsPerSentence int                   `mapstructure:"max_facts_per_sentence"` // 5
-	MinSentenceRunes    int                   `mapstructure:"min_sentence_runes"`     // 40
-	PostureClassifier   PostureClassifierConfig `mapstructure:"posture_classifier"`
+	Enabled               bool                    `mapstructure:"enabled"`
+	SimilarityThreshold   float64                 `mapstructure:"similarity_threshold"`     // 0.84
+	LexicalSimilarityFloor float64                 `mapstructure:"lexical_similarity_floor"` // 0.6
+	MaxFactsPerSentence   int                     `mapstructure:"max_facts_per_sentence"`   // 5
+	MinSentenceRunes      int                     `mapstructure:"min_sentence_runes"`       // 40
+	PostureClassifier     PostureClassifierConfig `mapstructure:"posture_classifier"`
 }
 
 // PostureClassifierConfig configures the autocite posture classifier,
@@ -895,6 +912,23 @@ type PostureClassifierConfig struct {
 func (r ReportsConfig) SimilarityThresholdOr(def float64) float64 {
 	if r.SimilarityThreshold > 0 {
 		return r.SimilarityThreshold
+	}
+	return def
+}
+
+// LexicalSimilarityFloorOr returns the configured semantic-distance
+// floor for the lexical fallback or the default (0.6) when zero/
+// negative. The annotate_report worker fetches the candidate fact's
+// vector (via GetFactVectorsByIDs) and computes cosine similarity
+// against the sentence embedding; facts below this floor are dropped
+// even when the tsvector lexical match was exact, so the lexical
+// fallback doesn't surface apples-to-oranges matches (e.g. "0.9 kg
+// weight gain" vs "0.9 kg CO2 emissions"). A per-repo override
+// (repository_report_settings.lexical_similarity_floor) takes
+// precedence when set.
+func (r ReportsConfig) LexicalSimilarityFloorOr(def float64) float64 {
+	if r.LexicalSimilarityFloor > 0 {
+		return r.LexicalSimilarityFloor
 	}
 	return def
 }

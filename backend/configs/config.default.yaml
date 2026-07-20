@@ -477,6 +477,20 @@ providers:
   reports:
     enabled: true
     similarity_threshold: 0.7
+    # Semantic-distance floor for the hybrid lexical fallback. The
+    # annotate_report worker runs a tsvector search over facts.search_tsv
+    # for sentences that quote numeric values (percentages, effect
+    # sizes, p-values, kcal, kg, ...), catching facts the pure semantic
+    # Qdrant pass misses when the surrounding prose differs but the
+    # number matches. Each lexical hit is re-checked against the
+    # sentence embedding and dropped if cosine similarity is below this
+    # floor, preventing apples-to-oranges matches (e.g. "0.9 kg weight
+    # gain" surfacing "0.9 kg CO2 emissions"). 0.6 is more lenient than
+    # the primary 0.7 threshold so the lexical path still catches the
+    # "same number, different prose" case but strict enough to reject
+    # bare-number coincidences. Set to 0.0 to disable the semantic
+    # gate; per-repo override via repository_report_settings.
+    lexical_similarity_floor: 0.6
     max_facts_per_sentence: 5
     min_sentence_runes: 40
     # Autocite posture classifier. After Qdrant retrieval, each

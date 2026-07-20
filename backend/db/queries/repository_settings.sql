@@ -185,14 +185,21 @@ WHERE repository_id = $1;
 -- Insert or update the per-repo report annotation settings. Pass
 -- similarity_threshold NULL to inherit the global default; pass
 -- posture_classifier_enabled false to turn the LLM step off for
--- this repo without touching the global config.
+-- this repo without touching the global config; pass
+-- max_facts_per_sentence NULL to inherit the global
+-- max_facts_per_sentence (5), or a value in 1..50 to override; pass
+-- lexical_similarity_floor NULL to inherit the global default (0.6),
+-- or a value in 0..1 to override (the semantic-distance floor for the
+-- hybrid lexical fallback).
 INSERT INTO okt_system.repository_report_settings
-    (repository_id, similarity_threshold, posture_classifier_enabled)
-VALUES ($1, $2, $3)
+    (repository_id, similarity_threshold, posture_classifier_enabled, max_facts_per_sentence, lexical_similarity_floor)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (repository_id)
 DO UPDATE SET
-    similarity_threshold      = EXCLUDED.similarity_threshold,
+    similarity_threshold        = EXCLUDED.similarity_threshold,
     posture_classifier_enabled = EXCLUDED.posture_classifier_enabled,
+    max_facts_per_sentence      = EXCLUDED.max_facts_per_sentence,
+    lexical_similarity_floor    = EXCLUDED.lexical_similarity_floor,
     updated_at = now()
 RETURNING *;
 

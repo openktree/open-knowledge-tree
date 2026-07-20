@@ -65,39 +65,174 @@ export function wrapSentencesHtml(rawMarkdown, renderedHtml, highlightIndices, f
   }
 
   // Build rawOffsetOf[c] = raw markdown rune offset for plainText[c].
-  // Greedy two-pointer: advance the raw cursor over marker runes
-  // (anything that does not equal the next plain char). Cap the
-  // consecutive skip count so a real divergence degrades to
-  // "remainder unmapped" instead of looping forever.
+  //
+  // Strategy: whitespace-aware greedy two-pointer with re-anchor. The
+  // plain text is the rendered HTML's text-node content with tags
+  // stripped, so it is the raw markdown with marker runes (`#`, `*`,
+  // `_`, `[`, `]`, `(`, `)`, `>`, leading `1. ` list markers, etc.)
+  // removed. micromark also collapses structural whitespace: a heading
+  // followed by a blank line followed by a list opening (`### H\n\n1.
+  // **T...`) renders to plain text where the marker runes are gone and
+  // the whitespace runs are re-grouped (`H\n\n\nT...`). A naive
+  // char-by-char greedy matcher matches the plain `\n` against the
+  // first `\n` it finds in raw, which can be deep inside the list
+  // item's body — racing the raw cursor ahead and making every
+  // subsequent plain char unfindable. A previous version capped the
+  // skip at 256 runes and bailed, which silently dropped the rest of
+  // the document (the user saw highlights disappear at the first list
+  // block in a report — see the wrapSentences regression test for the
+  // exact fixture).
+  //
+  // The algorithm here:
+  //   1. Collapse runs of whitespace (spaces, tabs, newlines) in BOTH
+  //      plain and raw to a single canonical boundary marker before
+  //      comparing, so a plain `\n\n\n` can match a raw `\n\n1. **`
+  //      (the list marker runes between the newlines are skipped as
+  //      non-whitespace markers, and the whitespace run as a whole
+  //      consumes all whitespace runes in raw between the surrounding
+  //      non-whitespace tokens).
+  //   2. For non-whitespace plain chars, greedy-skip raw marker runes
+  //      (anything that does not equal the plain char) up to a soft
+  //      cap, then re-anchor: scan forward in raw for the next
+  //      occurrence whose preceding context matches the preceding
+  //      plain context. Pick the smallest-skip candidate that passes.
+  //   3. If no re-anchor is found, mark this plain char as a gap
+  //      (`rawOffsetOf[c] = -1`) and advance c only, leaving r where
+  //      it is so the next plain char can re-anchor. The walker thus
+  //      never bails and never drops the tail of the document.
   const raw = Array.from(rawMarkdown);
   const rawOffsetOf = new Int32Array(plainText.length).fill(-1);
   let r = 0;
-  const MAX_SKIP = 256;
+  const SOFT_SKIP = 64; // runes to skip greedily before re-anchoring
+  const REANCHOR_WINDOW = 4096; // max forward scan when re-anchoring
+  const CONTEXT_K = 4; // previous plain chars used for context check
+  const CONTEXT_WINDOW = 32; // raw runes before candidate to check context
+  const isWS = (ch) => ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+
+  // Helper: advance r to the next non-whitespace raw rune, returning
+  // the list of whitespace rune offsets consumed (so we can record
+  // where the leading whitespace plain char maps to, if needed). If the
+  // raw cursor is already at a non-whitespace rune, returns [].
+  const skipRawWS = (fromR) => {
+    const ws = [];
+    let rr = fromR;
+    while (rr < raw.length && isWS(raw[rr])) { ws.push(rr); rr++; }
+    return { next: rr, ws };
+  };
+
   for (let c = 0; c < plainText.length; c++) {
     const pc = plainText[c];
-    let skipped = 0;
-    while (r < raw.length && raw[r] !== pc) {
-      if (raw[r] === "&") {
-        // Try to decode an HTML entity in raw that resolves to `pc`.
-        const ent = tryDecodeEntity(raw, r);
-        if (ent.ch === pc) {
-          rawOffsetOf[c] = r;
-          r += ent.len;
-          break;
-        }
+
+    // Whitespace plain char: consume the ENTIRE raw whitespace run
+    // starting at r (collapsing structural whitespace). Record the
+    // first raw whitespace rune as the offset for this plain char;
+    // subsequent plain whitespace chars in the same run map to -1
+    // (gap) since the raw whitespace was already consumed. This is
+    // what makes `own:\n\n\nThe` plain match `own:\n\n1. **The` raw:
+    // the plain `\n`s collapse against the raw `\n`s, and the `1. **`
+    // markers between them are skipped as non-whitespace before the
+    // next non-whitespace plain char (`T`) is matched.
+    if (isWS(pc)) {
+      // If raw[r] is already non-whitespace, the plain whitespace run
+      // has no raw whitespace to consume (micromark inserted it); mark
+      // gap and move on.
+      if (r >= raw.length || !isWS(raw[r])) {
+        rawOffsetOf[c] = -1;
+        continue;
       }
-      r++;
-      if (++skipped > MAX_SKIP) {
-        // Stop mapping; leave remaining plainText chars unmapped.
-        c = plainText.length;
-        break;
-      }
-    }
-    if (c >= plainText.length) break;
-    if (rawOffsetOf[c] === -1 && r < raw.length && raw[r] === pc) {
+      // Consume the entire raw whitespace run; record the first rune.
       rawOffsetOf[c] = r;
       r++;
+      while (r < raw.length && isWS(raw[r])) r++;
+      // Any following plain whitespace chars in the same run are gaps.
+      while (c + 1 < plainText.length && isWS(plainText[c + 1])) {
+        c++;
+        rawOffsetOf[c] = -1;
+      }
+      continue;
     }
+
+    // Non-whitespace plain char. Skip raw marker runes (which may be
+    // whitespace-bounded structural markers like `1.`, `**`, `#`) up
+    // to SOFT_SKIP. If we hit raw whitespace while looking for a
+    // non-whitespace match, that's fine — keep skipping.
+    // Fast path: raw[r] already matches.
+    if (r < raw.length && raw[r] === pc) {
+      rawOffsetOf[c] = r;
+      r++;
+      continue;
+    }
+    if (r < raw.length && raw[r] === "&") {
+      const ent = tryDecodeEntity(raw, r);
+      if (ent.ch === pc) { rawOffsetOf[c] = r; r += ent.len; continue; }
+    }
+
+    // Greedy skip up to SOFT_SKIP runes (across whitespace).
+    let skipped = 0, foundR = -1;
+    while (r + skipped < raw.length && skipped < SOFT_SKIP) {
+      const rr = r + skipped;
+      if (raw[rr] === pc) { foundR = rr; break; }
+      if (raw[rr] === "&") {
+        const ent = tryDecodeEntity(raw, rr);
+        if (ent.ch === pc) { foundR = rr; break; }
+      }
+      skipped++;
+    }
+    if (foundR >= 0) {
+      rawOffsetOf[c] = foundR;
+      r = foundR + 1;
+      continue;
+    }
+
+    // Re-anchor: scan forward in raw for the next occurrence of pc
+    // whose preceding context matches the preceding plain context.
+    const ctxStart = Math.max(0, c - CONTEXT_K);
+    const ctxChars = [];
+    for (let k = ctxStart; k < c; k++) {
+      // Skip gap chars in context (they carry no raw offset info).
+      if (rawOffsetOf[k] >= 0) ctxChars.push(plainText[k]);
+    }
+
+    let bestR = -1;
+    const scanLimit = Math.min(raw.length, r + REANCHOR_WINDOW);
+    for (let rr = r + SOFT_SKIP; rr < scanLimit; rr++) {
+      let matches = raw[rr] === pc;
+      if (!matches && raw[rr] === "&") {
+        const ent = tryDecodeEntity(raw, rr);
+        if (ent.ch === pc) matches = true;
+      }
+      if (!matches) continue;
+      if (ctxChars.length === 0) { bestR = rr; break; }
+      // Context check: the last CONTEXT_K plain chars (with raw
+      // offsets) should appear in raw within CONTEXT_WINDOW runes
+      // before rr, in order.
+      let ctxOK = true;
+      let rawProbe = rr - 1;
+      for (let k = ctxChars.length - 1; k >= 0; k--) {
+        const need = ctxChars[k];
+        let found = false;
+        const probeFloor = Math.max(0, rawProbe - CONTEXT_WINDOW);
+        while (rawProbe >= probeFloor) {
+          if (raw[rawProbe] === need) { found = true; rawProbe--; break; }
+          if (raw[rawProbe] === "&") {
+            const ent = tryDecodeEntity(raw, rawProbe);
+            if (ent.ch === need) { found = true; rawProbe -= ent.len; break; }
+          }
+          rawProbe--;
+        }
+        if (!found) { ctxOK = false; break; }
+      }
+      if (ctxOK) { bestR = rr; break; }
+    }
+
+    if (bestR >= 0) {
+      rawOffsetOf[c] = bestR;
+      r = bestR + 1;
+      continue;
+    }
+
+    // No re-anchor found. Mark gap and advance c only (recovery).
+    rawOffsetOf[c] = -1;
   }
 
   // Compute per-text-node segment boundaries: each text node is

@@ -84,19 +84,37 @@ func NewDeduplicateFactsWorker(
 //
 // Dedup rules (per repo, cross-source, sequential):
 //
-//  1. Load `new` + `stable` facts, UUID-ascending.
-//  2. For each `new` fact nf, search Qdrant for the nearest
-//     neighbor within the same repository, excluding self, score
-//     ≥ threshold, limit=1.
+//  1. Load `new` + `stable` facts, dedup by id (the fact_sources JOIN
+//     expands multi-source facts), and sort stable-first then new
+//     (UUID-ascending within each group). The stable-first order is
+//     not strictly necessary (stable facts are never the `nf`) but
+//     makes the working set well-ordered; the new-UUID-ascending
+//     order makes the new-vs-new tie-break deterministic.
+//  2. For each `new` fact nf (skipping any that an earlier iteration
+//     already marked `to_delete` — the loser of a previous new-vs-new
+//     pair), search Qdrant for the nearest neighbor within the same
+//     repository, excluding self, score ≥ threshold, limit=1.
 //     - Hit stable m: mark nf `to_delete`; link nf's sources to m
-//     via AddFactSource.
-//     - Hit new m: the lexicographically-larger UUID loses; the
-//     survivor inherits the loser's sources via AddFactSource;
-//     the loser is marked `to_delete`.
+//     via AddFactSource. (Stable always wins over new.)
+//     - Hit new m: the current nf wins (it's already being
+//     processed); mark m `to_delete` immediately and update
+//     statusByID[m] so the loop skips m when it's reached later.
+//     The survivor inherits the loser's sources via AddFactSource.
 //     - Hit to_delete m: skip (not a valid keeper).
 //  3. Promote remaining `new` facts to `stable` (Postgres +
 //     Qdrant payload).
 //  4. Enqueue cleanup_facts for the repo.
+//
+// The new-vs-new rule ("the hit loses, not the lex-larger UUID")
+// catches same-batch duplicates that the previous rule missed. With
+// the old rule, when a new fact's nearest neighbor was a stable fact
+// from elsewhere in the repo, the new fact was marked `to_delete`
+// against the stable fact before the loop ever compared it to its
+// same-batch twin — leaving both twins `stable` after promotion
+// (one marked `to_delete` against the cross-source stable, the other
+// promoted). With the new rule, the first new fact to be processed
+// wins against its twin and the twin is skipped, so the pair always
+// collapses to one survivor.
 func (w *DeduplicateFactsWorker) Work(ctx context.Context, job *river.Job[DeduplicateFactsArgs]) error {
 	args := job.Args
 	if args.RepositoryID == "" {
@@ -158,10 +176,26 @@ func (w *DeduplicateFactsWorker) Work(ctx context.Context, job *river.Job[Dedupl
 	// by id, so we don't rely on order for dedup).
 	facts = dedupFactsByID(facts)
 
-	// Sort UUID-ascending so the "lexicographically-larger UUID
-	// loses" tie-break is deterministic regardless of the
-	// created_at order the query returned.
-	sort.Slice(facts, func(i, j int) bool {
+	// Sort stable-first, then new, UUID-ascending within each
+	// group. The order matters for the new-vs-new tie-break
+	// (see the loop below): when two new facts are near-
+	// duplicates, the one processed FIRST wins and the other
+	// is marked `to_delete` immediately, so the loop skips it
+	// when it's reached later. UUID-ascending within `new`
+	// makes the winner deterministic. Stable facts are sorted
+	// first only so the working set is well-ordered; they are
+	// never the `nf` in the loop (the `nf.Status != "new"`
+	// guard skips them).
+	sort.SliceStable(facts, func(i, j int) bool {
+		si, sj := facts[i].Status, facts[j].Status
+		if si != sj {
+			// "stable" < "new" < "to_delete" by lexicographic
+			// order happens to match what we want; be explicit
+			// anyway so a future status value doesn't silently
+			// re-order things.
+			rank := map[string]int{"stable": 0, "new": 1, "to_delete": 2}
+			return rank[si] < rank[sj]
+		}
 		return pgUUIDToString(facts[i].ID) < pgUUIDToString(facts[j].ID)
 	})
 
@@ -180,11 +214,26 @@ func (w *DeduplicateFactsWorker) Work(ctx context.Context, job *river.Job[Dedupl
 	}
 
 	for _, nf := range facts {
-		if nf.Status != "new" {
-			continue
-		}
+		// Skip stable facts (they're the comparison set, never
+		// the `nf`) and facts an earlier iteration already
+		// marked `to_delete` (a previous new-fact's nearest
+		// neighbor was this fact — it lost the tie-break and
+		// was marked `to_delete` + Qdrant payload flipped).
+		// The snapshot `nf.Status` still reads "new" for those
+		// (we never re-fetch the row), so we consult
+		// `statusByID` — which the new-vs-new branch mutates —
+		// to detect the flip. Without this check the loop
+		// would re-process the loser, query Qdrant again, and
+		// potentially mark its own winner `to_delete` (a
+		// oscillation that left both new facts `to_delete`).
 		nfID, err := uuid.Parse(pgUUIDToString(nf.ID))
 		if err != nil {
+			continue
+		}
+		if cur, ok := statusByID[nfID]; ok && cur != "new" {
+			continue
+		}
+		if nf.Status != "new" {
 			continue
 		}
 
@@ -239,37 +288,43 @@ func (w *DeduplicateFactsWorker) Work(ctx context.Context, job *river.Job[Dedupl
 			}
 			markedToDelete++
 		case "new":
-			// Two new facts are near-duplicates. The
-			// lexicographically-larger UUID loses. Since we
-			// iterate UUID-ascending, nf.ID < hit.ID would mean
-			// nf is the survivor and hit is the loser — but hit
-			// may not have been processed yet. The plan's rule
-			// is "drop the lexicographically-larger UUID", which
-			// is symmetric: whichever of {nf, hit} has the
-			// larger UUID is the loser.
-			nfStr := pgUUIDToString(nf.ID)
-			hitStr := hit.ID.String()
-			loserID, winnerID := nf.ID, hit.ID
-			loserStr, winnerStr := nfStr, hitStr
-			if nfStr > hitStr {
-				loserID, winnerID = nf.ID, hit.ID
-				loserStr, winnerStr = nfStr, hitStr
-			}
+			// Two new facts are near-duplicates. The current `nf`
+			// (already being processed) wins; the `hit` (the
+			// nearest neighbor Qdrant returned) loses and is
+			// marked `to_delete` immediately. We update
+			// `statusByID[hit.ID]` so when the loop reaches the
+			// loser later, the top-of-loop `statusByID` check
+			// skips it (the snapshot `nf.Status` still reads
+			// "new" — only the statusByID map reflects the flip).
+			//
+			// The previous rule was "lexicographically-larger UUID
+			// loses", which is deterministic but symmetric — it
+			// doesn't matter which of {nf, hit} we're processing
+			// when deciding the loser. The new rule ("the hit
+			// loses") is *order-dependent* and relies on the
+			// stable-first, new-UUID-ascending sort above: the
+			// first new fact in UUID order to find a near-
+			// duplicate twin wins, and the twin is skipped when
+			// the loop reaches it. This catches same-batch
+			// duplicates that the old rule missed when the
+			// winner's nearest neighbor happened to be a stable
+			// fact from elsewhere in the repo (so the winner
+			// got marked `to_delete` against the stable fact
+			// before the loop ever compared it to its twin).
+			loserID, winnerID := uuidToPg(hit.ID), nf.ID
+			loserStr := hit.ID.String()
 			// Merge loser's sources onto the winner.
-			if err := mergeSources(ctx, queries, loserID, uuidToPg(winnerID)); err != nil {
-				log.Printf("deduplicate_facts: merging new %s onto new %s: %v", loserStr, winnerStr, err)
+			if err := mergeSources(ctx, queries, loserID, winnerID); err != nil {
+				log.Printf("deduplicate_facts: merging new %s onto new %s: %v", loserStr, pgUUIDToString(winnerID), err)
 				continue
 			}
 			if _, err := queries.MarkFactStatus(ctx, store.MarkFactStatusParams{ID: loserID, Status: "to_delete"}); err != nil {
 				log.Printf("deduplicate_facts: marking loser %s to_delete: %v", loserStr, err)
 				continue
 			}
-			loserUUID, err := uuid.Parse(loserStr)
-			if err == nil {
-				statusByID[loserUUID] = "to_delete"
-				if err := w.qdrant.UpdateFactStatusPayload(ctx, loserUUID, "to_delete"); err != nil {
-					log.Printf("deduplicate_facts: updating qdrant payload for loser %s: %v", loserStr, err)
-				}
+			statusByID[hit.ID] = "to_delete"
+			if err := w.qdrant.UpdateFactStatusPayload(ctx, hit.ID, "to_delete"); err != nil {
+				log.Printf("deduplicate_facts: updating qdrant payload for loser %s: %v", loserStr, err)
 			}
 			markedToDelete++
 		case "to_delete":

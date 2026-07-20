@@ -272,8 +272,9 @@ func TestAnnotateReportPostureClassifier(t *testing.T) {
 	}
 
 	// The report should be annotated + carry the threshold. The
-	// worker resolves SimilarityThresholdOr(0.8) so a config value
-	// of 0.0 falls back to the 0.8 default.
+	// worker resolves SimilarityThresholdOr(0.84) when the config
+	// value is 0.0 (the zero value), so the persisted threshold is
+	// 0.84, not 0.0.
 	rep, err := queries.GetReportByID(ctx, reportID)
 	if err != nil {
 		t.Fatalf("get report: %v", err)
@@ -281,8 +282,8 @@ func TestAnnotateReportPostureClassifier(t *testing.T) {
 	if rep.Status != "annotated" {
 		t.Errorf("report status = %q, want %q", rep.Status, "annotated")
 	}
-	if rep.SimilarityThreshold == nil || *rep.SimilarityThreshold != 0.8 {
-		t.Errorf("report threshold = %v, want 0.8", rep.SimilarityThreshold)
+	if rep.SimilarityThreshold == nil || *rep.SimilarityThreshold != 0.84 {
+		t.Errorf("report threshold = %v, want 0.84 (SimilarityThresholdOr default)", rep.SimilarityThreshold)
 	}
 }
 
@@ -436,11 +437,20 @@ func TestReportSettingsEndpoint(t *testing.T) {
 	if got["posture_classifier_enabled"] != false {
 		t.Errorf("initial posture_classifier_enabled = %v, want false (test config inherits zero value)", got["posture_classifier_enabled"])
 	}
+	if got["max_facts_per_sentence"] != nil {
+		t.Errorf("initial max_facts_per_sentence = %v, want nil", got["max_facts_per_sentence"])
+	}
+	if got["lexical_similarity_floor"] != nil {
+		t.Errorf("initial lexical_similarity_floor = %v, want nil", got["lexical_similarity_floor"])
+	}
 
-	// 2. PUT an override: threshold 0.90, posture off.
+	// 2. PUT an override: threshold 0.90, posture off, max_facts 12,
+	//    lexical floor 0.65.
 	putBody, _ := json.Marshal(map[string]any{
 		"similarity_threshold":       0.90,
 		"posture_classifier_enabled": false,
+		"max_facts_per_sentence":     12,
+		"lexical_similarity_floor":   0.65,
 	})
 	putResp, putBodyResp := admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/reports", putBody)
 	if putResp.StatusCode != 200 {
@@ -455,6 +465,12 @@ func TestReportSettingsEndpoint(t *testing.T) {
 	}
 	if put["posture_classifier_enabled"] != false {
 		t.Errorf("PUT posture_classifier_enabled = %v, want false", put["posture_classifier_enabled"])
+	}
+	if put["max_facts_per_sentence"] != float64(12) {
+		t.Errorf("PUT max_facts_per_sentence = %v, want 12", put["max_facts_per_sentence"])
+	}
+	if put["lexical_similarity_floor"] != 0.65 {
+		t.Errorf("PUT lexical_similarity_floor = %v, want 0.65", put["lexical_similarity_floor"])
 	}
 
 	// 3. GET again — reflects the override.
@@ -472,12 +488,57 @@ func TestReportSettingsEndpoint(t *testing.T) {
 	if got2["posture_classifier_enabled"] != false {
 		t.Errorf("override posture_classifier_enabled = %v, want false", got2["posture_classifier_enabled"])
 	}
+	if got2["max_facts_per_sentence"] != float64(12) {
+		t.Errorf("override max_facts_per_sentence = %v, want 12", got2["max_facts_per_sentence"])
+	}
+	if got2["lexical_similarity_floor"] != 0.65 {
+		t.Errorf("override lexical_similarity_floor = %v, want 0.65", got2["lexical_similarity_floor"])
+	}
 
 	// 4. Error case: invalid threshold (>1) is rejected.
 	badBody, _ := json.Marshal(map[string]any{"similarity_threshold": 1.5})
 	badResp, _ := admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/reports", badBody)
 	if badResp.StatusCode != 400 {
 		t.Errorf("invalid threshold: status = %d, want 400", badResp.StatusCode)
+	}
+
+	// 5. Error case: invalid max_facts_per_sentence (>50) is rejected.
+	badMaxBody, _ := json.Marshal(map[string]any{"max_facts_per_sentence": 51})
+	badMaxResp, _ := admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/reports", badMaxBody)
+	if badMaxResp.StatusCode != 400 {
+		t.Errorf("invalid max_facts_per_sentence: status = %d, want 400", badMaxResp.StatusCode)
+	}
+
+	// 6. Error case: invalid lexical_similarity_floor (>1) is rejected.
+	badFloorBody, _ := json.Marshal(map[string]any{"lexical_similarity_floor": 1.5})
+	badFloorResp, _ := admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/reports", badFloorBody)
+	if badFloorResp.StatusCode != 400 {
+		t.Errorf("invalid lexical_similarity_floor: status = %d, want 400", badFloorResp.StatusCode)
+	}
+
+	// 7. Clear max_facts + lexical_floor overrides by sending null while
+	//    keeping threshold. Confirms partial-null upsert works.
+	clearBody, _ := json.Marshal(map[string]any{
+		"similarity_threshold":     0.90,
+		"max_facts_per_sentence":    nil,
+		"lexical_similarity_floor":  nil,
+	})
+	clearResp, clearBodyResp := admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/reports", clearBody)
+	if clearResp.StatusCode != 200 {
+		t.Fatalf("clear overrides PUT: %d %s", clearResp.StatusCode, clearBodyResp)
+	}
+	var cleared map[string]any
+	if err := json.Unmarshal(clearBodyResp, &cleared); err != nil {
+		t.Fatalf("decode cleared: %v", err)
+	}
+	if cleared["max_facts_per_sentence"] != nil {
+		t.Errorf("cleared max_facts_per_sentence = %v, want nil", cleared["max_facts_per_sentence"])
+	}
+	if cleared["lexical_similarity_floor"] != nil {
+		t.Errorf("cleared lexical_similarity_floor = %v, want nil", cleared["lexical_similarity_floor"])
+	}
+	if cleared["similarity_threshold"] != 0.90 {
+		t.Errorf("cleared threshold = %v, want 0.90 (untouched)", cleared["similarity_threshold"])
 	}
 }
 

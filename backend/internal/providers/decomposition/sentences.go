@@ -21,11 +21,18 @@ package decomposition
 //   - Tables (GFM pipe tables, header separator row included) are
 //     treated as a single sentence unit — splitting a table by
 //     internal punctuation destroys its structure.
-//   - List items are NOT split per item; a contiguous list block is
-//     one sentence unit. A list item often contains a fragment, not
-//     a complete sentence, and splitting would produce non-self-
-//     contained units. The AI can still extract atomic facts from
-//     the list and reference the whole list unit.
+//   - List items ARE split per item; each list item (top-level or
+//     nested) becomes its own sentence unit. A list item often
+//     contains a self-contained claim (a cross-scope bridge, a
+//     numbered recommendation) and the annotate_report worker
+//     benefits from embedding each item as a distinct sentence so it
+//     can retrieve per-item facts (a 6-item list of bridges
+//     otherwise becomes one ~5000-rune sentence whose embedding
+//     blends 6 distinct claims and retrieves no top-K hit for any
+//     individual number). Continuation lines (indented sub-paragraphs
+//     or blank lines within a loose list) stay with their parent
+//     item; the min_sentence_runes floor filters out tiny
+//     heading-only parents at the worker level.
 //   - Blockquotes are split by sentence on their inner text (the
 //     `>` markers are stripped for splitting purposes) unless they
 //     contain a code block, in which case the code block is its own
@@ -131,11 +138,29 @@ func (p *SentenceChunkingProvider) Chunk(text string) []Chunk {
 			}
 			units = append(units, unit{startLine: start, endLine: i, kind: unitTable})
 		case lineListItem:
-			start := i
-			for i < len(lines) && (isListItem(lines[i]) || isContinuationLine(lines[i])) {
+			// Split each list item into its own unit so the
+			// annotate_report worker can embed each item as a
+			// distinct claim (a 6-item list of cross-scope
+			// bridges otherwise becomes one ~5000-rune sentence
+			// whose embedding blends 6 distinct claims and
+			// retrieves no top-K hit for any individual number).
+			// A "list item" spans from a list-marker line
+			// through its non-list-item continuation lines
+			// (indented or blank within a loose list) until the
+			// next list-marker line or the end of the list
+			// block. Nested bullets are themselves list items so
+			// they become their own units — this is deliberate
+			// (each nested bullet is its own claim) and the
+			// min_sentence_runes floor filters out tiny
+			// heading-only parents at the worker level.
+			for i < len(lines) && isListItem(lines[i]) {
+				start := i
 				i++
+				for i < len(lines) && isContinuationLine(lines[i]) && !isListItem(lines[i]) {
+					i++
+				}
+				units = append(units, unit{startLine: start, endLine: i, kind: unitList})
 			}
-			units = append(units, unit{startLine: start, endLine: i, kind: unitList})
 		case lineBlank:
 			i++
 		default: // prose

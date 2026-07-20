@@ -1322,6 +1322,79 @@ func (q *Queries) ResetFactEmbeddingForReembed(ctx context.Context, dollar_1 []p
 	return err
 }
 
+const searchFactsByNumericTokens = `-- name: SearchFactsByNumericTokens :many
+SELECT DISTINCT ON (f.id) f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind, f.promptset_hash
+FROM okt_repository.facts f
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+WHERE s.repository_id = $1
+  AND f.search_tsv @@ to_tsquery('english', $2)
+  AND ($3::uuid[] = '{}' OR NOT (f.id = ANY($3::uuid[])))
+ORDER BY f.id
+LIMIT $4
+`
+
+type SearchFactsByNumericTokensParams struct {
+	RepositoryID pgtype.UUID   `json:"repository_id"`
+	Tsquery      string        `json:"tsquery"`
+	ExcludeIds   []pgtype.UUID `json:"exclude_ids"`
+	RowLimit     int32         `json:"row_limit"`
+}
+
+// Hybrid-retrieval lexical fallback for the annotate_report worker.
+// Given a repository_id and a tsquery string (e.g. '508 & 0.9 & kg')
+// built by the caller from numeric tokens extracted from a report
+// sentence, returns up to `limit` facts in that repository whose
+// search_tsv matches the query (plain tsquery AND semantics). Reuses
+// the existing search_tsv generated column + idx_facts_search_tsv
+// GIN index added by migration 0015 (the 'english' config indexes
+// numbers and short unit tokens verbatim — only long prose words are
+// stemmed, which is fine because the lexical fallback is for exact
+// numeric/unit matches, not prose synonyms). The caller unions these
+// lexical hits with the Qdrant semantic hits, dedupes by fact_id,
+// and feeds the combined set to the posture classifier.
+//
+// Scoping: the facts table is per-repo on isolated databases and
+// interleaved on shared databases; the JOIN through fact_sources +
+// sources filters by repository_id in both layouts (mirrors
+// ListFactsForDedup). Excluded fact ids ($3) lets the caller skip
+// facts the Qdrant pass already surfaced (avoids double-counting).
+func (q *Queries) SearchFactsByNumericTokens(ctx context.Context, arg SearchFactsByNumericTokensParams) ([]OktRepositoryFact, error) {
+	rows, err := q.db.Query(ctx, searchFactsByNumericTokens,
+		arg.RepositoryID,
+		arg.Tsquery,
+		arg.ExcludeIds,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OktRepositoryFact
+	for rows.Next() {
+		var i OktRepositoryFact
+		if err := rows.Scan(
+			&i.ID,
+			&i.Text,
+			&i.Status,
+			&i.EmbeddedAt,
+			&i.EmbeddedModel,
+			&i.CreatedAt,
+			&i.SearchTsv,
+			&i.ImageUrl,
+			&i.FactKind,
+			&i.PromptsetHash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setSentenceOffsets = `-- name: SetSentenceOffsets :exec
 
 UPDATE okt_repository.sources

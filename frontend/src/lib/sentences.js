@@ -66,9 +66,27 @@ export function segmentSentences(text) {
         break;
       }
       case "listItem": {
-        const start = i;
-        while (i < lines.length && (isListItem(lines[i]) || isContinuationLine(lines[i]))) i++;
-        units.push({ startLine: start, endLine: i, kind: "list" });
+        // Split each list item into its own unit so the
+        // annotate_report worker can embed each item as a distinct
+        // claim (a 6-item list of cross-scope bridges otherwise
+        // becomes one ~5000-rune sentence whose embedding blends 6
+        // distinct claims and retrieves no top-K hit for any
+        // individual number). A "list item" spans from a list-marker
+        // line through its non-list-item continuation lines (indented
+        // or blank within a loose list) until the next list-marker
+        // line or the end of the list block. Nested bullets are
+        // themselves list items so they become their own units —
+        // this is deliberate (each nested bullet is its own claim)
+        // and the min_sentence_runes floor filters out tiny
+        // heading-only parents at the worker level. KEEP IN SYNC with
+        // the Go chunker in
+        // backend/internal/providers/decomposition/sentences.go.
+        while (i < lines.length && isListItem(lines[i])) {
+          const start = i;
+          i++;
+          while (i < lines.length && isContinuationLine(lines[i]) && !isListItem(lines[i])) i++;
+          units.push({ startLine: start, endLine: i, kind: "list" });
+        }
         break;
       }
       case "blank":

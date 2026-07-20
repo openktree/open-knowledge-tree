@@ -179,7 +179,7 @@ func (q *Queries) GetRepositoryModelSetting(ctx context.Context, arg GetReposito
 }
 
 const getRepositoryReportSettings = `-- name: GetRepositoryReportSettings :one
-SELECT repository_id, similarity_threshold, posture_classifier_enabled, updated_at FROM okt_system.repository_report_settings
+SELECT repository_id, similarity_threshold, posture_classifier_enabled, updated_at, max_facts_per_sentence, lexical_similarity_floor FROM okt_system.repository_report_settings
 WHERE repository_id = $1
 `
 
@@ -196,6 +196,8 @@ func (q *Queries) GetRepositoryReportSettings(ctx context.Context, repositoryID 
 		&i.SimilarityThreshold,
 		&i.PostureClassifierEnabled,
 		&i.UpdatedAt,
+		&i.MaxFactsPerSentence,
+		&i.LexicalSimilarityFloor,
 	)
 	return i, err
 }
@@ -634,34 +636,51 @@ func (q *Queries) UpsertRepositoryModelSetting(ctx context.Context, arg UpsertRe
 
 const upsertRepositoryReportSettings = `-- name: UpsertRepositoryReportSettings :one
 INSERT INTO okt_system.repository_report_settings
-    (repository_id, similarity_threshold, posture_classifier_enabled)
-VALUES ($1, $2, $3)
+    (repository_id, similarity_threshold, posture_classifier_enabled, max_facts_per_sentence, lexical_similarity_floor)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (repository_id)
 DO UPDATE SET
-    similarity_threshold      = EXCLUDED.similarity_threshold,
+    similarity_threshold        = EXCLUDED.similarity_threshold,
     posture_classifier_enabled = EXCLUDED.posture_classifier_enabled,
+    max_facts_per_sentence      = EXCLUDED.max_facts_per_sentence,
+    lexical_similarity_floor    = EXCLUDED.lexical_similarity_floor,
     updated_at = now()
-RETURNING repository_id, similarity_threshold, posture_classifier_enabled, updated_at
+RETURNING repository_id, similarity_threshold, posture_classifier_enabled, updated_at, max_facts_per_sentence, lexical_similarity_floor
 `
 
 type UpsertRepositoryReportSettingsParams struct {
 	RepositoryID             pgtype.UUID `json:"repository_id"`
 	SimilarityThreshold      *float64    `json:"similarity_threshold"`
 	PostureClassifierEnabled bool        `json:"posture_classifier_enabled"`
+	MaxFactsPerSentence      *int32      `json:"max_facts_per_sentence"`
+	LexicalSimilarityFloor   *float64    `json:"lexical_similarity_floor"`
 }
 
 // Insert or update the per-repo report annotation settings. Pass
 // similarity_threshold NULL to inherit the global default; pass
 // posture_classifier_enabled false to turn the LLM step off for
-// this repo without touching the global config.
+// this repo without touching the global config; pass
+// max_facts_per_sentence NULL to inherit the global
+// max_facts_per_sentence (5), or a value in 1..50 to override; pass
+// lexical_similarity_floor NULL to inherit the global default (0.6),
+// or a value in 0..1 to override (the semantic-distance floor for the
+// hybrid lexical fallback).
 func (q *Queries) UpsertRepositoryReportSettings(ctx context.Context, arg UpsertRepositoryReportSettingsParams) (OktSystemRepositoryReportSetting, error) {
-	row := q.db.QueryRow(ctx, upsertRepositoryReportSettings, arg.RepositoryID, arg.SimilarityThreshold, arg.PostureClassifierEnabled)
+	row := q.db.QueryRow(ctx, upsertRepositoryReportSettings,
+		arg.RepositoryID,
+		arg.SimilarityThreshold,
+		arg.PostureClassifierEnabled,
+		arg.MaxFactsPerSentence,
+		arg.LexicalSimilarityFloor,
+	)
 	var i OktSystemRepositoryReportSetting
 	err := row.Scan(
 		&i.RepositoryID,
 		&i.SimilarityThreshold,
 		&i.PostureClassifierEnabled,
 		&i.UpdatedAt,
+		&i.MaxFactsPerSentence,
+		&i.LexicalSimilarityFloor,
 	)
 	return i, err
 }

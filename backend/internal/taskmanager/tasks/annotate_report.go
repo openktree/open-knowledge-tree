@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,7 +157,9 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 	// repository_report_settings row is optional; absence = inherit
 	// the global config defaults (threshold 0.84, classifier on).
 	threshold := w.reportsCfg.SimilarityThresholdOr(0.84)
+	lexicalFloor := w.reportsCfg.LexicalSimilarityFloorOr(0.6)
 	postureEnabled := w.reportsCfg.PostureClassifier.Enabled
+	maxFacts := w.reportsCfg.MaxFactsPerSentenceOr(5)
 	if setting, err := w.systemQueries.GetRepositoryReportSettings(ctx, repoID); err == nil {
 		if setting.SimilarityThreshold != nil && *setting.SimilarityThreshold > 0 {
 			threshold = *setting.SimilarityThreshold
@@ -164,6 +169,25 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 		// the row exists (so an operator can turn the LLM step off
 		// for a single repo without touching the global config).
 		postureEnabled = setting.PostureClassifierEnabled
+		// Per-repo max_facts_per_sentence override. NULL (or out of
+		// [1,50]) inherits the global default. Operators raise this
+		// for value-heavy repos where the top-5 semantic hits crowd
+		// out exact-numeric-match facts the hybrid lexical fallback
+		// would otherwise surface.
+		if setting.MaxFactsPerSentence != nil && *setting.MaxFactsPerSentence >= 1 && *setting.MaxFactsPerSentence <= 50 {
+			maxFacts = int(*setting.MaxFactsPerSentence)
+		}
+		// Per-repo lexical_similarity_floor override. NULL (or out
+		// of [0,1]) inherits the global default (0.6). This is the
+		// semantic-distance gate the hybrid lexical fallback applies
+		// to its tsvector hits: a fact the lexical pass surfaced is
+		// re-checked against the sentence embedding and dropped if
+		// cosine similarity is below this floor, preventing
+		// apples-to-oranges matches (e.g. "0.9 kg weight gain"
+		// surfacing "0.9 kg CO2 emissions"). 0.0 disables the gate.
+		if setting.LexicalSimilarityFloor != nil && *setting.LexicalSimilarityFloor >= 0 && *setting.LexicalSimilarityFloor <= 1 {
+			lexicalFloor = *setting.LexicalSimilarityFloor
+		}
 	}
 
 	// Resolve per-repo model override for the posture classifier.
@@ -195,7 +219,6 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 		}
 	}
 
-	maxFacts := w.reportsCfg.MaxFactsPerSentenceOr(5)
 	minRunes := w.reportsCfg.MinSentenceRunesOr(40)
 
 	jobIDStr := strconv.FormatInt(job.ID, 10)
@@ -284,6 +307,125 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 		}
 		sentenceHits[c.Index] = hits
 		hitCount += len(hits)
+	}
+
+	// Hybrid retrieval: for each candidate sentence that has at least
+	// one numeric token, run a lexical (tsvector) search over the
+	// repository's facts and union the hits with the Qdrant hits. This
+	// catches the case where a sentence quotes "0.9 kg weight gain"
+	// and a fact states "0.9 kilograms (1.98 lb) increase" — the
+	// embedding cosine similarity may fall below threshold because the
+	// surrounding prose differs, but the exact numeric match is a
+	// citation the user wants.
+	//
+	// Apples-to-oranges guard: when lexical_similarity_floor > 0 (the
+	// default 0.6, or the per-repo override), each lexical hit is
+	// re-checked against the sentence embedding. The worker already
+	// has the sentence vector in resp.Embeddings[i] (i indexes the
+	// candidates slice); it fetches the candidate fact vectors via
+	// GetFactVectorsByIDs and computes cosine similarity. Hits below
+	// the floor are dropped even when the tsvector match was exact,
+	// so "0.9 kg weight gain" does NOT surface "0.9 kg CO2 emissions"
+	// purely on the numeric token match. Setting the floor to 0.0
+	// disables the semantic gate entirely (accept every lexical hit).
+	// Survivors get score = actual_cosine (not a sentinel 0.0) so they
+	// rank naturally among the Qdrant hits and the UI's score badge
+	// reflects how strong the semantic match really was. Dedup by
+	// fact_id within a sentence (a fact that hit both ways counts
+	// once, keeping the Qdrant score).
+	lexicalHitCount := 0
+	lexicalDroppedCount := 0
+	for i, c := range candidates {
+		tsq := extractNumericTsquery(c.Text)
+		if tsq == "" {
+			continue
+		}
+		excludeIDs := make([]pgtype.UUID, 0, len(sentenceHits[c.Index]))
+		seen := make(map[uuid.UUID]bool, len(sentenceHits[c.Index]))
+		for _, h := range sentenceHits[c.Index] {
+			if seen[h.ID] {
+				continue
+			}
+			seen[h.ID] = true
+			excludeIDs = append(excludeIDs, uuidToPg(h.ID))
+		}
+		// Cap the lexical fallback at maxFacts so a single sentence
+		// with many shared numbers doesn't flood the candidate set.
+		lexRows, err := queries.SearchFactsByNumericTokens(ctx, store.SearchFactsByNumericTokensParams{
+			RepositoryID: repoID,
+			Tsquery:      tsq,
+			ExcludeIds:   excludeIDs,
+			RowLimit:     int32(maxFacts),
+		})
+		if err != nil {
+			log.Printf("annotate_report: lexical fallback for sentence %d of report %s failed: %v", c.Index, args.ReportID, err)
+			continue
+		}
+		if len(lexRows) == 0 {
+			continue
+		}
+
+		// Semantic gate: fetch the candidate fact vectors and compute
+		// cosine similarity against the sentence embedding. Skip the
+		// gate entirely when the floor is 0.0 (operator disabled it).
+		var factVecs map[uuid.UUID][]float32
+		if lexicalFloor > 0 {
+			ids := make([]uuid.UUID, 0, len(lexRows))
+			for _, f := range lexRows {
+				if f.ID.Valid {
+					ids = append(ids, f.ID.Bytes)
+				}
+			}
+			fetched, err := w.qdrant.GetFactVectorsByIDs(ctx, ids)
+			if err != nil {
+				log.Printf("annotate_report: lexical gate vector fetch for sentence %d of report %s failed: %v", c.Index, args.ReportID, err)
+				// Without vectors we can't apply the gate. Be
+				// conservative: skip this sentence's lexical
+				// fallback rather than accept unverified hits.
+				continue
+			}
+			factVecs = make(map[uuid.UUID][]float32, len(fetched))
+			for fid, fp := range fetched {
+				factVecs[fid] = fp.Vector
+			}
+		}
+
+		for _, f := range lexRows {
+			if !f.ID.Valid {
+				continue
+			}
+			fid := f.ID.Bytes
+			var score float64
+			if lexicalFloor > 0 {
+				vec, ok := factVecs[fid]
+				if !ok {
+					// Vector missing from Qdrant (fact deleted
+					// between Postgres query and vector fetch).
+					// Drop rather than accept unverified.
+					lexicalDroppedCount++
+					continue
+				}
+				cos := cosineSimilarity(resp.Embeddings[i], vec)
+				if cos < lexicalFloor {
+					// Below the semantic gate — the numeric
+					// token match is coincidental (different
+					// claim context). Drop.
+					lexicalDroppedCount++
+					continue
+				}
+				score = cos
+			}
+			sentenceHits[c.Index] = append(sentenceHits[c.Index], qdrantstore.Hit{
+				ID:    fid,
+				Score: float32(score),
+			})
+			lexicalHitCount++
+			hitCount++
+		}
+	}
+	if lexicalHitCount > 0 || lexicalDroppedCount > 0 {
+		log.Printf("annotate_report: hybrid retrieval for report %s — %d lexical hits added, %d dropped by semantic floor %.2f",
+			args.ReportID, lexicalHitCount, lexicalDroppedCount, lexicalFloor)
 	}
 
 	// Decide whether the posture classifier runs for this report.
@@ -612,4 +754,164 @@ func (w *AnnotateReportWorker) failReport(ctx context.Context, queries *store.Qu
 	}
 	time.Sleep(2 * time.Second)
 	return cause
+}
+
+// numericTokenPattern matches bare numbers and numbers with common
+// scientific units in report sentences. Used by the hybrid retrieval
+// fallback to extract the tokens whose exact presence in a fact's
+// text is strong evidence the fact supports/relates to the sentence
+// (e.g. "508 kcal", "0.9 kg", "22.3%", "OR 7.61", "κ = 0.32", "p =
+// 0.04"). The pattern is deliberately wide: it captures any number
+// (with optional decimal) and the unit word that may follow, then
+// also captures standalone numbers so a fact quoting the same number
+// in a different unit still matches.
+var numericTokenPattern = regexp.MustCompile(
+	`(?:\d+(?:[.,]\d+)?%?)` + // a number, optional decimal, optional %
+		`(?:\s*(?:kg|kcal|g|mg|ml|l|mmol|µg|ug|ng|lb|in|cm|mm|m|km|h|min|s|ms|kpa|pa)?)`)
+
+// unitAliases maps short unit tokens to their long-form equivalents
+// (and vice versa) so the lexical fallback bridges unit spelling
+// variants the english tsvector config stems differently. The english
+// config stems "kilograms" → "kilogram" but leaves "kg" alone, so a
+// sentence quoting "0.9 kg" and a fact stating "0.9 kilograms"
+// wouldn't match on the unit token without this normalization. We
+// expand each short unit token to its long form(s) and OR them
+// together in the tsquery so either spelling matches. The mapping is
+// conservative — only units common in scientific/medical prose, and
+// only forms the english stemmer treats differently (e.g. "kcal" and
+// "calories" both index verbatim as "kcal"/"calori", so they need
+// bridging too).
+var unitAliases = map[string][]string{
+	"kg":       {"kilogram", "kilograms"},
+	"g":        {"gram", "grams"},
+	"mg":       {"milligram", "milligrams"},
+	"µg":       {"microgram", "micrograms"},
+	"ug":       {"microgram", "micrograms"},
+	"ng":       {"nanogram", "nanograms"},
+	"ml":       {"milliliter", "milliliters", "millilitre", "millilitres"},
+	"l":        {"liter", "liters", "litre", "litres"},
+	"kcal":     {"calorie", "calories", "kilocalorie", "kilocalories"},
+	"mmol":     {"millimole", "millimoles"},
+	"cm":       {"centimeter", "centimeters", "centimetre", "centimetres"},
+	"mm":       {"millimeter", "millimeters", "millimetre", "millimetres"},
+	"km":       {"kilometer", "kilometers", "kilometre", "kilometres"},
+	"h":        {"hour", "hours"},
+	"min":      {"minute", "minutes"},
+	"s":        {"second", "seconds"},
+	"ms":       {"millisecond", "milliseconds"},
+	"lb":       {"pound", "pounds"},
+	"in":       {"inch", "inches"},
+	"pa":       {"pascal", "pascals"},
+	"kpa":      {"kilopascal", "kilopascals"},
+}
+
+// extractNumericTsquery extracts the numeric/unit tokens from a
+// sentence and joins them into a Postgres tsquery string with ` & `
+// (AND semantics) so the lexical fallback returns only facts that
+// share every token. Returns "" when the sentence has fewer than one
+// numeric token (no lexical fallback to run). Tokens are lowercased,
+// stripped of trailing punctuation, and quoted with double-quotes so
+// tsquery treats them as plain phrases — this is critical because
+// numeric tokens like "0.9" contain a `.` which is a tsquery
+// weight/position separator when unquoted, producing a syntax error.
+// Duplicates are removed.
+//
+// Unit tokens are expanded with their aliases (see unitAliases) and
+// OR'd together so "0.9 kg" matches a fact that says "0.9 kilograms"
+// — the english tsvector config stems "kilograms" → "kilogram" but
+// leaves "kg" alone, so without this expansion the unit token would
+// fail to match across spellings even though the number itself
+// matches. A pure-number token (no unit) emits as a single quoted
+// token; a number+unit pair emits as `(num & (unit | alias1 | ...))`
+// so the fact must contain the number AND one of the unit spellings.
+//
+// Example: "The trial produced 0.9 kg weight gain"
+// -> '"0.9" & ( "kg" | "kilogram" | "kilograms" )'
+//
+// The `plainto_tsquery` helper would also work and is safer, but it
+// ORs tokens together (not ANDs), which would over-match for short
+// numeric tokens that appear in many facts. We want AND on the
+// number, OR on the unit aliases.
+func extractNumericTsquery(sentence string) string {
+	matches := numericTokenPattern.FindAllString(sentence, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool, len(matches))
+	var tokens []string
+	for _, m := range matches {
+		t := strings.ToLower(strings.TrimSpace(m))
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		// Split the match into a leading numeric part and a trailing
+		// unit part. The regex captures them together; we split on
+		// the first whitespace. If there's no unit, emit the number
+		// alone. If there's a unit, expand it via unitAliases.
+		num, unit, hasUnit := splitNumberUnit(t)
+		escapedNum := strings.ReplaceAll(num, `"`, `""`)
+		if !hasUnit || unit == "" {
+			tokens = append(tokens, `"`+escapedNum+`"`)
+			continue
+		}
+		aliases, ok := unitAliases[unit]
+		if !ok {
+			// Unknown unit — emit number AND the literal unit token.
+			escapedUnit := strings.ReplaceAll(unit, `"`, `""`)
+			tokens = append(tokens, `"`+escapedNum+`" & "`+escapedUnit+`"`)
+			continue
+		}
+		// Build ( "unit" | "alias1" | "alias2" | ... )
+		var unitAlternatives []string
+		unitAlternatives = append(unitAlternatives, `"`+strings.ReplaceAll(unit, `"`, `""`)+`"`)
+		for _, a := range aliases {
+			unitAlternatives = append(unitAlternatives, `"`+strings.ReplaceAll(a, `"`, `""`)+`"`)
+		}
+		unitGroup := "( " + strings.Join(unitAlternatives, " | ") + " )"
+		tokens = append(tokens, `"`+escapedNum+`" & `+unitGroup)
+	}
+	if len(tokens) == 0 {
+		return ""
+	}
+	return strings.Join(tokens, " & ")
+}
+
+// splitNumberUnit splits a numeric-token match like "0.9 kg" or
+// "508kcal" into its leading numeric part and trailing unit part.
+// Returns (number, unit, hasUnit). hasUnit is false when the match
+// was a bare number with no unit word. The unit is returned without
+// surrounding whitespace.
+func splitNumberUnit(token string) (number, unit string, hasUnit bool) {
+	// Find the first whitespace in the token. The regex produces
+	// matches where the unit (if any) is separated from the number
+	// by whitespace ("0.9 kg"), or the token is a bare number
+	// ("0.9"), or the token is a number with a trailing % ("22.3%").
+	idx := strings.IndexAny(token, " \t")
+	if idx < 0 {
+		return token, "", false
+	}
+	return token[:idx], strings.TrimSpace(token[idx:]), true
+}
+
+// cosineSimilarity computes the cosine similarity between two
+// equal-length float32 vectors. Returns 0 when either vector is empty
+// or zero, or when lengths differ (defensive — should never happen
+// because the embedding provider guarantees a fixed dimension).
+// Used by the hybrid lexical retrieval gate to filter tsvector hits
+// whose only overlap with the sentence is a bare numeric token.
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		na += float64(a[i]) * float64(a[i])
+		nb += float64(b[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }

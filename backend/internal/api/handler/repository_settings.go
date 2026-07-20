@@ -829,18 +829,25 @@ func (h *RepositorySettings) SetModelSetting(w http.ResponseWriter, r *http.Requ
 // GetReportSettings handles GET /repositories/{repoID}/settings/reports.
 //
 // Returns the per-repo report annotation settings (similarity_threshold,
-// posture_classifier_enabled). Absent row = inherit global defaults
-// (threshold 0.84, classifier on), surfaced as null threshold + the
-// global posture flag.
+// posture_classifier_enabled, max_facts_per_sentence,
+// lexical_similarity_floor). Absent row = inherit global defaults
+// (threshold 0.84, classifier on, max facts 5, lexical floor 0.6),
+// surfaced as null overrides + the global default values.
 func (h *RepositorySettings) GetReportSettings(w http.ResponseWriter, r *http.Request) {
 	repoID, ok := parseRepoID(w, r)
 	if !ok {
 		return
 	}
+	globalMaxFacts := int32(h.deps.Config.Providers.Reports.MaxFactsPerSentenceOr(5))
+	globalLexicalFloor := h.deps.Config.Providers.Reports.LexicalSimilarityFloorOr(0.6)
 	out := map[string]interface{}{
 		"similarity_threshold":       nil,
 		"posture_classifier_enabled": h.deps.Config.Providers.Reports.PostureClassifier.Enabled,
 		"default_threshold":          h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
+		"max_facts_per_sentence":     nil,
+		"default_max_facts":          globalMaxFacts,
+		"lexical_similarity_floor":  nil,
+		"default_lexical_floor":     globalLexicalFloor,
 	}
 	row, err := h.deps.Store.GetRepositoryReportSettings(r.Context(), repoID)
 	if err == nil {
@@ -848,6 +855,12 @@ func (h *RepositorySettings) GetReportSettings(w http.ResponseWriter, r *http.Re
 			out["similarity_threshold"] = *row.SimilarityThreshold
 		}
 		out["posture_classifier_enabled"] = row.PostureClassifierEnabled
+		if row.MaxFactsPerSentence != nil {
+			out["max_facts_per_sentence"] = *row.MaxFactsPerSentence
+		}
+		if row.LexicalSimilarityFloor != nil {
+			out["lexical_similarity_floor"] = *row.LexicalSimilarityFloor
+		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to read report settings")
 		return
@@ -858,17 +871,24 @@ func (h *RepositorySettings) GetReportSettings(w http.ResponseWriter, r *http.Re
 // SetReportSettings handles PUT /repositories/{repoID}/settings/reports.
 //
 // Upserts the per-repo report annotation settings. The body is
-// { "similarity_threshold": float64|null, "posture_classifier_enabled": bool }.
-// A null similarity_threshold clears the override (inherit global
-// default). The threshold must be in (0, 1].
+// { "similarity_threshold": float64|null,
+//   "posture_classifier_enabled": bool,
+//   "max_facts_per_sentence": int|null,
+//   "lexical_similarity_floor": float64|null }.
+// A null for any numeric field clears that override (inherit global
+// default). Ranges: similarity_threshold (0, 1]; max_facts_per_sentence
+// [1, 50]; lexical_similarity_floor [0, 1] (0 disables the semantic
+// gate on lexical hits entirely).
 func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Request) {
 	repoID, ok := parseRepoID(w, r)
 	if !ok {
 		return
 	}
 	var body struct {
-		SimilarityThreshold      *float64 `json:"similarity_threshold"`
-		PostureClassifierEnabled *bool    `json:"posture_classifier_enabled"`
+		SimilarityThreshold     *float64 `json:"similarity_threshold"`
+		PostureClassifierEnabled *bool   `json:"posture_classifier_enabled"`
+		MaxFactsPerSentence     *int32   `json:"max_facts_per_sentence"`
+		LexicalSimilarityFloor  *float64 `json:"lexical_similarity_floor"`
 	}
 	if err := httputil.DecodeBody(r, &body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
@@ -883,27 +903,54 @@ func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Re
 		}
 		threshold = &v
 	}
+	var maxFacts *int32
+	if body.MaxFactsPerSentence != nil {
+		v := *body.MaxFactsPerSentence
+		if v < 1 || v > 50 {
+			httputil.WriteError(w, http.StatusBadRequest, "max_facts_per_sentence must be in [1, 50]")
+			return
+		}
+		maxFacts = &v
+	}
+	var lexicalFloor *float64
+	if body.LexicalSimilarityFloor != nil {
+		v := *body.LexicalSimilarityFloor
+		if v < 0 || v > 1 {
+			httputil.WriteError(w, http.StatusBadRequest, "lexical_similarity_floor must be in [0, 1]")
+			return
+		}
+		lexicalFloor = &v
+	}
 	enabled := h.deps.Config.Providers.Reports.PostureClassifier.Enabled
 	if body.PostureClassifierEnabled != nil {
 		enabled = *body.PostureClassifierEnabled
 	}
-	// When both fields are at their inherit-null state (threshold
-	// nil + enabled == global default), drop the override row so the
-	// repo inherits cleanly. Otherwise upsert.
+	// When all four fields are at their inherit-null state (threshold
+	// nil + enabled == global default + max_facts nil + lexical_floor
+	// nil), drop the override row so the repo inherits cleanly.
+	// Otherwise upsert.
 	globalDefault := h.deps.Config.Providers.Reports.PostureClassifier.Enabled
-	if threshold == nil && body.PostureClassifierEnabled == nil {
+	globalMaxFacts := int32(h.deps.Config.Providers.Reports.MaxFactsPerSentenceOr(5))
+	globalLexicalFloor := h.deps.Config.Providers.Reports.LexicalSimilarityFloorOr(0.6)
+	if threshold == nil && body.PostureClassifierEnabled == nil && maxFacts == nil && lexicalFloor == nil {
 		_ = h.deps.Store.DeleteRepositoryReportSettings(r.Context(), repoID)
 		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"similarity_threshold":       nil,
 			"posture_classifier_enabled": globalDefault,
 			"default_threshold":          h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
+			"max_facts_per_sentence":     nil,
+			"default_max_facts":          globalMaxFacts,
+			"lexical_similarity_floor":   nil,
+			"default_lexical_floor":      globalLexicalFloor,
 		})
 		return
 	}
 	row, err := h.deps.Store.UpsertRepositoryReportSettings(r.Context(), store.UpsertRepositoryReportSettingsParams{
-		RepositoryID:             repoID,
-		SimilarityThreshold:      threshold,
+		RepositoryID:            repoID,
+		SimilarityThreshold:     threshold,
 		PostureClassifierEnabled: enabled,
+		MaxFactsPerSentence:     maxFacts,
+		LexicalSimilarityFloor:  lexicalFloor,
 	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update report settings")
@@ -912,11 +959,23 @@ func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Re
 	out := map[string]interface{}{
 		"posture_classifier_enabled": row.PostureClassifierEnabled,
 		"default_threshold":          h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
+		"default_max_facts":          globalMaxFacts,
+		"default_lexical_floor":      globalLexicalFloor,
 	}
 	if row.SimilarityThreshold != nil {
 		out["similarity_threshold"] = *row.SimilarityThreshold
 	} else {
 		out["similarity_threshold"] = nil
+	}
+	if row.MaxFactsPerSentence != nil {
+		out["max_facts_per_sentence"] = *row.MaxFactsPerSentence
+	} else {
+		out["max_facts_per_sentence"] = nil
+	}
+	if row.LexicalSimilarityFloor != nil {
+		out["lexical_similarity_floor"] = *row.LexicalSimilarityFloor
+	} else {
+		out["lexical_similarity_floor"] = nil
 	}
 	httputil.WriteJSON(w, http.StatusOK, out)
 }

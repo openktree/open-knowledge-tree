@@ -62,6 +62,35 @@ SELECT * FROM okt_repository.facts WHERE id = $1;
 -- ids across the whole batch; order is unspecified.
 SELECT * FROM okt_repository.facts WHERE id = ANY($1::uuid[]);
 
+-- name: SearchFactsByNumericTokens :many
+-- Hybrid-retrieval lexical fallback for the annotate_report worker.
+-- Given a repository_id and a tsquery string (e.g. '508 & 0.9 & kg')
+-- built by the caller from numeric tokens extracted from a report
+-- sentence, returns up to `limit` facts in that repository whose
+-- search_tsv matches the query (plain tsquery AND semantics). Reuses
+-- the existing search_tsv generated column + idx_facts_search_tsv
+-- GIN index added by migration 0015 (the 'english' config indexes
+-- numbers and short unit tokens verbatim — only long prose words are
+-- stemmed, which is fine because the lexical fallback is for exact
+-- numeric/unit matches, not prose synonyms). The caller unions these
+-- lexical hits with the Qdrant semantic hits, dedupes by fact_id,
+-- and feeds the combined set to the posture classifier.
+--
+-- Scoping: the facts table is per-repo on isolated databases and
+-- interleaved on shared databases; the JOIN through fact_sources +
+-- sources filters by repository_id in both layouts (mirrors
+-- ListFactsForDedup). Excluded fact ids ($3) lets the caller skip
+-- facts the Qdrant pass already surfaced (avoids double-counting).
+SELECT DISTINCT ON (f.id) f.*
+FROM okt_repository.facts f
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+WHERE s.repository_id = sqlc.arg('repository_id')
+  AND f.search_tsv @@ to_tsquery('english', sqlc.arg('tsquery'))
+  AND (sqlc.arg('exclude_ids')::uuid[] = '{}' OR NOT (f.id = ANY(sqlc.arg('exclude_ids')::uuid[])))
+ORDER BY f.id
+LIMIT sqlc.arg('row_limit');
+
 -- name: GetFactByTextAndSource :one
 -- Exact-text match for the cache import's delta-aware no-op check.
 -- If a fact with the exact same text already exists linked to this

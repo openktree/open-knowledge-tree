@@ -508,3 +508,365 @@ func TestEmbedFacts_EmptySourceRejected(t *testing.T) {
 		t.Fatal("embed_facts.Work: expected error for empty SourceID, got nil")
 	}
 }
+
+// TestDeduplicateFacts_SameBatchSameSourceDedup verifies the dedup
+// worker collapses two near-duplicate facts extracted from the SAME
+// source in the SAME embed batch. This is the regression test for
+// the new-vs-new tie-break fix: with the old rule (lexicographically-
+// larger UUID loses) the worker could mark one twin `to_delete`
+// against an unrelated stable fact from elsewhere in the repo before
+// the loop ever compared it to its same-batch twin — leaving both
+// twins `stable` after promotion. The new rule (the hit loses, and
+// is skipped when the loop reaches it) guarantees the pair collapses
+// to one survivor regardless of what other facts exist in the repo.
+//
+// Reproduces the production bug observed on the Shadow Fleet
+// investigation, where 1010 pairs of same-source same-batch facts at
+// score >= 0.94 remained unmerged because both endpoints were
+// promoted to `stable` without ever being compared to each other.
+//
+// Skips when QDRANT_HOST is unset.
+func TestDeduplicateFacts_SameBatchSameSourceDedup(t *testing.T) {
+	const dim = 8
+	qStore, qCleanup := qdrantTestStore(t, dim)
+	defer qCleanup()
+
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+	ensureRiverSchema(t, env.DB)
+
+	admin := bootstrapSysAdmin(t, env, "samebatch@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "SameBatch", "same-batch", "desc", "")
+	queries := store.New(env.DB)
+
+	// One source in the repo. Both near-duplicate facts come from
+	// this single source — the bug is about same-source same-batch
+	// duplicates, not cross-source.
+	src := pgtype.UUID{}
+	if err := src.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scanning source id: %v", err)
+	}
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: src, RepositoryID: pgRepoID(t, repoID), Url: "https://example.com/same-batch", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	// Two near-duplicate facts from the same source. Identical
+	// text produces a bit-identical vector under the stub embedding
+	// (score 1.0), so the dedup query at T=0.94 always matches.
+	// Both facts are inserted as `new` (the default status) and
+	// will be embedded in a single embed_facts pass below.
+	insertFactWithSource(t, env, pgRepoID(t, repoID), src, "NF-kB is a transcription factor involved in cancer.", 0)
+	insertFactWithSource(t, env, pgRepoID(t, repoID), src, "NF-kB is a transcription factor involved in cancer.", 1)
+
+	registry := testutil.NewForTestPool(env.DB)
+	systemQueries := store.New(env.DB)
+	embCfg := config.EmbeddingConfig{Provider: "stub", Model: "stub-embedding", Dimensions: dim}
+	dedupCfg := config.DedupConfig{Threshold: 0.94, CatchupMaxAge: "168h"}
+
+	embedWorker := tasks.NewEmbedFactsWorker(&stubEmbeddingProvider{dim: dim}, embCfg, qStore, registry, systemQueries)
+	dedupWorker := tasks.NewDeduplicateFactsWorker(dedupCfg, qStore, registry, systemQueries)
+
+	driver := riverpgxv5.New(env.DB)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, embedWorker)
+	river.AddWorker(workers, dedupWorker)
+	cfg := &river.Config{
+		Queues: map[string]river.QueueConfig{
+			tasks.QueueEmbedFacts:       {MaxWorkers: 1},
+			tasks.QueueDeduplicateFacts: {MaxWorkers: 1},
+		},
+		Workers: workers,
+	}
+	testEmbed := rivertest.NewWorker(t, driver, cfg, embedWorker)
+	testDedup := rivertest.NewWorker(t, driver, cfg, dedupWorker)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 1. embed_facts — vectorize both same-source facts into Qdrant
+	// in a single batch (mirrors production: one embed_facts job per
+	// source).
+	tx, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin embed tx: %v", err)
+	}
+	if _, err := testEmbed.Work(ctx, t, tx, tasks.EmbedFactsArgs{
+		SourceID:     pgUUIDString(src),
+		RepositoryID: repoID,
+	}, &river.InsertOpts{Queue: tasks.QueueEmbedFacts}); err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("embed_facts.Work: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit embed tx: %v", err)
+	}
+
+	// Both facts are now embedded; both still `new`.
+	var newCount int
+	if err := env.DB.QueryRow(ctx,
+		`SELECT count(*) FROM okt_repository.facts WHERE status = 'new' AND embedded_at IS NOT NULL`,
+	).Scan(&newCount); err != nil {
+		t.Fatalf("counting embedded new facts: %v", err)
+	}
+	if newCount != 2 {
+		t.Fatalf("embedded new facts = %d, want 2 before dedup", newCount)
+	}
+
+	// 2. deduplicate_facts — the two same-batch same-source twins
+	// must collapse to ONE survivor + ONE to_delete.
+	tx, err = env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin dedup tx: %v", err)
+	}
+	dedupJob, err := testDedup.Work(ctx, t, tx, tasks.DeduplicateFactsArgs{
+		RepositoryID: repoID,
+	}, &river.InsertOpts{Queue: tasks.QueueDeduplicateFacts})
+	if err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("deduplicate_facts.Work: %v", err)
+	}
+	if dedupJob.EventKind != river.EventKindJobCompleted {
+		tx.Rollback(context.Background())
+		t.Fatalf("deduplicate_facts: expected completed, got %s", dedupJob.EventKind)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit dedup tx: %v", err)
+	}
+
+	// Assert: one stable, one to_delete. This is the core
+	// regression assertion — with the old rule both would be
+	// `stable` because the worker marked one twin `to_delete`
+	// against itself or never compared them.
+	var stableCount, toDeleteCount int
+	if err := env.DB.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE status = 'stable'),
+		        count(*) FILTER (WHERE status = 'to_delete')
+		 FROM okt_repository.facts`,
+	).Scan(&stableCount, &toDeleteCount); err != nil {
+		t.Fatalf("counting statuses: %v", err)
+	}
+	if stableCount != 1 {
+		t.Errorf("stable count = %d, want 1 (one twin must survive)", stableCount)
+	}
+	if toDeleteCount != 1 {
+		t.Errorf("to_delete count = %d, want 1 (one twin must lose)", toDeleteCount)
+	}
+
+	// Assert the survivor still has its original source linked
+	// (mergeSources is idempotent; the loser's source — which is
+	// the same single source — is already linked via ON CONFLICT
+	// DO NOTHING, so the survivor ends with exactly 1 source link,
+	// not 2). This guards against a regression that dropped the
+	// survivor's source link during the merge.
+	var survivorSourceCount int
+	if err := env.DB.QueryRow(ctx,
+		`SELECT count(*) FROM okt_repository.fact_sources fs
+		 JOIN okt_repository.facts f ON f.id = fs.fact_id
+		 WHERE f.status = 'stable'`,
+	).Scan(&survivorSourceCount); err != nil {
+		t.Fatalf("counting survivor sources: %v", err)
+	}
+	if survivorSourceCount != 1 {
+		t.Errorf("survivor source_count = %d, want 1 (same source, idempotent merge)", survivorSourceCount)
+	}
+
+	// Assert the dedup result output recorded one marked + one
+	// promoted.
+	out := dedupJob.Job.Output()
+	if out == nil {
+		t.Fatal("expected recorded output on dedup job row")
+	}
+	var dedupResult tasks.DeduplicateFactsResult
+	if err := json.Unmarshal(out, &dedupResult); err != nil {
+		t.Fatalf("unmarshal dedup output: %v", err)
+	}
+	if dedupResult.MarkedToDelete != 1 {
+		t.Errorf("dedup MarkedToDelete = %d, want 1", dedupResult.MarkedToDelete)
+	}
+	if dedupResult.PromotedToStable != 1 {
+		t.Errorf("dedup PromotedToStable = %d, want 1", dedupResult.PromotedToStable)
+	}
+}
+
+// TestDeduplicateFacts_NewVsNewThirdFactWins verifies that when a new
+// fact A has a near-duplicate new fact B as its nearest neighbor AND
+// also a near-duplicate stable fact C, the new-vs-new rule fires (A
+// wins over B, B is marked to_delete) and does NOT fall through to
+// the new-vs-stable branch (which would have marked A to_delete
+// against C). This pins the precedence: the worker takes the FIRST
+// hit Qdrant returns (limit=1) and applies the rule for that hit's
+// status, so the test sets up the vectors so B (new) is closer than
+// C (stable).
+//
+// Skips when QDRANT_HOST is unset.
+func TestDeduplicateFacts_NewVsNewThirdFactWins(t *testing.T) {
+	const dim = 8
+	qStore, qCleanup := qdrantTestStore(t, dim)
+	defer qCleanup()
+
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+	ensureRiverSchema(t, env.DB)
+
+	admin := bootstrapSysAdmin(t, env, "newvsnew@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "NewVsNew", "new-vs-new", "desc", "")
+	queries := store.New(env.DB)
+
+	mkSource := func(slug string) pgtype.UUID {
+		id := pgtype.UUID{}
+		if err := id.Scan(uuid.NewString()); err != nil {
+			t.Fatalf("scanning source id: %v", err)
+		}
+		if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+			ID: id, RepositoryID: pgRepoID(t, repoID), Url: "https://example.com/" + slug, Kind: "homepage", Status: "fetched",
+		}); err != nil {
+			t.Fatalf("create source: %v", err)
+		}
+		return id
+	}
+	srcA := mkSource("newvsnew-a")
+	srcC := mkSource("newvsnew-c")
+
+	// Three facts. A and B are near-duplicate (same text → score
+	// 1.0). C is also similar but with a different text → score
+	// < 1.0 but still >= 0.94 (the stub embedding is deterministic
+	// so two strings that share most characters will be close).
+	// We embed C FIRST and run a dedup pass to promote C to
+	// stable. Then we insert A and B, embed them together, and run
+	// a second dedup pass — the bug is that A's nearest neighbor
+	// might be C (stable) instead of B (new), causing A to be
+	// marked to_delete against C and leaving B unmerged.
+	//
+	// To make the test deterministic, we use IDENTICAL text for A
+	// and B (so A↔B score = 1.0) and a DIFFERENT text for C (so
+	// A↔C score < 1.0). Qdrant returns the highest-scoring
+	// neighbor first, so A's limit=1 query always returns B
+	// (score 1.0), not C.
+	//
+	// We insert C FIRST (before pass 1) and A/B AFTER pass 1
+	// because the worker's `MarkFactsStableByRepo` step promotes
+	// ALL `new` facts in the repo to `stable` — including
+	// not-yet-embedded ones. Inserting A/B after pass 1 keeps
+	// them `new` for pass 2.
+	insertFactWithSource(t, env, pgRepoID(t, repoID), srcC, "Coffee grows well at 1800m elevation in Costa Rica.", 0)
+
+	registry := testutil.NewForTestPool(env.DB)
+	systemQueries := store.New(env.DB)
+	embCfg := config.EmbeddingConfig{Provider: "stub", Model: "stub-embedding", Dimensions: dim}
+	dedupCfg := config.DedupConfig{Threshold: 0.94, CatchupMaxAge: "168h"}
+
+	embedWorker := tasks.NewEmbedFactsWorker(&stubEmbeddingProvider{dim: dim}, embCfg, qStore, registry, systemQueries)
+	dedupWorker := tasks.NewDeduplicateFactsWorker(dedupCfg, qStore, registry, systemQueries)
+
+	driver := riverpgxv5.New(env.DB)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, embedWorker)
+	river.AddWorker(workers, dedupWorker)
+	cfg := &river.Config{
+		Queues: map[string]river.QueueConfig{
+			tasks.QueueEmbedFacts:       {MaxWorkers: 1},
+			tasks.QueueDeduplicateFacts: {MaxWorkers: 1},
+		},
+		Workers: workers,
+	}
+	testEmbed := rivertest.NewWorker(t, driver, cfg, embedWorker)
+	testDedup := rivertest.NewWorker(t, driver, cfg, dedupWorker)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Pass 1: embed + dedup source C alone — promotes C to stable.
+	tx, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin embed tx: %v", err)
+	}
+	if _, err := testEmbed.Work(ctx, t, tx, tasks.EmbedFactsArgs{
+		SourceID: pgUUIDString(srcC), RepositoryID: repoID,
+	}, &river.InsertOpts{Queue: tasks.QueueEmbedFacts}); err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("embed_facts.Work (C): %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit embed tx: %v", err)
+	}
+	tx, err = env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin dedup tx: %v", err)
+	}
+	if _, err := testDedup.Work(ctx, t, tx, tasks.DeduplicateFactsArgs{RepositoryID: repoID},
+		&river.InsertOpts{Queue: tasks.QueueDeduplicateFacts}); err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("dedup.Work (pass 1): %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit dedup tx: %v", err)
+	}
+
+	// After pass 1: C is stable.
+	var stableCount1 int
+	if err := env.DB.QueryRow(ctx,
+		`SELECT count(*) FROM okt_repository.facts WHERE status = 'stable'`,
+	).Scan(&stableCount1); err != nil {
+		t.Fatalf("counting stable after pass 1: %v", err)
+	}
+	if stableCount1 != 1 {
+		t.Fatalf("stable after pass 1 = %d, want 1 (only C)", stableCount1)
+	}
+
+	// NOW insert A and B (after pass 1) so they stay `new` for
+	// pass 2. MarkFactsStableByRepo in pass 1 would have promoted
+	// them if they'd existed earlier.
+	insertFactWithSource(t, env, pgRepoID(t, repoID), srcA, "DNA was first isolated by Friedrich Miescher in 1869.", 0)
+	insertFactWithSource(t, env, pgRepoID(t, repoID), srcA, "DNA was first isolated by Friedrich Miescher in 1869.", 1)
+
+	// Pass 2: embed source A (embeds both A and B in one batch),
+	// then dedup — the new-vs-new rule must collapse A and B.
+	tx, err = env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin embed tx: %v", err)
+	}
+	if _, err := testEmbed.Work(ctx, t, tx, tasks.EmbedFactsArgs{
+		SourceID: pgUUIDString(srcA), RepositoryID: repoID,
+	}, &river.InsertOpts{Queue: tasks.QueueEmbedFacts}); err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("embed_facts.Work (A+B): %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit embed tx: %v", err)
+	}
+
+	tx, err = env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin dedup tx: %v", err)
+	}
+	if _, err := testDedup.Work(ctx, t, tx, tasks.DeduplicateFactsArgs{RepositoryID: repoID},
+		&river.InsertOpts{Queue: tasks.QueueDeduplicateFacts}); err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("dedup.Work (pass 2): %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit dedup tx: %v", err)
+	}
+
+	// Final assertion: 2 stable (C + the survivor of A/B), 1
+	// to_delete (the loser of A/B). With the old rule, A would be
+	// marked to_delete against C if C was A's nearest neighbor —
+	// but A and B share identical text so B is always A's nearest
+	// neighbor at score 1.0, and the new-vs-new rule fires.
+	var stableCount, toDeleteCount int
+	if err := env.DB.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE status = 'stable'),
+		        count(*) FILTER (WHERE status = 'to_delete')
+		 FROM okt_repository.facts`,
+	).Scan(&stableCount, &toDeleteCount); err != nil {
+		t.Fatalf("counting final statuses: %v", err)
+	}
+	if stableCount != 2 {
+		t.Errorf("stable count = %d, want 2 (C + A/B survivor)", stableCount)
+	}
+	if toDeleteCount != 1 {
+		t.Errorf("to_delete count = %d, want 1 (A/B loser)", toDeleteCount)
+	}
+}

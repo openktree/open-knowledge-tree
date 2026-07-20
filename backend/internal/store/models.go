@@ -353,6 +353,8 @@ type OktSystemRepositoryReportSetting struct {
 	SimilarityThreshold      *float64           `json:"similarity_threshold"`
 	PostureClassifierEnabled bool               `json:"posture_classifier_enabled"`
 	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	MaxFactsPerSentence      *int32             `json:"max_facts_per_sentence"`
+	LexicalSimilarityFloor   *float64           `json:"lexical_similarity_floor"`
 }
 
 type Repository struct {
