@@ -1,8 +1,8 @@
-import { Show } from "solid-js";
 import { A } from "@solidjs/router";
+import { Show } from "solid-js";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
-import { statusVariant, formatTimestamp, oaStatusVariant, oaStatusCopy } from "./constants";
+import { formatTimestamp, oaStatusCopy, oaStatusVariant, statusVariant } from "./constants";
 
 export default function SourceRow(props) {
   const source = () => props.source;
@@ -10,10 +10,7 @@ export default function SourceRow(props) {
   return (
     <div class="border rounded dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 transition">
       <div class="flex items-center justify-between p-3 gap-3">
-        <A
-          href={detailHref()}
-          class="min-w-0 flex-1 group"
-        >
+        <A href={detailHref()} class="min-w-0 flex-1 group">
           <p
             class="text-blue-600 dark:text-blue-400 group-hover:underline text-sm font-medium block truncate"
             title={source().url}
@@ -30,11 +27,15 @@ export default function SourceRow(props) {
           <div class="flex items-center gap-2 mt-1 flex-wrap text-xs text-gray-500 dark:text-gray-400">
             <Badge variant={statusVariant(source().status)}>{source().status}</Badge>
             <Show when={source().parse_status}>
-              <Badge variant={
-                source().parse_status === "ok" ? "green"
-                : source().parse_status === "failed" ? "red"
-                : "yellow"
-              }>
+              <Badge
+                variant={
+                  source().parse_status === "ok"
+                    ? "green"
+                    : source().parse_status === "failed"
+                      ? "red"
+                      : "yellow"
+                }
+              >
                 {source().parse_status}
               </Badge>
             </Show>
@@ -51,9 +52,7 @@ export default function SourceRow(props) {
             </Show>
             <Show when={source().error}>
               <span class="text-red-600 dark:text-red-400" title={source().error}>
-                {source().error.length > 80
-                  ? source().error.slice(0, 80) + "..."
-                  : source().error}
+                {source().error.length > 80 ? source().error.slice(0, 80) + "..." : source().error}
               </span>
             </Show>
           </div>

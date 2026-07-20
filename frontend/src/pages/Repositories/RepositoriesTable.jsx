@@ -1,11 +1,11 @@
-import { Show, For, createSignal } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { api } from "../../services/api";
-import Button from "../../components/Button";
+import { createSignal, For, Show } from "solid-js";
+import Alert from "../../components/Alert";
 import Badge from "../../components/Badge";
+import Button from "../../components/Button";
 import Card from "../../components/Card";
 import FormField from "../../components/FormField";
-import Alert from "../../components/Alert";
+import { api } from "../../services/api";
 
 /**
  * Table of repositories the current user can see, with select, edit
@@ -29,9 +29,7 @@ export default function RepositoriesTable(props) {
     <Card>
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold dark:text-white">Your Repositories</h2>
-        <span class="text-xs text-gray-500 dark:text-gray-400">
-          {repos().length} total
-        </span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">{repos().length} total</span>
       </div>
 
       <Show
@@ -83,7 +81,8 @@ function RepositoryRow(props) {
   const [description, setDescription] = createSignal(props.repo.description || "");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
-  const canManage = () => (props.repo.roles || []).some((r) => r === "repoadmin" || r === "sysadmin");
+  const canManage = () =>
+    (props.repo.roles || []).some((r) => r === "repoadmin" || r === "sysadmin");
 
   const onSave = async (e) => {
     e.preventDefault();
@@ -126,17 +125,8 @@ function RepositoryRow(props) {
           when={!editing()}
           fallback={
             <form onSubmit={onSave} class="space-y-2">
-              <FormField
-                label="Name"
-                value={name()}
-                onChange={setName}
-                required
-              />
-              <FormField
-                label="Description"
-                value={description()}
-                onChange={setDescription}
-              />
+              <FormField label="Name" value={name()} onChange={setName} required />
+              <FormField label="Description" value={description()} onChange={setDescription} />
               <Alert variant="error" message={error()} onDismiss={() => setError("")} />
               <div class="flex gap-2">
                 <Button type="submit" disabled={busy()} loading={busy()}>
@@ -156,9 +146,7 @@ function RepositoryRow(props) {
             </Show>
           </div>
           <Show when={props.repo.description}>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              {props.repo.description}
-            </p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">{props.repo.description}</p>
           </Show>
         </Show>
       </td>
@@ -169,7 +157,11 @@ function RepositoryRow(props) {
         <div class="flex flex-wrap gap-1">
           <For each={props.repo.roles || []}>
             {(role) => (
-              <Badge variant={role === "repoadmin" ? "purple" : role === "sysadmin" ? "red" : "blue"}>{role}</Badge>
+              <Badge
+                variant={role === "repoadmin" ? "purple" : role === "sysadmin" ? "red" : "blue"}
+              >
+                {role}
+              </Badge>
             )}
           </For>
         </div>
@@ -195,12 +187,7 @@ function RepositoryRow(props) {
             when={!confirmDelete()}
             fallback={
               <span class="inline-flex gap-1">
-                <Button
-                  variant="danger"
-                  onClick={onDelete}
-                  disabled={busy()}
-                  loading={busy()}
-                >
+                <Button variant="danger" onClick={onDelete} disabled={busy()} loading={busy()}>
                   Confirm delete
                 </Button>
                 <Button

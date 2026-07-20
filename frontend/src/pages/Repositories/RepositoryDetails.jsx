@@ -1,7 +1,7 @@
-import { Show, For, createResource } from "solid-js";
+import { createResource, For, Show } from "solid-js";
+import Card from "../../components/Card";
 import { api } from "../../services/api";
 import { useRepository } from "../../store/repository";
-import Card from "../../components/Card";
 
 /**
  * A small card that, when a repository is selected, lists the
@@ -18,7 +18,7 @@ export default function RepositoryDetails() {
   // resource source is the current repository id.
   const [perms] = createResource(
     () => (repo.currentRepo() ? repo.currentRepo().id : ""),
-    (id) => (id ? api.getRepositoryPermissions(id) : null)
+    (id) => (id ? api.getRepositoryPermissions(id) : null),
   );
 
   return (
@@ -33,9 +33,7 @@ export default function RepositoryDetails() {
 
         <Show
           when={perms() && !perms().loading}
-          fallback={
-            <p class="text-sm text-gray-500 dark:text-gray-400">Loading permissions...</p>
-          }
+          fallback={<p class="text-sm text-gray-500 dark:text-gray-400">Loading permissions...</p>}
         >
           <Show
             when={perms().system_admin}

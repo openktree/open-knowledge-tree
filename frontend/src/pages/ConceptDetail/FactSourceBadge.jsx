@@ -23,7 +23,7 @@ export default function FactSourceBadge(props) {
       } catch {
         return null;
       }
-    }
+    },
   );
 
   const sources = () => data()?.sources || [];
@@ -39,7 +39,11 @@ export default function FactSourceBadge(props) {
 
   const visible = () => sources().slice(0, MAX_VISIBLE);
   const extra = () => sources().slice(MAX_VISIBLE);
-  const allUrlsTitle = () => sources().map((s) => s.url).filter(Boolean).join("\n");
+  const allUrlsTitle = () =>
+    sources()
+      .map((s) => s.url)
+      .filter(Boolean)
+      .join("\n");
 
   return (
     <Show when={!data.loading && sources().length > 0}>
@@ -66,7 +70,10 @@ export default function FactSourceBadge(props) {
         <Show when={extra().length > 0}>
           <span
             class="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-help"
-            title={extra().map((s) => s.url).filter(Boolean).join("\n")}
+            title={extra()
+              .map((s) => s.url)
+              .filter(Boolean)
+              .join("\n")}
           >
             +{extra().length} more
           </span>

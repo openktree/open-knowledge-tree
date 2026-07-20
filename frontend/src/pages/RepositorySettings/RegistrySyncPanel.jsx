@@ -1,6 +1,6 @@
 import { createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
 import Card from "../../components/Card";
+import { api } from "../../services/api";
 
 const LEVEL_OPTIONS = [
   { value: "facts", label: "Facts only" },
@@ -77,7 +77,8 @@ export default function RegistrySyncPanel(props) {
         when={configured()}
         fallback={
           <p class="text-sm text-yellow-600 dark:text-yellow-400">
-            Registry is not configured. Set <code>providers.registry.url</code> or <code>providers.registry.registries</code> in your config.
+            Registry is not configured. Set <code>providers.registry.url</code> or{" "}
+            <code>providers.registry.registries</code> in your config.
           </p>
         }
       >
@@ -85,24 +86,23 @@ export default function RegistrySyncPanel(props) {
           when={enabled()}
           fallback={
             <p class="text-sm text-yellow-600 dark:text-yellow-400">
-              The remote registry integration is disabled for this repository.
-              Enable it in the panel above to push and pull from the registry.
+              The remote registry integration is disabled for this repository. Enable it in the
+              panel above to push and pull from the registry.
             </p>
           }
         >
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-            Push all processed sources to the registry, or pull available
-            decompositions from it. Each operation runs as a background job.
+            Push all processed sources to the registry, or pull available decompositions from it.
+            Each operation runs as a background job.
           </p>
 
           <div class="mb-4 p-3 border rounded dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
             <h4 class="text-sm font-semibold mb-2 dark:text-gray-200">Sync Levels</h4>
             <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              Controls how much data is included when pushing to or pulling from
-              the registry. <strong>Facts only</strong> = sources + facts + fact
-              embeddings (concepts regenerated locally on pull). <strong>Facts +
-              Concepts</strong> = adds concepts, links, and concept embeddings
-              (the default, full sync).
+              Controls how much data is included when pushing to or pulling from the registry.{" "}
+              <strong>Facts only</strong> = sources + facts + fact embeddings (concepts regenerated
+              locally on pull). <strong>Facts + Concepts</strong> = adds concepts, links, and
+              concept embeddings (the default, full sync).
             </p>
             <div class="flex flex-wrap items-end gap-4">
               <label class="text-sm">
@@ -112,7 +112,9 @@ export default function RegistrySyncPanel(props) {
                   onInput={(e) => setPushLevel(e.currentTarget.value)}
                   class="px-2 py-1 rounded border dark:bg-gray-900 dark:border-gray-600 dark:text-white"
                 >
-                  {LEVEL_OPTIONS.map((o) => <option value={o.value}>{o.label}</option>)}
+                  {LEVEL_OPTIONS.map((o) => (
+                    <option value={o.value}>{o.label}</option>
+                  ))}
                 </select>
               </label>
               <label class="text-sm">
@@ -122,7 +124,9 @@ export default function RegistrySyncPanel(props) {
                   onInput={(e) => setPullLevel(e.currentTarget.value)}
                   class="px-2 py-1 rounded border dark:bg-gray-900 dark:border-gray-600 dark:text-white"
                 >
-                  {LEVEL_OPTIONS.map((o) => <option value={o.value}>{o.label}</option>)}
+                  {LEVEL_OPTIONS.map((o) => (
+                    <option value={o.value}>{o.label}</option>
+                  ))}
                 </select>
               </label>
               <button

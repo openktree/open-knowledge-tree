@@ -1,0 +1,217 @@
+# CI gate for pull requests and pushes to main.
+#
+# Mirrors the local gates documented in AGENTS.md ("CI & Lefthook"):
+#   - golangci-lint on backend/ and registry/ (permissive .golangci.yml)
+#   - frontend: Biome check + vite build + page-size policy
+#   - backend: go build + go vet + unit tests (./internal/... ./cmd/...)
+#   - backend e2e: full ./e2e/... against a tmpfs Postgres on :5433
+#       (skips the SERPER_API_KEY-gated test; add the secret to enable it)
+#   - registry: go build + go vet + go test
+#   - sqlc: regenerate and diff against the checked-in internal/store/
+#
+# Path filtering (dorny/paths-filter) skips jobs whose files weren't
+# touched, so a docs-only PR doesn't pay the backend-e2e bill.
+#
+# Local mirror:
+#   just lefthook-install   # one-time, wires pre-commit + pre-push
+#   just check-frontend    # page-size + vite build
+#   just lint              # golangci-lint on both Go modules
+#   just lint-frontend     # Biome check
+#   just test-e2e          # the e2e suite CI runs (sans SERPER)
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.f.outputs.backend }}
+      registry: ${{ steps.f.outputs.registry }}
+      frontend: ${{ steps.f.outputs.frontend }}
+      workflows: ${{ steps.f.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.golangci.yml'
+            registry:
+              - 'registry/**'
+              - '.golangci.yml'
+            frontend:
+              - 'frontend/**'
+            workflows:
+              - '.github/workflows/**'
+              - 'lefthook.yml'
+              - 'justfile'
+
+  lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || needs.changes.outputs.registry == 'true' || needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: |
+            backend/go.sum
+            registry/go.sum
+      # golangci-lint v1.x: the .golangci.yml at repo root uses v1
+      # schema. Pin to golangci-lint-action@v6 (last major that
+      # supports golangci-lint v1). To move to golangci-lint v2,
+      # bump the action to @v7+ and migrate .golangci.yml to v2.
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+          working-directory: backend
+          args: --timeout=5m
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+          working-directory: registry
+          args: --timeout=5m
+
+  frontend-lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' || needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx biome check
+
+  frontend-build:
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' || needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run check:pages
+      - run: npm run build
+
+  backend-unit:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: backend/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      # Unit tests only — ./e2e/... needs the e2e build tag + a live
+      # Postgres (see the backend-e2e job below).
+      - run: go test -count=1 -timeout=120s ./internal/... ./cmd/...
+
+  backend-e2e:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: okt
+          POSTGRES_PASSWORD: okt_test
+          POSTGRES_DB: okt
+        ports:
+          - 5433:5432
+        # Mount the same init script `just test-e2e` uses so the
+        # dedicated `okt_tasks` database exists by the time tests run.
+        # The script is idempotent so a no-op on subsequent boots is
+        # fine. The health check gates the job on `pg_isready`.
+        options: >-
+          --health-cmd "pg_isready -U okt -d okt"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --volume ${{ github.workspace }}/backend/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+    env:
+      OKT_TEST_DATABASE_URL: postgres://okt:okt_test@localhost:5433/okt?sslmode=disable
+      OKT_TEST_TASKS_DATABASE_URL: postgres://okt:okt_test@localhost:5433/okt_tasks?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: backend/go.sum
+      # Skip the SERPER_API_KEY-gated test; add the secret to enable it.
+      - run: go test -tags=e2e -count=1 -timeout=300s -skip TestSerperSearchProvider_Search ./e2e/...
+
+  registry:
+    needs: changes
+    if: ${{ needs.changes.outputs.registry == 'true' || needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: registry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: registry/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -count=1 -timeout=120s ./...
+
+  sqlc-diff:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: backend/go.sum
+      # sqlc isn't a Go module import; install the CLI matching the
+      # version pinned in backend/sqlc.yaml (no version pin there
+      # yet, so track the latest stable here — bump consciously).
+      - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+      - run: sqlc generate
+      - name: Fail if generated store is stale
+        run: git diff --exit-code -- internal/store/

@@ -19,9 +19,7 @@ export default function SearchProvidersTab(props) {
             <Show when={p.enabled_for_repo === false}>
               <Badge variant="gray">Disabled for this repo</Badge>
             </Show>
-            <For each={p.supports || []}>
-              {(s) => <Badge variant="blue">{s}</Badge>}
-            </For>
+            <For each={p.supports || []}>{(s) => <Badge variant="blue">{s}</Badge>}</For>
           </div>
         )}
       </ItemList>

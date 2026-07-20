@@ -1,14 +1,14 @@
 // @okt-page-allow-large: folder page; checker miscounts default export as internal subcomponent
-import { createSignal, createMemo, Show, createResource } from "solid-js";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
+import Alert from "../../components/Alert";
+import Button from "../../components/Button";
+import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
+import Pagination from "../../components/Pagination";
+import UploadSourcePanel from "../../components/UploadSourcePanel";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
-import Layout from "../../components/Layout";
-import EmptyState from "../../components/EmptyState";
-import Alert from "../../components/Alert";
-import Button from "../../components/Button";
-import Pagination from "../../components/Pagination";
-import UploadSourcePanel from "../../components/UploadSourcePanel";
 import SourcesForm from "./SourcesForm";
 import SourcesList from "./SourcesList";
 
@@ -48,7 +48,7 @@ export default function Sources() {
         setAlert({ variant: "error", message: err.message });
         return null;
       }
-    }
+    },
   );
 
   const onSearch = (q) => {
@@ -79,8 +79,20 @@ export default function Sources() {
     setAlert(null);
     try {
       await api.processSource(slug, source.id);
-      setAlert({ variant: "success", message: "Decomposition job queued for " + (source.parsed_title || source.url) });
-      mutate((current) => current ? { ...current, data: current.data.map((s) => s.id === source.id ? { ...s, status: "processed" } : s) } : current);
+      setAlert({
+        variant: "success",
+        message: "Decomposition job queued for " + (source.parsed_title || source.url),
+      });
+      mutate((current) =>
+        current
+          ? {
+              ...current,
+              data: current.data.map((s) =>
+                s.id === source.id ? { ...s, status: "processed" } : s,
+              ),
+            }
+          : current,
+      );
     } catch (err) {
       setAlert({ variant: "error", message: err.message });
     } finally {
@@ -95,10 +107,22 @@ export default function Sources() {
     setAlert(null);
     try {
       await api.retrySource(slug, source.id);
-      setAlert({ variant: "success", message: "Re-queued fetch for " + (source.parsed_title || source.url) });
+      setAlert({
+        variant: "success",
+        message: "Re-queued fetch for " + (source.parsed_title || source.url),
+      });
       // Optimistically flip the row back to 'pending' so the UI
       // reflects the reset before the worker picks the job up.
-      mutate((current) => current ? { ...current, data: current.data.map((s) => s.id === source.id ? { ...s, status: "pending", error: null } : s) } : current);
+      mutate((current) =>
+        current
+          ? {
+              ...current,
+              data: current.data.map((s) =>
+                s.id === source.id ? { ...s, status: "pending", error: null } : s,
+              ),
+            }
+          : current,
+      );
     } catch (err) {
       setAlert({ variant: "error", message: err.message });
     } finally {

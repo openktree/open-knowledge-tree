@@ -79,7 +79,13 @@ function DecompositionProviderCard(props) {
             fallback={<span class="text-gray-400">none</span>}
           >
             <div class="flex items-center gap-1 flex-wrap">
-              <For each={p().supports}>{(s) => <span class="text-xs font-mono text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">{s}</span>}</For>
+              <For each={p().supports}>
+                {(s) => (
+                  <span class="text-xs font-mono text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">
+                    {s}
+                  </span>
+                )}
+              </For>
             </div>
           </Show>
         </DetailRow>
@@ -99,10 +105,8 @@ function DecompositionProviderCard(props) {
             fallback={
               <span class="text-amber-600 dark:text-amber-400 text-xs">
                 not configured — see the{" "}
-                <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">
-                  requires
-                </code>{" "}
-                field for the env var or config key to set
+                <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">requires</code> field
+                for the env var or config key to set
               </span>
             }
           >
@@ -121,7 +125,9 @@ function DecompositionProviderCard(props) {
               {([key, value]) => (
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">{key}</span>
-                  <span class="text-xs text-gray-700 dark:text-gray-300 font-mono break-all">{value}</span>
+                  <span class="text-xs text-gray-700 dark:text-gray-300 font-mono break-all">
+                    {value}
+                  </span>
                 </div>
               )}
             </For>

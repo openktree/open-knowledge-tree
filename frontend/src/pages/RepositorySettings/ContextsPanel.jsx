@@ -1,8 +1,8 @@
-import { createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
-import Button from "../../components/Button";
+import { createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
+import Button from "../../components/Button";
 import FormField from "../../components/FormField";
+import { api } from "../../services/api";
 import MigrateContextDialog from "./MigrateContextDialog";
 
 // ContextsPanel renders the repo's allowed context list with
@@ -79,14 +79,28 @@ export default function ContextsPanel(props) {
         </Button>
       </div>
       <p class="text-sm text-gray-500 dark:text-gray-400">
-        The allowed context (ontology class) labels the concept-extraction
-        prompt may assign. DBpedia-derived labels are seeded at creation;
-        custom labels (Product, Application, Role, …) are admin-defined.
+        The allowed context (ontology class) labels the concept-extraction prompt may assign.
+        DBpedia-derived labels are seeded at creation; custom labels (Product, Application, Role, …)
+        are admin-defined.
       </p>
       <Show when={adding()}>
-        <form onSubmit={addContext} class="space-y-2 p-3 rounded border border-gray-200 dark:border-gray-700">
-          <FormField label="Context label" value={newContext()} onChange={setNewContext} placeholder="e.g. Product" required />
-          <FormField label="Description" value={newDesc()} onChange={setNewDesc} placeholder="Short description (optional)" />
+        <form
+          onSubmit={addContext}
+          class="space-y-2 p-3 rounded border border-gray-200 dark:border-gray-700"
+        >
+          <FormField
+            label="Context label"
+            value={newContext()}
+            onChange={setNewContext}
+            placeholder="e.g. Product"
+            required
+          />
+          <FormField
+            label="Description"
+            value={newDesc()}
+            onChange={setNewDesc}
+            placeholder="Short description (optional)"
+          />
           <Button type="submit" disabled={busy() || !newContext().trim()} loading={busy()}>
             Add
           </Button>
@@ -111,10 +125,18 @@ export default function ContextsPanel(props) {
                     <div class="mt-2 space-y-2">
                       <FormField label="Description" value={editDesc()} onChange={setEditDesc} />
                       <div class="flex gap-2">
-                        <Button onClick={() => saveEdit(c.context)} disabled={busy()} loading={busy()}>
+                        <Button
+                          onClick={() => saveEdit(c.context)}
+                          disabled={busy()}
+                          loading={busy()}
+                        >
                           Save
                         </Button>
-                        <Button variant="secondary" onClick={() => setEditing("")} disabled={busy()}>
+                        <Button
+                          variant="secondary"
+                          onClick={() => setEditing("")}
+                          disabled={busy()}
+                        >
                           Cancel
                         </Button>
                       </div>
@@ -125,10 +147,20 @@ export default function ContextsPanel(props) {
                   </Show>
                 </div>
                 <div class="flex flex-wrap justify-end gap-1">
-                  <Button variant="secondary" onClick={() => { setEditing(c.context); setEditDesc(c.description || ""); }}>
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setEditing(c.context);
+                      setEditDesc(c.description || "");
+                    }}
+                  >
                     Edit
                   </Button>
-                  <Button variant="secondary" onClick={() => setMigrating(c.context)} disabled={c.concept_count === 0 && true}>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setMigrating(c.context)}
+                    disabled={c.concept_count === 0 && true}
+                  >
                     Migrate
                   </Button>
                   <Button variant="danger" onClick={() => del(c.context)} disabled={busy()}>
@@ -146,7 +178,10 @@ export default function ContextsPanel(props) {
           contexts={props.contexts}
           sourceContext={migrating()}
           onClose={() => setMigrating(null)}
-          onMigrated={() => { setMigrating(null); props.onChanged?.(); }}
+          onMigrated={() => {
+            setMigrating(null);
+            props.onChanged?.();
+          }}
           onAlert={props.onAlert}
         />
       </Show>

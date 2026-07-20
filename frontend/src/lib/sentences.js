@@ -175,7 +175,8 @@ function isClosingFence(line, marker) {
 
 function isIndentedCodeLine(line) {
   if (line.length >= 1 && line[0] === "\t") return true;
-  if (line.length >= 4 && line[0] === " " && line[1] === " " && line[2] === " " && line[3] === " ") return true;
+  if (line.length >= 4 && line[0] === " " && line[1] === " " && line[2] === " " && line[3] === " ")
+    return true;
   return false;
 }
 
@@ -217,7 +218,8 @@ function isListItem(line) {
   let i = 0;
   while (i < t.length && t[i] >= "0" && t[i] <= "9") i++;
   if (i === 0) return false;
-  if (i < t.length && (t[i] === "." || t[i] === ")") && i + 1 < t.length && t[i + 1] === " ") return true;
+  if (i < t.length && (t[i] === "." || t[i] === ")") && i + 1 < t.length && t[i + 1] === " ")
+    return true;
   return false;
 }
 
@@ -256,7 +258,11 @@ function splitProseSentences(unitRunes, baseRune) {
     if (i + 1 < unitRunes.length) next = unitRunes[i + 1];
     if (next === " " || next === "\t" || next === "\n" || next === "") {
       let end = i + 1;
-      while (end < unitRunes.length && (unitRunes[end] === " " || unitRunes[end] === "\t" || unitRunes[end] === "\n")) end++;
+      while (
+        end < unitRunes.length &&
+        (unitRunes[end] === " " || unitRunes[end] === "\t" || unitRunes[end] === "\n")
+      )
+        end++;
       const text = unitRunes.slice(sentStart, end).join("");
       if (trimRunes(text) !== "") {
         chunks.push({ text, start: baseRune + sentStart, end: baseRune + end });

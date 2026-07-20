@@ -1,5 +1,5 @@
-import { Show } from "solid-js";
 import { A, useParams } from "@solidjs/router";
+import { Show } from "solid-js";
 import FactBadges from "../../components/FactBadges";
 import ImageFromUrl from "../../components/ImageFromUrl";
 

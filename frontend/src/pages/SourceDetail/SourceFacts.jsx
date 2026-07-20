@@ -1,6 +1,6 @@
-import { Show, For } from "solid-js";
-import Card from "../../components/Card";
+import { For, Show } from "solid-js";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import Pagination from "../../components/Pagination";
 import SearchInput from "../../components/SearchInput";
@@ -23,20 +23,14 @@ export default function SourceFacts(props) {
       <div class="mt-6">
         <Card>
           <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
-            <h2 class="text-lg font-semibold dark:text-white">
-              Extracted facts ({props.total()})
-            </h2>
+            <h2 class="text-lg font-semibold dark:text-white">Extracted facts ({props.total()})</h2>
             <div class="flex items-center gap-2">
               <SearchInput
                 placeholder="Search fact text..."
                 initial={props.search()}
                 onSearch={props.onSearch}
               />
-              <Button
-                variant="secondary"
-                onClick={props.onRefresh}
-                class="text-xs px-2 py-1"
-              >
+              <Button variant="secondary" onClick={props.onRefresh} class="text-xs px-2 py-1">
                 Refresh facts
               </Button>
             </div>
@@ -58,12 +52,11 @@ export default function SourceFacts(props) {
                 onOffsetChange={props.onOffsetChange}
               />
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-                Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())} of {props.total().toLocaleString()}
+                Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())}{" "}
+                of {props.total().toLocaleString()}
               </p>
               <div class="space-y-2 mt-3">
-                <For each={rows()}>
-                  {(fact) => <SourceFactRow fact={fact} slug={slug()} />}
-                </For>
+                <For each={rows()}>{(fact) => <SourceFactRow fact={fact} slug={slug()} />}</For>
               </div>
               <Pagination
                 total={props.total}

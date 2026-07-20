@@ -1,5 +1,5 @@
-import { For, Show } from "solid-js";
 import { A } from "@solidjs/router";
+import { For, Show } from "solid-js";
 
 // FactSourceList renders the sources that extracted or confirmed
 // a fact. Each row shows the source's parsed title (or URL when
@@ -18,9 +18,7 @@ export default function FactSourceList(props) {
 
   return (
     <div>
-      <h3 class="text-sm font-semibold dark:text-white mb-2">
-        Sources ({sources().length})
-      </h3>
+      <h3 class="text-sm font-semibold dark:text-white mb-2">Sources ({sources().length})</h3>
       <div class="space-y-2">
         <For each={sources()}>
           {(src) => {

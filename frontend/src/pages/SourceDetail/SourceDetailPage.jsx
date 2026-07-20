@@ -1,19 +1,19 @@
-import { createMemo, createResource, Show, createSignal } from "solid-js";
 import { useParams } from "@solidjs/router";
-import { api } from "../../services/api";
-import { useRBAC } from "../../store/rbac";
-import Layout from "../../components/Layout";
-import Loading from "../../components/Loading";
-import EmptyState from "../../components/EmptyState";
-import Button from "../../components/Button";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
 import Alert from "../../components/Alert";
 import Badge from "../../components/Badge";
-import SourceDetailContent from "./SourceDetailContent";
-import ParseEmptyState from "./ParseEmptyState";
+import Button from "../../components/Button";
+import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
+import { api } from "../../services/api";
+import { useRBAC } from "../../store/rbac";
+import { parseStatusCopy } from "./constants";
 import FetchErrorState from "./FetchErrorState";
+import ParseEmptyState from "./ParseEmptyState";
+import SourceDetailContent from "./SourceDetailContent";
 import SourceFacts from "./SourceFacts";
 import SourceSentenceModal from "./SourceSentenceModal";
-import { parseStatusCopy } from "./constants";
 
 /**
  * Route body for /:slug/sources/:sourceID.
@@ -53,7 +53,7 @@ export default function SourceDetailPage() {
       if (!slug || !sourceID) return null;
       const res = await api.getSource(slug, sourceID);
       return { source: res.source, images: res.images || [] };
-    }
+    },
   );
 
   const [factsData, { refetch: refetchFacts }] = createResource(
@@ -71,7 +71,7 @@ export default function SourceDetailPage() {
       } catch {
         return null;
       }
-    }
+    },
   );
 
   // Sentence-level provenance for the source. Loaded once per
@@ -86,7 +86,7 @@ export default function SourceDetailPage() {
       } catch {
         return [];
       }
-    }
+    },
   );
 
   // Set<number> of sentence_index values that have at least one
@@ -146,7 +146,10 @@ export default function SourceDetailPage() {
     setProcessAlert(null);
     try {
       await api.processSource(slug, sourceID);
-      setProcessAlert({ variant: "success", message: "Decomposition job queued. Refresh to see results." });
+      setProcessAlert({
+        variant: "success",
+        message: "Decomposition job queued. Refresh to see results.",
+      });
     } catch (err) {
       setProcessAlert({ variant: "error", message: err.message });
     } finally {
@@ -171,19 +174,10 @@ export default function SourceDetailPage() {
           />
         }
       >
-        <Show
-          when={!data.loading}
-          fallback={<Loading message="Loading source..." />}
-        >
+        <Show when={!data.loading} fallback={<Loading message="Loading source..." />}>
           <Show
             when={!data.error}
-            fallback={
-              <FetchErrorState
-                error={data.error}
-                onRetry={refresh}
-                slug={params.slug}
-              />
-            }
+            fallback={<FetchErrorState error={data.error} onRetry={refresh} slug={params.slug} />}
           >
             <Show
               when={source()}
@@ -213,7 +207,9 @@ export default function SourceDetailPage() {
               </ParseEmptyState>
 
               <div class="mt-4 flex items-center gap-3 flex-wrap">
-                <Show when={source()?.parse_status === "ok" || source()?.parse_status === "unsupported"}>
+                <Show
+                  when={source()?.parse_status === "ok" || source()?.parse_status === "unsupported"}
+                >
                   <Button variant="secondary" onClick={refresh} class="text-xs">
                     Refresh
                   </Button>

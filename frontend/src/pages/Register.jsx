@@ -1,10 +1,10 @@
-import { createSignal, onMount } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { api } from "../services/api";
+import { createSignal, onMount } from "solid-js";
 import Alert from "../components/Alert";
 import Button from "../components/Button";
-import FormField from "../components/FormField";
 import Card from "../components/Card";
+import FormField from "../components/FormField";
+import { api } from "../services/api";
 
 export default function Register() {
   const [displayName, setDisplayName] = createSignal("");

@@ -1,17 +1,17 @@
 import { createResource, createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
 import Alert from "../../components/Alert";
 import Layout from "../../components/Layout";
+import { api } from "../../services/api";
 import AssignRoleForm from "./AssignRoleForm";
 import AvailablePermissions from "./AvailablePermissions";
 import UsersTable from "./UsersTable";
 
 export default function Users() {
-  const [users, { refetch }] = createResource(
-    () => api.listUsers().catch(() => ({ users: [], available_permissions: [] }))
+  const [users, { refetch }] = createResource(() =>
+    api.listUsers().catch(() => ({ users: [], available_permissions: [] })),
   );
-  const [repositories] = createResource(
-    () => api.listRepositories().catch(() => ({ repositories: [] }))
+  const [repositories] = createResource(() =>
+    api.listRepositories().catch(() => ({ repositories: [] })),
   );
   const [alert, setAlert] = createSignal(null);
 
@@ -48,10 +48,7 @@ export default function Users() {
           onAlert={setAlert}
         />
 
-        <UsersTable
-          users={() => data().users}
-          onRemoveRole={handleRemoveRole}
-        />
+        <UsersTable users={() => data().users} onRemoveRole={handleRemoveRole} />
 
         <AvailablePermissions permissions={() => data().available_permissions} />
       </div>

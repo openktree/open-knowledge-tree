@@ -1,6 +1,6 @@
-import { createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
+import { createSignal, For, Show } from "solid-js";
 import Card from "../../components/Card";
+import { api } from "../../services/api";
 
 const CONTENT_TYPES = [
   { value: "document", label: "Documents (uploaded files)" },
@@ -87,9 +87,9 @@ export default function ContentTypesPanel(props) {
     <Card>
       <h3 class="text-lg font-semibold mb-3 dark:text-white">Allowed Content Types</h3>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Restrict what kinds of sources this repository accepts. A strictly scientific
-        repo can allow only DOIs; a documents-only repo can allow only uploads.
-        "Allow all" (the default) accepts documents, URLs, and DOIs.
+        Restrict what kinds of sources this repository accepts. A strictly scientific repo can allow
+        only DOIs; a documents-only repo can allow only uploads. "Allow all" (the default) accepts
+        documents, URLs, and DOIs.
       </p>
 
       <div class="mb-4 p-3 border rounded dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">

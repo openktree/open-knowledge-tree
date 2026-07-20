@@ -132,6 +132,34 @@ just registry-logs    # registry-dev service (dev profile)
 
 See the `justfile` at the repo root for the full list of recipes.
 
+## Contributing
+
+PRs are gated by the `ci` workflow (`.github/workflows/ci.yml`): lint
+(golangci-lint on `backend/` + `registry/`, Biome on `frontend/`),
+frontend build + page-size policy, backend unit + e2e tests against an
+isolated Postgres, registry tests, ai-plugins sync check, and a sqlc
+regenerate-and-diff. Path filtering skips jobs whose files weren't
+touched.
+
+To run the same gates locally before pushing:
+
+```bash
+just lefthook-install   # one-time: wires pre-commit + pre-push git hooks
+just lint               # golangci-lint on both Go modules (needs golangci-lint on PATH)
+just lint-frontend      # Biome check on frontend/
+just check-frontend     # page-size policy + vite build
+just test-e2e           # the e2e suite CI runs (boots an isolated test Postgres)
+```
+
+The pre-commit hook runs `just check-pages`, `just check-plugins`,
+`go vet` on staged Go files, and `npx biome check` on staged frontend
+files. The pre-push hook runs `just check-frontend` plus `go build` in
+both Go modules. Bypass with `git commit --no-verify` (use sparingly —
+CI still catches what you skipped).
+
+See `AGENTS.md` for the full development conventions and the
+"CI & Lefthook" section for the gate-by-gate breakdown.
+
 ## Releases
 
 Releases are managed by [release-please](https://github.com/googleapis/release-please)

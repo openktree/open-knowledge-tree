@@ -1,7 +1,7 @@
-import { Show } from "solid-js";
 import { A } from "@solidjs/router";
-import EmptyState from "../../components/EmptyState";
+import { Show } from "solid-js";
 import Button from "../../components/Button";
+import EmptyState from "../../components/EmptyState";
 
 /**
  * Inverts the typical "wrap the children" pattern: by
@@ -37,10 +37,7 @@ export default function ParseEmptyState(props) {
     return s === "ok" || s === "unsupported";
   };
   return (
-    <Show
-      when={!showChildren()}
-      fallback={props.children}
-    >
+    <Show when={!showChildren()} fallback={props.children}>
       <div class="space-y-4">
         <EmptyState
           title={props.copy[status()] || "Awaiting parse"}

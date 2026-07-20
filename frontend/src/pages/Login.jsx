@@ -1,11 +1,11 @@
-import { createSignal, onMount } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { api } from "../services/api";
-import { setToken } from "../store/auth";
+import { createSignal, onMount } from "solid-js";
 import Alert from "../components/Alert";
 import Button from "../components/Button";
-import FormField from "../components/FormField";
 import Card from "../components/Card";
+import FormField from "../components/FormField";
+import { api } from "../services/api";
+import { setToken } from "../store/auth";
 
 export default function Login() {
   const [email, setEmail] = createSignal("");

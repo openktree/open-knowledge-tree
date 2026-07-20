@@ -1,4 +1,4 @@
-import { createContext, useContext, createResource } from "solid-js";
+import { createContext, createResource, useContext } from "solid-js";
 import { api } from "../services/api";
 import { getTokenSignal } from "./auth";
 
@@ -16,22 +16,25 @@ export function RBACProvider(props) {
       } catch {
         return { permissions: [], system_admin: false };
       }
-    }
+    },
   );
 
   const value = [permsData, mutate];
 
-  return (
-    <RBACContext.Provider value={value}>
-      {props.children}
-    </RBACContext.Provider>
-  );
+  return <RBACContext.Provider value={value}>{props.children}</RBACContext.Provider>;
 }
 
 export function useRBAC() {
   const val = useContext(RBACContext);
   if (!val) {
-    const dead = { permissions: () => [], systemAdmin: () => false, loaded: () => false, loading: () => false, hasPermission: () => false, refresh: async () => {} };
+    const dead = {
+      permissions: () => [],
+      systemAdmin: () => false,
+      loaded: () => false,
+      loading: () => false,
+      hasPermission: () => false,
+      refresh: async () => {},
+    };
     return dead;
   }
 
@@ -56,10 +59,9 @@ export function useRBAC() {
     hasPermission(resource, action) {
       if (admin()) return true;
       const p = perms();
-      return p.some(
-        (x) => x.resource === resource && (x.action === action || x.action === "*")
-      ) || p.some(
-        (x) => x.resource === "*" && x.action === "*"
+      return (
+        p.some((x) => x.resource === resource && (x.action === action || x.action === "*")) ||
+        p.some((x) => x.resource === "*" && x.action === "*")
       );
     },
     async refresh() {

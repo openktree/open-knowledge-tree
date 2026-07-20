@@ -1,4 +1,4 @@
-import { createMemo, createEffect } from "solid-js";
+import { createEffect, createMemo } from "solid-js";
 import { renderMarkdown } from "../lib/markdown";
 import { wrapSentencesHtml } from "../lib/wrapSentences";
 

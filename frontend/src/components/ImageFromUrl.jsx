@@ -1,4 +1,4 @@
-import { createSignal, Show, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import { api } from "../services/api";
 
 // resolveStorageImageURL returns the path-portion of the
@@ -13,7 +13,8 @@ import { api } from "../services/api";
 // reuse api.getSourceImage instead of re-implementing the auth
 // header logic. The blob URL is rendered by the caller via
 // createMemo + onCleanup (see ImageFromUrl below).
-const STORAGE_PATH_RE = /^\/(?:api\/v1\/)?repositories\/([^/]+)\/sources\/([^/]+)\/images\/([^/]+)$/;
+const STORAGE_PATH_RE =
+  /^\/(?:api\/v1\/)?repositories\/([^/]+)\/sources\/([^/]+)\/images\/([^/]+)$/;
 
 export function resolveStorageImageURL(imageUrl) {
   if (!imageUrl || typeof imageUrl !== "string") return null;
@@ -97,7 +98,9 @@ export default function ImageFromUrl(props) {
         <div
           class={props.class}
           style={{ display: "flex", "align-items": "center", "justify-content": "center" }}
-          ref={(el) => { if (el) fetchBlob(); }}
+          ref={(el) => {
+            if (el) fetchBlob();
+          }}
         />
       </Show>
     </Show>

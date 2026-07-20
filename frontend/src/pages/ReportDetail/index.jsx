@@ -1,13 +1,14 @@
 // @okt-page-allow-large: folder page; checker miscounts default export as internal subcomponent
-import { createMemo, createResource, createSignal, Show, For } from "solid-js";
-import { useParams, A } from "@solidjs/router";
-import { api } from "../../services/api";
-import { useRBAC } from "../../store/rbac";
-import Layout from "../../components/Layout";
-import Loading from "../../components/Loading";
-import EmptyState from "../../components/EmptyState";
+
+import { A, useParams } from "@solidjs/router";
+import { createMemo, createResource, createSignal, For, Show } from "solid-js";
 import Alert from "../../components/Alert";
 import CitedFactModal from "../../components/CitedFactModal";
+import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
+import { api } from "../../services/api";
+import { useRBAC } from "../../store/rbac";
 import ReportDetailContent from "./ReportDetailContent";
 
 export default function ReportDetail() {
@@ -28,7 +29,7 @@ export default function ReportDetail() {
         report: res.report || {},
         annotations: res.annotations || [],
       };
-    }
+    },
   );
 
   // Fetch the full report list for this repo so we can show the
@@ -44,7 +45,7 @@ export default function ReportDetail() {
       } catch {
         return [];
       }
-    }
+    },
   );
 
   const parentReport = createMemo(() => {
@@ -112,13 +113,38 @@ export default function ReportDetail() {
 
   return (
     <Layout>
-      <Show when={canRead()} fallback={<EmptyState title="Permission required" description="You do not have permission to read reports." />}>
+      <Show
+        when={canRead()}
+        fallback={
+          <EmptyState
+            title="Permission required"
+            description="You do not have permission to read reports."
+          />
+        }
+      >
         <Show when={!data.loading} fallback={<Loading message="Loading report..." />}>
-          <Show when={!data.error} fallback={<Alert variant="error" message={data.error?.message || "Failed to load report"} />}>
-            <Show when={data()?.report} fallback={<EmptyState title="Report not found" description="This report may have been deleted." />}>
+          <Show
+            when={!data.error}
+            fallback={
+              <Alert variant="error" message={data.error?.message || "Failed to load report"} />
+            }
+          >
+            <Show
+              when={data()?.report}
+              fallback={
+                <EmptyState
+                  title="Report not found"
+                  description="This report may have been deleted."
+                />
+              }
+            >
               <div class="space-y-4">
                 <Show when={alert()}>
-                  <Alert variant={alert()?.variant} message={alert()?.message} onDismiss={() => setAlert(null)} />
+                  <Alert
+                    variant={alert()?.variant}
+                    message={alert()?.message}
+                    onDismiss={() => setAlert(null)}
+                  />
                 </Show>
                 <ReportDetailContent
                   report={() => data().report}

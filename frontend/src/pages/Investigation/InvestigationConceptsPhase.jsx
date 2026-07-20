@@ -1,11 +1,11 @@
-import { createResource, createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
-import Card from "../../components/Card";
-import Button from "../../components/Button";
+import { createResource, createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
-import Pagination from "../../components/Pagination";
+import Button from "../../components/Button";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import Loading from "../../components/Loading";
+import Pagination from "../../components/Pagination";
+import { api } from "../../services/api";
 import ConceptRow from "../Concepts/ConceptRow";
 
 const PAGE_SIZE = 100;
@@ -34,7 +34,7 @@ export default function InvestigationConceptsPhase(props) {
         props.onAlert?.({ variant: "error", message: err.message });
         return { data: [], total: 0, limit: PAGE_SIZE, offset: 0 };
       }
-    }
+    },
   );
 
   const concepts = () => conceptData()?.data || [];
@@ -45,15 +45,15 @@ export default function InvestigationConceptsPhase(props) {
     <Card>
       <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <h2 class="text-lg font-semibold dark:text-white">Concepts</h2>
-        <Button variant="secondary" onClick={refetch}>Refresh</Button>
+        <Button variant="secondary" onClick={refetch}>
+          Refresh
+        </Button>
       </div>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Concepts extracted from this investigation's stable facts. Each concept links to the facts that mention it.
+        Concepts extracted from this investigation's stable facts. Each concept links to the facts
+        that mention it.
       </p>
-      <Show
-        when={!conceptData.loading}
-        fallback={<Loading message="Loading concepts..." />}
-      >
+      <Show when={!conceptData.loading} fallback={<Loading message="Loading concepts..." />}>
         <Show
           when={concepts().length > 0}
           fallback={
@@ -71,7 +71,8 @@ export default function InvestigationConceptsPhase(props) {
               onOffsetChange={setOffset}
             />
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-              Showing {offset() + 1}–{Math.min(offset() + limit(), total())} of {total().toLocaleString()}
+              Showing {offset() + 1}–{Math.min(offset() + limit(), total())} of{" "}
+              {total().toLocaleString()}
             </p>
           </Show>
           <div class="space-y-2 mt-3">

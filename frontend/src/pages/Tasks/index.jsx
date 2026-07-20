@@ -1,13 +1,13 @@
 import { createSignal, Show } from "solid-js";
-import Layout from "../../components/Layout";
 import Alert from "../../components/Alert";
-import Card from "../../components/Card";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
+import Layout from "../../components/Layout";
 import { useRBAC } from "../../store/rbac";
 import JobDetail from "./JobDetail";
-import TasksTable from "./TasksTable";
 import TasksFilters from "./TasksFilters";
 import TasksStats from "./TasksStats";
+import TasksTable from "./TasksTable";
 import { useTasks } from "./useTasks";
 
 export default function Tasks() {
@@ -57,7 +57,9 @@ export default function Tasks() {
             fallback={
               <Card>
                 <p class="text-gray-400 dark:text-gray-500 text-sm text-center py-4">
-                  {t.loading() ? "Loading..." : "No tasks found. Tasks will appear here once jobs are enqueued."}
+                  {t.loading()
+                    ? "Loading..."
+                    : "No tasks found. Tasks will appear here once jobs are enqueued."}
                 </p>
               </Card>
             }

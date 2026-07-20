@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
-import { api } from "../../services/api";
-import Button from "../../components/Button";
 import Badge from "../../components/Badge";
+import Button from "../../components/Button";
+import { api } from "../../services/api";
 
 // ContextMappingsPanel is the per-repo local↔registry context
 // mapping card. It shows:
@@ -47,8 +47,7 @@ export default function ContextMappingsPanel(props) {
   const localContexts = () => props.contexts?.() ?? [];
 
   const targetFor = (label) => newTargets()[label] ?? "";
-  const setTargetFor = (label, value) =>
-    setNewTargets({ ...newTargets(), [label]: value });
+  const setTargetFor = (label, value) => setNewTargets({ ...newTargets(), [label]: value });
 
   const addMapping = async (localCtx, target) => {
     if (!target) return;
@@ -127,17 +126,16 @@ export default function ContextMappingsPanel(props) {
       <div>
         <h3 class="text-lg font-semibold dark:text-white">Context Mapping</h3>
         <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Map your local contexts to the registry's canonical vocabulary so
-          contributions and pulls stay aligned. Unmapped contexts drift over
-          time; mapping them keeps your custom labels interoperable.
+          Map your local contexts to the registry's canonical vocabulary so contributions and pulls
+          stay aligned. Unmapped contexts drift over time; mapping them keeps your custom labels
+          interoperable.
         </p>
       </div>
 
       <Show when={!vocabAvailable()}>
         <div class="text-xs text-yellow-600 dark:text-yellow-400 p-2 rounded bg-yellow-50 dark:bg-yellow-900/20">
-          Registry vocabulary unavailable — the registry is not configured or
-          unreachable. Mappings are stored but not validated until a registry
-          is connected.
+          Registry vocabulary unavailable — the registry is not configured or unreachable. Mappings
+          are stored but not validated until a registry is connected.
         </div>
       </Show>
 
@@ -151,26 +149,21 @@ export default function ContextMappingsPanel(props) {
             <Badge variant="purple">needs attention</Badge>
           </div>
           <p class="text-xs text-amber-600 dark:text-amber-400 mb-3">
-            These local contexts have no mapping and aren't in the registry's
-            vocabulary. Pick a registry target for each so concepts under them
-            are shared correctly.
+            These local contexts have no mapping and aren't in the registry's vocabulary. Pick a
+            registry target for each so concepts under them are shared correctly.
           </p>
           <ul class="space-y-2">
             <For each={unmapped()}>
               {(label) => (
                 <li class="flex items-center gap-2">
-                  <span class="flex-1 text-sm font-medium dark:text-gray-200">
-                    {label}
-                  </span>
+                  <span class="flex-1 text-sm font-medium dark:text-gray-200">{label}</span>
                   <select
                     value={targetFor(label)}
                     onChange={(e) => setTargetFor(label, e.currentTarget.value)}
                     class="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200"
                   >
                     <option value="">Select registry target…</option>
-                    <For each={targetOptions()}>
-                      {(ctx) => <option value={ctx}>{ctx}</option>}
-                    </For>
+                    <For each={targetOptions()}>{(ctx) => <option value={ctx}>{ctx}</option>}</For>
                     <Show when={!vocabAvailable()}>
                       <option value="__custom">Type a target…</option>
                     </Show>
@@ -204,8 +197,7 @@ export default function ContextMappingsPanel(props) {
           when={mappings().length > 0}
           fallback={
             <p class="text-xs text-gray-400 dark:text-gray-500">
-              No mappings yet. Add one from the unmapped list above or by
-              editing a context.
+              No mappings yet. Add one from the unmapped list above or by editing a context.
             </p>
           }
         >
@@ -232,7 +224,11 @@ export default function ContextMappingsPanel(props) {
                     </Show>
                   </span>
                   <Show when={editing() === m.local_context}>
-                    <Button onClick={() => saveEdit(m.local_context)} disabled={busy()} loading={busy()}>
+                    <Button
+                      onClick={() => saveEdit(m.local_context)}
+                      disabled={busy()}
+                      loading={busy()}
+                    >
                       Save
                     </Button>
                     <Button variant="secondary" onClick={() => setEditing("")} disabled={busy()}>
@@ -240,7 +236,13 @@ export default function ContextMappingsPanel(props) {
                     </Button>
                   </Show>
                   <Show when={editing() !== m.local_context}>
-                    <Button variant="secondary" onClick={() => { setEditing(m.local_context); setEditTarget(m.registry_context); }}>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setEditing(m.local_context);
+                        setEditTarget(m.registry_context);
+                      }}
+                    >
                       Edit
                     </Button>
                     <Button variant="danger" onClick={() => del(m.local_context)} disabled={busy()}>
@@ -314,10 +316,18 @@ export default function ContextMappingsPanel(props) {
                 </select>
               </Show>
               <div class="flex gap-2">
-                <Button onClick={savePolicy} disabled={policyBusy() || (pendingPolicy() === "catch_all" && !pendingCatchAll())} loading={policyBusy()}>
+                <Button
+                  onClick={savePolicy}
+                  disabled={policyBusy() || (pendingPolicy() === "catch_all" && !pendingCatchAll())}
+                  loading={policyBusy()}
+                >
                   Save
                 </Button>
-                <Button variant="secondary" onClick={() => setPendingPolicy("")} disabled={policyBusy()}>
+                <Button
+                  variant="secondary"
+                  onClick={() => setPendingPolicy("")}
+                  disabled={policyBusy()}
+                >
                   Cancel
                 </Button>
               </div>

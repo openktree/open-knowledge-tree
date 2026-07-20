@@ -1,4 +1,4 @@
-import { createSignal, createRoot } from "solid-js";
+import { createRoot, createSignal } from "solid-js";
 
 function createThemeStore() {
   const stored = localStorage.getItem("theme");

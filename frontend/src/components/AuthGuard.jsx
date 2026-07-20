@@ -1,5 +1,5 @@
-import { onMount, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
+import { onMount, Show } from "solid-js";
 import { getTokenSignal } from "../store/auth";
 import Loading from "./Loading";
 

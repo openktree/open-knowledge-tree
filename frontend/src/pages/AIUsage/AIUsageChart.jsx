@@ -17,8 +17,27 @@ export default function AIUsageChart(props) {
   let chart;
 
   onMount(async () => {
-    const { Chart, LineController, LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler } = await import("chart.js");
-    Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
+    const {
+      Chart,
+      LineController,
+      LineElement,
+      PointElement,
+      LinearScale,
+      CategoryScale,
+      Tooltip,
+      Legend,
+      Filler,
+    } = await import("chart.js");
+    Chart.register(
+      LineController,
+      LineElement,
+      PointElement,
+      LinearScale,
+      CategoryScale,
+      Tooltip,
+      Legend,
+      Filler,
+    );
     chart = new Chart(canvasRef, {
       type: "line",
       data: buildChartData(props),
@@ -31,7 +50,11 @@ export default function AIUsageChart(props) {
         },
         scales: {
           x: { ticks: { color: "rgb(107 114 128)" }, grid: { color: "rgba(107,114,128,0.15)" } },
-          y: { ticks: { color: "rgb(107 114 128)" }, grid: { color: "rgba(107,114,128,0.15)" }, beginAtZero: true },
+          y: {
+            ticks: { color: "rgb(107 114 128)" },
+            grid: { color: "rgba(107,114,128,0.15)" },
+            beginAtZero: true,
+          },
         },
       },
     });
@@ -71,11 +94,16 @@ export default function AIUsageChart(props) {
   return (
     <Card>
       <h2 class="text-lg font-semibold mb-3 dark:text-white">
-        Consumption Over Time ({props.bucket === "month" ? "Monthly" : props.bucket === "week" ? "Weekly" : "Daily"})
+        Consumption Over Time (
+        {props.bucket === "month" ? "Monthly" : props.bucket === "week" ? "Weekly" : "Daily"})
       </h2>
       <Show
         when={(props.rows ?? []).length > 0}
-        fallback={<p class="text-gray-400 dark:text-gray-500 text-sm py-8 text-center">No usage in range.</p>}
+        fallback={
+          <p class="text-gray-400 dark:text-gray-500 text-sm py-8 text-center">
+            No usage in range.
+          </p>
+        }
       >
         <div class="relative h-72">
           <canvas ref={canvasRef} />

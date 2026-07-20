@@ -1,6 +1,6 @@
 import { For, Show } from "solid-js";
-import Card from "../../components/Card";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import Pagination from "../../components/Pagination";
 import SearchInput from "../../components/SearchInput";
@@ -39,17 +39,10 @@ export default function FactsContent(props) {
           />
         </div>
         <div class="flex items-center gap-3">
-          <span
-            class="text-xs text-gray-500 dark:text-gray-400"
-            data-testid="facts-total"
-          >
+          <span class="text-xs text-gray-500 dark:text-gray-400" data-testid="facts-total">
             {props.total().toLocaleString()} fact{props.total() === 1 ? "" : "s"}
           </span>
-          <Button
-            variant="secondary"
-            onClick={props.onRefresh}
-            class="text-xs px-2 py-1"
-          >
+          <Button variant="secondary" onClick={props.onRefresh} class="text-xs px-2 py-1">
             Refresh
           </Button>
         </div>
@@ -72,7 +65,11 @@ export default function FactsContent(props) {
           fallback={
             <EmptyState
               title={props.search() ? "No facts match your search." : "No facts yet."}
-              description={props.search() ? "Try a different query, or clear the search box." : "Open a fetched source and click 'Process' to extract facts."}
+              description={
+                props.search()
+                  ? "Try a different query, or clear the search box."
+                  : "Open a fetched source and click 'Process' to extract facts."
+              }
             />
           }
         >
@@ -84,12 +81,11 @@ export default function FactsContent(props) {
               onOffsetChange={props.onOffsetChange}
             />
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-              Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())} of {props.total().toLocaleString()}
+              Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())}{" "}
+              of {props.total().toLocaleString()}
             </p>
             <div class="space-y-2 mt-3">
-              <For each={rows()}>
-                {(fact) => <FactRow fact={fact} slug={props.slug()} />}
-              </For>
+              <For each={rows()}>{(fact) => <FactRow fact={fact} slug={props.slug()} />}</For>
             </div>
             <Pagination
               total={props.total}

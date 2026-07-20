@@ -1,7 +1,7 @@
 {
   "name": "open-knowledge-tree-frontend",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "check:pages": "node scripts/check-page-size.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write"
   },
   "dependencies": {
     "@solidjs/router": "^0.15.0",
@@ -20,6 +23,7 @@
     "solid-js": "^1.9.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
     "autoprefixer": "^10.4.20",
     "jsdom": "^25.0.1",
     "postcss": "^8.4.49",

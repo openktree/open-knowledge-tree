@@ -49,9 +49,7 @@ export default function PromptsetsTable(props) {
           <For each={rows()}>
             {(ps) => (
               <tr class="border-b border-gray-100 dark:border-gray-800">
-                <td class="py-2 pr-4 text-gray-700 dark:text-gray-300">
-                  {ps.name}
-                </td>
+                <td class="py-2 pr-4 text-gray-700 dark:text-gray-300">{ps.name}</td>
                 <td class="py-2 pr-4">
                   <Show when={ps.source === BUILTIN_SOURCE}>
                     <span class="px-2 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
@@ -73,7 +71,10 @@ export default function PromptsetsTable(props) {
                       {ps.registry_hash ? ps.registry_hash.slice(0, 12) + "…" : "—"}
                     </span>
                     <Show when={isDefaultCompatible(ps)}>
-                      <span class="px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200" title="Shares the 4 registry-shared phases with the built-in philosophy — decompositions are exchangeable via the registry.">
+                      <span
+                        class="px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200"
+                        title="Shares the 4 registry-shared phases with the built-in philosophy — decompositions are exchangeable via the registry."
+                      >
                         ≡ default
                       </span>
                     </Show>

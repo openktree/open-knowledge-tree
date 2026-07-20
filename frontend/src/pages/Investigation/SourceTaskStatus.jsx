@@ -1,7 +1,7 @@
-import { createResource, createSignal, Show, For, createEffect } from "solid-js";
-import { api } from "../../services/api";
+import { createEffect, createResource, createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
+import { api } from "../../services/api";
 import { STATE_BADGE } from "../Tasks/constants";
 import JobDetail from "../Tasks/JobDetail";
 
@@ -28,7 +28,7 @@ export default function SourceTaskStatus(props) {
       } catch {
         return { jobs: [] };
       }
-    }
+    },
   );
 
   const jobs = () => (tasksData()?.jobs || []).filter((j) => RELEVANT_KINDS.includes(j.kind));
@@ -48,22 +48,20 @@ export default function SourceTaskStatus(props) {
         <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Tasks:</span>
         <Show
           when={hasJobs()}
-          fallback={
-            <span class="text-xs text-gray-400 dark:text-gray-500">no jobs yet</span>
-          }
+          fallback={<span class="text-xs text-gray-400 dark:text-gray-500">no jobs yet</span>}
         >
           <For each={jobs()}>
             {(job) => (
               <button
                 type="button"
                 class="inline-flex items-center gap-1 text-xs hover:underline"
-                onClick={() =>
-                  setExpandedJob((cur) => (cur && cur.id === job.id ? null : job))
-                }
+                onClick={() => setExpandedJob((cur) => (cur && cur.id === job.id ? null : job))}
                 title={`View ${job.kind} job #${job.id}`}
               >
                 <Badge variant={STATE_BADGE[job.state] || "gray"}>{job.kind}</Badge>
-                <span class="text-gray-500 dark:text-gray-400">#{job.id} {job.state}</span>
+                <span class="text-gray-500 dark:text-gray-400">
+                  #{job.id} {job.state}
+                </span>
               </button>
             )}
           </For>

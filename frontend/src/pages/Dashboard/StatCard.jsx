@@ -17,9 +17,7 @@ export default function StatCard(props) {
           </svg>
         </div>
         <div>
-          <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">
-            {props.label}
-          </dt>
+          <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">{props.label}</dt>
           <dd class="mt-0.5 text-2xl font-semibold text-gray-900 dark:text-gray-100">
             {props.value}
           </dd>

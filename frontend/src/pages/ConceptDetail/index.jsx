@@ -1,13 +1,13 @@
-import { Show, createResource, createMemo, createSignal } from "solid-js";
 import { useParams } from "@solidjs/router";
-import { api } from "../../services/api";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
+import Alert from "../../components/Alert";
+import EmptyState from "../../components/EmptyState";
 import Layout from "../../components/Layout";
 import Loading from "../../components/Loading";
-import EmptyState from "../../components/EmptyState";
-import Alert from "../../components/Alert";
+import { api } from "../../services/api";
 import ConceptHeader from "./ConceptHeader";
-import ContextPanel from "./ContextPanel";
 import ConceptRelations from "./ConceptRelations";
+import ContextPanel from "./ContextPanel";
 import DefinitionPanel from "./DefinitionPanel";
 
 // ConceptDetail is the detail page for a single concept group,
@@ -37,7 +37,7 @@ export default function ConceptDetail() {
       } catch (err) {
         return { error: err };
       }
-    }
+    },
   );
 
   const [activeIndex, setActiveIndex] = createSignal(0);
@@ -51,22 +51,35 @@ export default function ConceptDetail() {
       <Show when={!groupData.loading} fallback={<Loading message="Loading concept..." />}>
         <Show
           when={!groupData()?.error}
-          fallback={<Alert variant="error" message={groupData()?.error?.message || "Failed to load concept."} />}
+          fallback={
+            <Alert
+              variant="error"
+              message={groupData()?.error?.message || "Failed to load concept."}
+            />
+          }
         >
           <Show
             when={group()}
-            fallback={<EmptyState title="Concept not found." description="The concept may have been deleted or the concept id is wrong." />}
+            fallback={
+              <EmptyState
+                title="Concept not found."
+                description="The concept may have been deleted or the concept id is wrong."
+              />
+            }
           >
             <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
               <div class="xl:col-span-2 space-y-6">
-              <ConceptHeader
-                group={group()}
-                activeIndex={activeIndex()}
-                activeContext={activeContext()}
-                onSelectContext={setActiveIndex}
-                onRefresh={refetch}
-              />
-                <Show when={contexts().length > 0} fallback={<EmptyState title="No contexts for this concept." />}>
+                <ConceptHeader
+                  group={group()}
+                  activeIndex={activeIndex()}
+                  activeContext={activeContext()}
+                  onSelectContext={setActiveIndex}
+                  onRefresh={refetch}
+                />
+                <Show
+                  when={contexts().length > 0}
+                  fallback={<EmptyState title="No contexts for this concept." />}
+                >
                   <DefinitionPanel slug={slug()} conceptID={contexts()[0]?.concept_id} />
                   <ContextPanel slug={slug()} context={activeContext()} />
                 </Show>

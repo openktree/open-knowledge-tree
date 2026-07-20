@@ -1,14 +1,14 @@
-import { createSignal, createResource, For, Show } from "solid-js";
 import { A } from "@solidjs/router";
-import { api } from "../../services/api";
-import { useRepository } from "../../store/repository";
+import { createResource, createSignal, For, Show } from "solid-js";
 import Alert from "../../components/Alert";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import FormField from "../../components/FormField";
-import { statusVariant, formatTimestamp } from "./constants";
+import { api } from "../../services/api";
+import { useRepository } from "../../store/repository";
+import { formatTimestamp, statusVariant } from "./constants";
 
 /**
  * Body of the "Sources" tab. Lists every row in the active
@@ -50,7 +50,7 @@ export default function SourcesTab(props) {
         setAlert({ variant: "error", message: err.message });
         return [];
       }
-    }
+    },
   );
 
   const handleDelete = async (source) => {
@@ -113,8 +113,8 @@ export default function SourcesTab(props) {
         <Card class="mb-6">
           <h2 class="text-lg font-semibold mb-1 dark:text-white">Add a source</h2>
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-            Track a URL under this repository. The fetch source task on the
-            Providers tab can be used to actually pull and parse the content.
+            Track a URL under this repository. The fetch source task on the Providers tab can be
+            used to actually pull and parse the content.
           </p>
           <form onSubmit={handleAdd} class="flex gap-2">
             <FormField
@@ -123,22 +123,14 @@ export default function SourcesTab(props) {
               placeholder="https://example.com/paper"
               class="flex-1"
             />
-            <FormField
-              type="select"
-              value={addKind()}
-              onChange={setAddKind}
-            >
+            <FormField type="select" value={addKind()} onChange={setAddKind}>
               <option value="homepage">homepage</option>
               <option value="paper">paper</option>
               <option value="dataset">dataset</option>
               <option value="code">code</option>
               <option value="other">other</option>
             </FormField>
-            <Button
-              type="submit"
-              loading={creating()}
-              loadingText="Adding..."
-            >
+            <Button type="submit" loading={creating()} loadingText="Adding...">
               Add
             </Button>
           </form>
@@ -159,8 +151,8 @@ export default function SourcesTab(props) {
           </Button>
         </div>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-          Sources created in this repository. Open a row to read the extracted
-          content, view images, and copy a shareable link.
+          Sources created in this repository. Open a row to read the extracted content, view images,
+          and copy a shareable link.
         </p>
 
         <Show
@@ -174,9 +166,7 @@ export default function SourcesTab(props) {
         >
           <Show
             when={!sources.loading}
-            fallback={
-              <p class="text-sm text-gray-400 dark:text-gray-500">Loading sources...</p>
-            }
+            fallback={<p class="text-sm text-gray-400 dark:text-gray-500">Loading sources...</p>}
           >
             <Show
               when={sources() && sources().length > 0}
@@ -214,10 +204,7 @@ function SourceRow(props) {
   return (
     <div class="border rounded dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 transition">
       <div class="flex items-center justify-between p-3 gap-3">
-        <A
-          href={detailHref()}
-          class="min-w-0 flex-1 group"
-        >
+        <A href={detailHref()} class="min-w-0 flex-1 group">
           <p
             class="text-blue-600 dark:text-blue-400 group-hover:underline text-sm font-medium block truncate"
             title={source().url}
@@ -234,11 +221,15 @@ function SourceRow(props) {
           <div class="flex items-center gap-2 mt-1 flex-wrap text-xs text-gray-500 dark:text-gray-400">
             <Badge variant={statusVariant(source().status)}>{source().status}</Badge>
             <Show when={source().parse_status}>
-              <Badge variant={
-                source().parse_status === "ok" ? "green"
-                : source().parse_status === "failed" ? "red"
-                : "yellow"
-              }>
+              <Badge
+                variant={
+                  source().parse_status === "ok"
+                    ? "green"
+                    : source().parse_status === "failed"
+                      ? "red"
+                      : "yellow"
+                }
+              >
                 {source().parse_status}
               </Badge>
             </Show>
@@ -250,9 +241,7 @@ function SourceRow(props) {
             </Show>
             <Show when={source().error}>
               <span class="text-red-600 dark:text-red-400" title={source().error}>
-                {source().error.length > 80
-                  ? source().error.slice(0, 80) + "..."
-                  : source().error}
+                {source().error.length > 80 ? source().error.slice(0, 80) + "..." : source().error}
               </span>
             </Show>
           </div>

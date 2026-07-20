@@ -1,11 +1,11 @@
-import { createResource, Show, For } from "solid-js";
-import { api } from "../../services/api";
-import Card from "../../components/Card";
+import { createResource, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
-import { STATE_BADGE, formatDurationMs } from "./constants";
-import { useNowTicker, resolveJobDuration } from "./useNowTicker";
+import Card from "../../components/Card";
+import { api } from "../../services/api";
+import { formatDurationMs, STATE_BADGE } from "./constants";
 import TraceTable from "./TraceTable";
+import { resolveJobDuration, useNowTicker } from "./useNowTicker";
 
 export default function JobDetail(props) {
   const [jobData, { refetch }] = createResource(
@@ -16,7 +16,7 @@ export default function JobDetail(props) {
       } catch {
         return null;
       }
-    }
+    },
   );
 
   const job = () => jobData() || props.job;
@@ -25,14 +25,16 @@ export default function JobDetail(props) {
   return (
     <div class="space-y-6">
       <div class="flex items-center gap-4">
-        <Button variant="secondary" onClick={props.onBack}>Back to list</Button>
-        <Button variant="secondary" onClick={refetch}>Refresh</Button>
+        <Button variant="secondary" onClick={props.onBack}>
+          Back to list
+        </Button>
+        <Button variant="secondary" onClick={refetch}>
+          Refresh
+        </Button>
       </div>
 
       <Card>
-        <h2 class="text-lg font-semibold mb-4 dark:text-white">
-          Job #{job().id}
-        </h2>
+        <h2 class="text-lg font-semibold mb-4 dark:text-white">Job #{job().id}</h2>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <div>
             <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Kind</dt>
@@ -50,7 +52,9 @@ export default function JobDetail(props) {
           </div>
           <div>
             <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Attempt</dt>
-            <dd class="mt-1 text-sm dark:text-gray-200">{job().attempt}/{job().max_attempts}</dd>
+            <dd class="mt-1 text-sm dark:text-gray-200">
+              {job().attempt}/{job().max_attempts}
+            </dd>
           </div>
           <div>
             <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Priority</dt>
@@ -159,9 +163,7 @@ export default function JobDetail(props) {
         <Card>
           <h3 class="text-md font-semibold mb-2 dark:text-white">Tags</h3>
           <div class="flex flex-wrap gap-2">
-            <For each={job().tags}>
-              {(tag) => <Badge variant="gray">{tag}</Badge>}
-            </For>
+            <For each={job().tags}>{(tag) => <Badge variant="gray">{tag}</Badge>}</For>
           </div>
         </Card>
       </Show>
@@ -218,8 +220,16 @@ function ResultSummary(props) {
         </Show>
       </div>
       <Show when={hasFailures()}>
-        <div class={`rounded p-3 text-sm ${allChunksFailed() ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800" : "bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800"}`}>
-          <p class={allChunksFailed() ? "text-red-700 dark:text-red-300 font-medium" : "text-yellow-700 dark:text-yellow-300 font-medium"}>
+        <div
+          class={`rounded p-3 text-sm ${allChunksFailed() ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800" : "bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800"}`}
+        >
+          <p
+            class={
+              allChunksFailed()
+                ? "text-red-700 dark:text-red-300 font-medium"
+                : "text-yellow-700 dark:text-yellow-300 font-medium"
+            }
+          >
             {allChunksFailed()
               ? `Extraction failed: all ${o().chunks} chunks errored and produced 0 facts. The job is marked errored — check the Errors section and the worker logs (likely a provider timeout or rate limit).`
               : `${o().chunk_failures ?? 0} chunk(s) and ${o().image_failures ?? 0} image(s) failed extraction, but ${o().facts ?? 0} fact(s) were still produced. The job completed with partial success.`}

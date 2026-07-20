@@ -1,5 +1,5 @@
-import { For, Show } from "solid-js";
 import { A, useNavigate, useParams } from "@solidjs/router";
+import { For, Show } from "solid-js";
 import { PHASES } from "./constants";
 
 export default function InvestigationStepper(props) {

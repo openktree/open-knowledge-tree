@@ -3,7 +3,7 @@ import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import FormField from "../../components/FormField";
-import { ASSIGNABLE_ROLES, ALL_REPOSITORIES } from "./constants";
+import { ALL_REPOSITORIES, ASSIGNABLE_ROLES } from "./constants";
 
 /**
  * Form to assign a role to a user on a repository.
@@ -19,14 +19,16 @@ import { ASSIGNABLE_ROLES, ALL_REPOSITORIES } from "./constants";
  */
 export default function AssignRoleForm(props) {
   const [selectedUser, setSelectedUser] = createSignal(null);
-  const [selectedRole, setSelectedRole] = createSignal(ASSIGNABLE_ROLES[ASSIGNABLE_ROLES.length - 1].value);
+  const [selectedRole, setSelectedRole] = createSignal(
+    ASSIGNABLE_ROLES[ASSIGNABLE_ROLES.length - 1].value,
+  );
   const [selectedRepo, setSelectedRepo] = createSignal(ALL_REPOSITORIES);
   const [submitting, setSubmitting] = createSignal(false);
   const [localError, setLocalError] = createSignal("");
 
   const candidateUsers = () => {
     const all = props.users() || [];
-    return props.usersWithRolesFilter ? props.usersWithRolesFilter() ?? all : all;
+    return props.usersWithRolesFilter ? (props.usersWithRolesFilter() ?? all) : all;
   };
 
   const handleSubmit = async (e) => {
@@ -81,15 +83,8 @@ export default function AssignRoleForm(props) {
             )}
           </For>
         </FormField>
-        <FormField
-          label="Role"
-          type="select"
-          value={selectedRole()}
-          onChange={setSelectedRole}
-        >
-          <For each={ASSIGNABLE_ROLES}>
-            {(r) => <option value={r.value}>{r.label}</option>}
-          </For>
+        <FormField label="Role" type="select" value={selectedRole()} onChange={setSelectedRole}>
+          <For each={ASSIGNABLE_ROLES}>{(r) => <option value={r.value}>{r.label}</option>}</For>
         </FormField>
         <FormField
           label="Repository"

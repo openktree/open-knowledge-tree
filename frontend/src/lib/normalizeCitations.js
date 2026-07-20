@@ -99,7 +99,7 @@ export function normalizeCitations(md, slug) {
   //     bare-uuid form so a prefixed id is never mistaken for text.
   const prefixedLinkRe = new RegExp(
     `\\[([^\\]]*?)\\]\\(<\\s*(fact|concept)\\s*:\\s*(${UUID})\\s*>\\)`,
-    "g"
+    "g",
   );
   out = out.replace(prefixedLinkRe, (_m, text, kind, id) => {
     numFor(kind, id);
@@ -115,7 +115,7 @@ export function normalizeCitations(md, slug) {
   //     we fall back to matching each id by its own prefixed singleton.
   const prefixedAngleGroupRe = new RegExp(
     `\\[\\s*(?:<\\s*(fact|concept)\\s*:\\s*${UUID}\\s*>\\s*,\\s*)+<\\s*(fact|concept)\\s*:\\s*${UUID}\\s*>\\s*\\]`,
-    "g"
+    "g",
   );
   out = out.replace(prefixedAngleGroupRe, (m) => {
     // Extract the first kind to label the group; in practice the
@@ -126,20 +126,14 @@ export function normalizeCitations(md, slug) {
     const ids = pairs.map((p) => p[2]);
     return linkList(kind, ids);
   });
-  const prefixedAngleSingleRe = new RegExp(
-    `\\[\\s*<(fact|concept)\\s*:\\s*(${UUID})>\\s*\\]`,
-    "g"
-  );
+  const prefixedAngleSingleRe = new RegExp(`\\[\\s*<(fact|concept)\\s*:\\s*(${UUID})>\\s*\\]`, "g");
   out = out.replace(prefixedAngleSingleRe, (_m, kind, id) => link(kind, id));
 
   // 1. Canonical legacy [text](<uuid>) — keep the text, rewrite the
   //    href, and register the uuid in the fact reference map (the
   //    summarizer only emits fact citations, so a bare legacy uuid is
   //    unambiguously a fact).
-  const linkRe = new RegExp(
-    `\\[([^\\]]*?)\\]\\((?:<)?(${UUID})(?:>)?\\)`,
-    "g"
-  );
+  const linkRe = new RegExp(`\\[([^\\]]*?)\\]\\((?:<)?(${UUID})(?:>)?\\)`, "g");
   out = out.replace(linkRe, (_m, text, id) => {
     numFor("fact", id);
     const label = text && text.trim() ? text.trim() : String(numFor("fact", id));
@@ -147,10 +141,7 @@ export function normalizeCitations(md, slug) {
   });
 
   // 2. ([ <uuid>]) / ([<uuid>]) — angle-bracketed uuid inside parens.
-  const parenRe = new RegExp(
-    `(?<!\\])\\(([^()]*?)\\(?(?:<)?\\s*(${UUID})\\s*(?:>)?\\)?\\)`,
-    "g"
-  );
+  const parenRe = new RegExp(`(?<!\\])\\(([^()]*?)\\(?(?:<)?\\s*(${UUID})\\s*(?:>)?\\)?\\)`, "g");
   out = out.replace(parenRe, (_m, pre, id) => {
     const label = pre && pre.trim() ? pre.trim() : String(numFor("fact", id));
     return `([${label}](${kindHref(slug, "fact", id)}))`;
@@ -160,7 +151,7 @@ export function normalizeCitations(md, slug) {
   //    uuids inside one bracket pair.
   const angleGroupRe = new RegExp(
     `\\[\\s*(?:<\\s*${UUID}\\s*>\\s*,\\s*)+<\\s*${UUID}\\s*>\\s*\\]`,
-    "g"
+    "g",
   );
   out = out.replace(angleGroupRe, (m) => {
     const ids = [...m.matchAll(new RegExp(UUID, "g"))].map((x) => x[0]);
@@ -172,10 +163,7 @@ export function normalizeCitations(md, slug) {
   out = out.replace(angleSingleRe, (_m, id) => link("fact", id));
 
   // 5. [uuid1, uuid2, ...] — comma-separated bare uuids.
-  const bareGroupRe = new RegExp(
-    `\\[\\s*(?:${UUID}\\s*,\\s*)+${UUID}\\s*\\]`,
-    "g"
-  );
+  const bareGroupRe = new RegExp(`\\[\\s*(?:${UUID}\\s*,\\s*)+${UUID}\\s*\\]`, "g");
   out = out.replace(bareGroupRe, (m) => {
     const ids = [...m.matchAll(new RegExp(UUID, "g"))].map((x) => x[0]);
     return linkList("fact", ids);
@@ -209,7 +197,7 @@ export function normalizeImageCitations(md, imageMap) {
   if (!md) return "";
   const imageUuidRe = new RegExp(
     `!\\[([^\\]]*)\\]\\(<\\s*(?:fact\\s*:\\s*)?(${UUID})\\s*>\\)`,
-    "g"
+    "g",
   );
   return md.replace(imageUuidRe, (full, alt, id) => {
     const url = imageMap.get(id);

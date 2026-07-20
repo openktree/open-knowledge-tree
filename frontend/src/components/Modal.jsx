@@ -1,4 +1,4 @@
-import { Show, onCleanup, createEffect } from "solid-js";
+import { createEffect, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 
 /**
@@ -44,9 +44,7 @@ export default function Modal(props) {
           >
             <Show when={props.title}>
               <div class="px-5 py-3 border-b border-border flex items-center justify-between">
-                <h3 class="text-sm font-semibold text-text-base">
-                  {props.title}
-                </h3>
+                <h3 class="text-sm font-semibold text-text-base">{props.title}</h3>
                 <button
                   class="text-text-muted hover:text-text-base text-lg leading-none"
                   onClick={() => props.onClose?.()}
@@ -56,9 +54,7 @@ export default function Modal(props) {
                 </button>
               </div>
             </Show>
-            <div class="px-5 py-4 overflow-y-auto text-sm text-text-muted">
-              {props.children}
-            </div>
+            <div class="px-5 py-4 overflow-y-auto text-sm text-text-muted">{props.children}</div>
           </div>
         </div>
       </Portal>

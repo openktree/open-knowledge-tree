@@ -1,6 +1,6 @@
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
-import { api } from "../../services/api";
 import Card from "../../components/Card";
+import { api } from "../../services/api";
 import { BUILTIN_SOURCE } from "../Promptsets/constants";
 
 // PromptsetPanel is the per-repo promptset selection section of the
@@ -23,20 +23,24 @@ import { BUILTIN_SOURCE } from "../Promptsets/constants";
 //   onAlert – (alert) => void
 export default function PromptsetPanel(props) {
   const [ps, { refetch }] = createResource(props.repoID, (id) =>
-    id ? api.getRepositoryPromptset(id).catch((e) => {
-      props.onAlert?.({ variant: "error", message: e.message });
-      return null;
-    }) : null
+    id
+      ? api.getRepositoryPromptset(id).catch((e) => {
+          props.onAlert?.({ variant: "error", message: e.message });
+          return null;
+        })
+      : null,
   );
-  const [catalog, { refetch: refetchCatalog }] = createResource(() => api.listPromptsets().catch(() => []));
+  const [catalog, { refetch: refetchCatalog }] = createResource(() =>
+    api.listPromptsets().catch(() => []),
+  );
   const [busy, setBusy] = createSignal(false);
 
   const active = () => ps()?.active_hash ?? "";
   const accepted = () => ps()?.accepted_hashes ?? [];
   const effective = () => ps()?.effective_hash ?? "";
   const globalDefault = () => ps()?.global_default_hash ?? "";
-  const activePromptset = createMemo(() =>
-    (catalog() ?? []).find((p) => p.hash === active()) ?? null
+  const activePromptset = createMemo(
+    () => (catalog() ?? []).find((p) => p.hash === active()) ?? null,
   );
   // Catalog grouped by registry_hash. Each group has a representative
   // name (the built-in's name when present, else the first member's
@@ -67,7 +71,8 @@ export default function PromptsetPanel(props) {
   });
   // A group is accepted when any of its members' full hashes is in
   // the repo's accepted set. The active hash is always accepted.
-  const isGroupAccepted = (g) => g.members.some((p) => accepted().includes(p.hash) || p.hash === active());
+  const isGroupAccepted = (g) =>
+    g.members.some((p) => accepted().includes(p.hash) || p.hash === active());
 
   const isAccepted = (hash) => accepted().includes(hash);
 
@@ -124,10 +129,10 @@ export default function PromptsetPanel(props) {
       <h3 class="text-lg font-semibold mb-1 dark:text-white">Promptset</h3>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
         Choose the philosophy this repository decomposes under. The active promptset runs for new
-        decompositions; the accepted set controls which foreign decompositions the registry cache may
-        pull in. Two promptsets that differ only in synthesis / summarization / posture / image-picker
-        share a <strong>compatibility hash</strong> and are interchangeable on pull — accept the whole
-        group, not just one.
+        decompositions; the accepted set controls which foreign decompositions the registry cache
+        may pull in. Two promptsets that differ only in synthesis / summarization / posture /
+        image-picker share a <strong>compatibility hash</strong> and are interchangeable on pull —
+        accept the whole group, not just one.
       </p>
       <Show when={!ps.loading && !catalog.loading}>
         <div class="space-y-4">
@@ -145,7 +150,11 @@ export default function PromptsetPanel(props) {
                 Inherit global default{globalDefault() ? ` (${globalDefault().slice(0, 12)}…)` : ""}
               </option>
               <For each={catalog() ?? []}>
-                {(p) => <option value={p.hash}>{p.name} ({p.source})</option>}
+                {(p) => (
+                  <option value={p.hash}>
+                    {p.name} ({p.source})
+                  </option>
+                )}
               </For>
             </select>
             <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
@@ -161,9 +170,9 @@ export default function PromptsetPanel(props) {
               Additionally accepted (registry pull)
             </label>
             <p class="text-xs text-gray-400 dark:text-gray-500 mb-2">
-              Decompositions tagged with any of these hashes (or their compatibility class)
-              may be pulled from the registry. The active hash is always accepted. The
-              built-in compatibility class is always accepted.
+              Decompositions tagged with any of these hashes (or their compatibility class) may be
+              pulled from the registry. The active hash is always accepted. The built-in
+              compatibility class is always accepted.
             </p>
             <div class="space-y-2">
               <For each={groups()}>
@@ -197,9 +206,11 @@ export default function PromptsetPanel(props) {
                             <li>
                               {p.name}
                               <Show when={p.hash === active()}>
-                                {" "}<span class="text-gray-400">(active)</span>
+                                {" "}
+                                <span class="text-gray-400">(active)</span>
                               </Show>
-                              {" — "}<span class="font-mono">{p.hash.slice(0, 10)}…</span>
+                              {" — "}
+                              <span class="font-mono">{p.hash.slice(0, 10)}…</span>
                             </li>
                           )}
                         </For>

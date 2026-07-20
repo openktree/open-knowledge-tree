@@ -1,16 +1,16 @@
 // @okt-page-allow-large: folder page; checker miscounts default export as internal subcomponent
 import { createResource, createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
-import { useRepository } from "../../store/repository";
-import { useRBAC } from "../../store/rbac";
-import Layout from "../../components/Layout";
 import Alert from "../../components/Alert";
 import Button from "../../components/Button";
-import Loading from "../../components/Loading";
 import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
+import { api } from "../../services/api";
+import { useRBAC } from "../../store/rbac";
+import { useRepository } from "../../store/repository";
+import RegistryBanner from "../Dashboard/RegistryBanner";
 import CreateInvestigationForm from "./CreateInvestigationForm";
 import InvestigationsTable from "./InvestigationsTable";
-import RegistryBanner from "../Dashboard/RegistryBanner";
 
 export default function Investigations() {
   const repo = useRepository();
@@ -33,7 +33,7 @@ export default function Investigations() {
         setAlert({ variant: "error", message: err.message });
         return { data: [], total: 0, limit: 100, offset: 0 };
       }
-    }
+    },
   );
 
   const investigations = () => invData()?.data || [];
@@ -46,10 +46,7 @@ export default function Investigations() {
           message={alert()?.message}
           onDismiss={() => setAlert(null)}
         />
-        <Show
-          when={repo.loaded()}
-          fallback={<Loading message="Loading repository..." />}
-        >
+        <Show when={repo.loaded()} fallback={<Loading message="Loading repository..." />}>
           <Show
             when={slug()}
             fallback={
@@ -70,25 +67,25 @@ export default function Investigations() {
                   description="Group sources and their facts around a research topic by creating an investigation."
                 />
               </Show>
-            <Show when={canCreate()}>
-              <Show
-                when={showCreate()}
-                fallback={
-                  <Button onClick={() => setShowCreate(true)}>Create Investigation</Button>
-                }
-              >
-                <CreateInvestigationForm
-                  slug={slug()}
-                  onCreated={() => {
-                    setRefreshKey((k) => k + 1);
-                    setAlert({ variant: "success", message: "Investigation created" });
-                    setShowCreate(false);
-                  }}
-                  onAlert={setAlert}
-                  onCancel={() => setShowCreate(false)}
-                />
+              <Show when={canCreate()}>
+                <Show
+                  when={showCreate()}
+                  fallback={
+                    <Button onClick={() => setShowCreate(true)}>Create Investigation</Button>
+                  }
+                >
+                  <CreateInvestigationForm
+                    slug={slug()}
+                    onCreated={() => {
+                      setRefreshKey((k) => k + 1);
+                      setAlert({ variant: "success", message: "Investigation created" });
+                      setShowCreate(false);
+                    }}
+                    onAlert={setAlert}
+                    onCancel={() => setShowCreate(false)}
+                  />
+                </Show>
               </Show>
-            </Show>
               <InvestigationsTable
                 slug={slug()}
                 investigations={investigations}

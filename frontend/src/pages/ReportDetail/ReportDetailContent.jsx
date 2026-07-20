@@ -1,12 +1,12 @@
-import { createSignal, Show, For } from "solid-js";
 import { A } from "@solidjs/router";
-import Card from "../../components/Card";
-import Button from "../../components/Button";
+import { createSignal, For, Show } from "solid-js";
 import Alert from "../../components/Alert";
+import Button from "../../components/Button";
+import Card from "../../components/Card";
 import CitedView from "../../components/CitedView";
-import { api } from "../../services/api";
 import { buildCitedText } from "../../lib/citedCopy";
-import { statusVariant, formatTimestamp, formatScore } from "./constants";
+import { api } from "../../services/api";
+import { formatScore, formatTimestamp, statusVariant } from "./constants";
 
 export default function ReportDetailContent(props) {
   const report = () => props.report() || {};
@@ -57,7 +57,7 @@ export default function ReportDetailContent(props) {
           } catch {
             factSources.set(fid, []);
           }
-        })
+        }),
       );
       const text = buildCitedText(report().body_md ?? "", anns, factSources);
       await copyToClipboard(text);
@@ -84,11 +84,15 @@ export default function ReportDetailContent(props) {
             </Show>
           </div>
           <div class="flex gap-2">
-            <Button variant="secondary" onClick={handleCopy}>{copied() ? "Copied" : "Copy"}</Button>
+            <Button variant="secondary" onClick={handleCopy}>
+              {copied() ? "Copied" : "Copy"}
+            </Button>
             <Button variant="secondary" onClick={handleCopyCites} loading={copyingCites()}>
               {copiedCites() ? "Copied" : "Copy with cites"}
             </Button>
-            <Button variant="secondary" onClick={props.onRefresh}>Refresh</Button>
+            <Button variant="secondary" onClick={props.onRefresh}>
+              Refresh
+            </Button>
             <Show when={props.canUpdate()}>
               <Button variant="primary" onClick={props.onAnnotate} loading={props.annotating()}>
                 Re-annotate
@@ -97,7 +101,9 @@ export default function ReportDetailContent(props) {
           </div>
         </div>
         <div class="flex flex-wrap gap-4 text-xs text-gray-500 dark:text-gray-400 mb-4">
-          <span class={`inline-block px-2 py-0.5 rounded font-medium ${statusVariant[report().status] || ""}`}>
+          <span
+            class={`inline-block px-2 py-0.5 rounded font-medium ${statusVariant[report().status] || ""}`}
+          >
             {report().status}
           </span>
           <Show when={report().sentence_count != null}>
@@ -117,7 +123,10 @@ export default function ReportDetailContent(props) {
         <Show when={props.parentReport?.()}>
           <div class="text-xs text-gray-500 dark:text-gray-400 mb-2">
             Part of{" "}
-            <A href={`/${props.slug}/reports/${props.parentReport().id}`} class="text-blue-600 dark:text-blue-400 hover:underline">
+            <A
+              href={`/${props.slug}/reports/${props.parentReport().id}`}
+              class="text-blue-600 dark:text-blue-400 hover:underline"
+            >
               {props.parentReport().title}
             </A>
           </div>
@@ -129,7 +138,10 @@ export default function ReportDetailContent(props) {
               <For each={props.children()}>
                 {(child) => (
                   <li>
-                    <A href={`/${props.slug}/reports/${child.id}`} class="text-blue-600 dark:text-blue-400 hover:underline">
+                    <A
+                      href={`/${props.slug}/reports/${child.id}`}
+                      class="text-blue-600 dark:text-blue-400 hover:underline"
+                    >
                       {child.title}
                     </A>
                     <Show when={child.topic}>
@@ -147,9 +159,7 @@ export default function ReportDetailContent(props) {
           <div class="border-b border-gray-200 dark:border-gray-700 pb-3 mb-3">
             <p class="text-xs text-gray-500 dark:text-gray-400">
               Annotated report — highlighted sentences have matching facts.
-              <Show when={props.annotations().length > 0}>
-                {" "}Click to view.
-              </Show>
+              <Show when={props.annotations().length > 0}> Click to view.</Show>
             </p>
           </div>
           <CitedView

@@ -23,7 +23,9 @@ export default function RemoteRow(props) {
             {source().title || source().url || "(no title)"}
           </div>
           <Show when={source().url}>
-            <div class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">{source().url}</div>
+            <div class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+              {source().url}
+            </div>
           </Show>
           <div class="flex items-center gap-3 mt-1 text-xs text-gray-400 dark:text-gray-500">
             <Show when={source().doi}>

@@ -1,6 +1,6 @@
-import { Show, For } from "solid-js";
-import Card from "./Card";
+import { For, Show } from "solid-js";
 import Badge from "./Badge";
+import Card from "./Card";
 
 /**
  * Titled card containing a list of items, each rendered with a name/id
@@ -19,9 +19,7 @@ import Badge from "./Badge";
  */
 export default function ItemList(props) {
   const renderRight = (item) =>
-    props.children
-      ? props.children(item)
-      : <Badge variant="green">{item.type}</Badge>;
+    props.children ? props.children(item) : <Badge variant="green">{item.type}</Badge>;
 
   return (
     <Card class="mb-6">

@@ -34,9 +34,7 @@ export default function EmbeddingProvidersTab(props) {
         <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mt-8 mb-3">
           Embedding-capable providers ({providers().length})
         </h2>
-        <For each={providers()}>
-          {(p) => <EmbeddingProviderCard provider={p} />}
-        </For>
+        <For each={providers()}>{(p) => <EmbeddingProviderCard provider={p} />}</For>
       </Show>
     </div>
   );
@@ -79,8 +77,8 @@ function ActiveConfigCard(props) {
 
       <div class="mt-4 pt-3 border-t dark:border-gray-700">
         <p class="text-xs text-amber-600 dark:text-amber-400">
-          Switching the embedding model or dimensions requires re-embedding existing facts
-          (the Qdrant collection must be recreated). Edit the YAML and restart the API to change it.
+          Switching the embedding model or dimensions requires re-embedding existing facts (the
+          Qdrant collection must be recreated). Edit the YAML and restart the API to change it.
         </p>
       </div>
     </Card>
@@ -101,16 +99,12 @@ function EmbeddingProviderCard(props) {
               <Badge variant="purple">embedding capable</Badge>
             </Show>
           </div>
-          <p class="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">
-            {p().id}
-          </p>
+          <p class="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">{p().id}</p>
         </div>
       </div>
 
       <Show when={p().description}>
-        <p class="text-sm text-gray-700 dark:text-gray-300 mb-3">
-          {p().description}
-        </p>
+        <p class="text-sm text-gray-700 dark:text-gray-300 mb-3">{p().description}</p>
       </Show>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">

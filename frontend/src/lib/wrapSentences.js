@@ -116,7 +116,10 @@ export function wrapSentencesHtml(rawMarkdown, renderedHtml, highlightIndices, f
   const skipRawWS = (fromR) => {
     const ws = [];
     let rr = fromR;
-    while (rr < raw.length && isWS(raw[rr])) { ws.push(rr); rr++; }
+    while (rr < raw.length && isWS(raw[rr])) {
+      ws.push(rr);
+      rr++;
+    }
     return { next: rr, ws };
   };
 
@@ -164,17 +167,28 @@ export function wrapSentencesHtml(rawMarkdown, renderedHtml, highlightIndices, f
     }
     if (r < raw.length && raw[r] === "&") {
       const ent = tryDecodeEntity(raw, r);
-      if (ent.ch === pc) { rawOffsetOf[c] = r; r += ent.len; continue; }
+      if (ent.ch === pc) {
+        rawOffsetOf[c] = r;
+        r += ent.len;
+        continue;
+      }
     }
 
     // Greedy skip up to SOFT_SKIP runes (across whitespace).
-    let skipped = 0, foundR = -1;
+    let skipped = 0,
+      foundR = -1;
     while (r + skipped < raw.length && skipped < SOFT_SKIP) {
       const rr = r + skipped;
-      if (raw[rr] === pc) { foundR = rr; break; }
+      if (raw[rr] === pc) {
+        foundR = rr;
+        break;
+      }
       if (raw[rr] === "&") {
         const ent = tryDecodeEntity(raw, rr);
-        if (ent.ch === pc) { foundR = rr; break; }
+        if (ent.ch === pc) {
+          foundR = rr;
+          break;
+        }
       }
       skipped++;
     }
@@ -202,7 +216,10 @@ export function wrapSentencesHtml(rawMarkdown, renderedHtml, highlightIndices, f
         if (ent.ch === pc) matches = true;
       }
       if (!matches) continue;
-      if (ctxChars.length === 0) { bestR = rr; break; }
+      if (ctxChars.length === 0) {
+        bestR = rr;
+        break;
+      }
       // Context check: the last CONTEXT_K plain chars (with raw
       // offsets) should appear in raw within CONTEXT_WINDOW runes
       // before rr, in order.
@@ -213,16 +230,30 @@ export function wrapSentencesHtml(rawMarkdown, renderedHtml, highlightIndices, f
         let found = false;
         const probeFloor = Math.max(0, rawProbe - CONTEXT_WINDOW);
         while (rawProbe >= probeFloor) {
-          if (raw[rawProbe] === need) { found = true; rawProbe--; break; }
+          if (raw[rawProbe] === need) {
+            found = true;
+            rawProbe--;
+            break;
+          }
           if (raw[rawProbe] === "&") {
             const ent = tryDecodeEntity(raw, rawProbe);
-            if (ent.ch === need) { found = true; rawProbe -= ent.len; break; }
+            if (ent.ch === need) {
+              found = true;
+              rawProbe -= ent.len;
+              break;
+            }
           }
           rawProbe--;
         }
-        if (!found) { ctxOK = false; break; }
+        if (!found) {
+          ctxOK = false;
+          break;
+        }
       }
-      if (ctxOK) { bestR = rr; break; }
+      if (ctxOK) {
+        bestR = rr;
+        break;
+      }
     }
 
     if (bestR >= 0) {
@@ -362,9 +393,10 @@ function tryDecodeEntity(raw, at) {
 function decodeEntity(name) {
   if (!name) return "";
   if (name[0] === "#") {
-    const code = name[1] === "x" || name[1] === "X"
-      ? parseInt(name.slice(2), 16)
-      : parseInt(name.slice(1), 10);
+    const code =
+      name[1] === "x" || name[1] === "X"
+        ? parseInt(name.slice(2), 16)
+        : parseInt(name.slice(1), 10);
     if (!Number.isFinite(code)) return "";
     try {
       return String.fromCodePoint(code);
@@ -376,7 +408,7 @@ function decodeEntity(name) {
     amp: "&",
     lt: "<",
     gt: ">",
-    quot: "\"",
+    quot: '"',
     apos: "'",
     nbsp: "\u00a0",
     ndash: "\u2013",

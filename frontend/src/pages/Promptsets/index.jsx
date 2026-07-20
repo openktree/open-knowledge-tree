@@ -1,12 +1,12 @@
 import { createMemo, createResource, createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
-import Layout from "../../components/Layout";
 import Alert from "../../components/Alert";
 import Card from "../../components/Card";
+import Layout from "../../components/Layout";
 import Loading from "../../components/Loading";
-import PromptsetsTable from "./PromptsetsTable";
+import { api } from "../../services/api";
+import { BUILTIN_SOURCE, draftFromPromptset, emptyDraft } from "./constants";
 import PromptsetForm from "./PromptsetForm";
-import { BUILTIN_SOURCE, emptyDraft, draftFromPromptset } from "./constants";
+import PromptsetsTable from "./PromptsetsTable";
 
 // Promptsets is the route entry for /promptsets. It owns the
 // page-level state (list, draft, alert, busy) and delegates
@@ -25,14 +25,28 @@ export default function Promptsets() {
     return bi?.registry_hash ?? "";
   });
 
-  const startCreate = () => { setDraft(emptyDraft()); setEditing("create"); setAlert(null); };
-  const startEdit = (ps) => { setDraft(draftFromPromptset(ps)); setEditing({ hash: ps.hash }); setAlert(null); };
-  const cancel = () => { setDraft(null); setEditing(null); };
+  const startCreate = () => {
+    setDraft(emptyDraft());
+    setEditing("create");
+    setAlert(null);
+  };
+  const startEdit = (ps) => {
+    setDraft(draftFromPromptset(ps));
+    setEditing({ hash: ps.hash });
+    setAlert(null);
+  };
+  const cancel = () => {
+    setDraft(null);
+    setEditing(null);
+  };
   const onChange = (field, value) => setDraft((d) => ({ ...d, [field]: value }));
 
   const submit = async () => {
     const d = draft();
-    if (!d.name?.trim()) { setAlert({ variant: "error", message: "Name is required." }); return; }
+    if (!d.name?.trim()) {
+      setAlert({ variant: "error", message: "Name is required." });
+      return;
+    }
     setBusyHash("form");
     try {
       if (editing() === "create") {
@@ -52,7 +66,12 @@ export default function Promptsets() {
   };
 
   const remove = async (ps) => {
-    if (!confirm(`Delete promptset "${ps.name}"? Repositories pointing at it fall back to the global default.`)) return;
+    if (
+      !confirm(
+        `Delete promptset "${ps.name}"? Repositories pointing at it fall back to the global default.`,
+      )
+    )
+      return;
     setBusyHash(ps.hash);
     try {
       await api.deletePromptset(ps.hash);
@@ -68,30 +87,57 @@ export default function Promptsets() {
   return (
     <Layout>
       <div class="space-y-6">
-        <Alert variant={alert()?.variant} message={alert()?.message} onDismiss={() => setAlert(null)} />
+        <Alert
+          variant={alert()?.variant}
+          message={alert()?.message}
+          onDismiss={() => setAlert(null)}
+        />
         <div class="flex items-center justify-between">
           <div>
             <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Promptsets</h1>
             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              A promptset is the full set of phase prompts a repository decomposes under.
-              The <strong>hash</strong> is its catalog identity; the <strong>compatibility</strong> hash
-              (over the 4 shared phases — fact, image-fact, concept, refinement) decides which promptsets
-              can exchange decompositions via the registry. Promptsets that differ only in synthesis,
-              summarization, posture, or image-picker are <em>compatible</em>.
+              A promptset is the full set of phase prompts a repository decomposes under. The{" "}
+              <strong>hash</strong> is its catalog identity; the <strong>compatibility</strong> hash
+              (over the 4 shared phases — fact, image-fact, concept, refinement) decides which
+              promptsets can exchange decompositions via the registry. Promptsets that differ only
+              in synthesis, summarization, posture, or image-picker are <em>compatible</em>.
             </p>
           </div>
           <Show when={!editing()}>
-            <button type="button" onClick={startCreate} class="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700">New Promptset</button>
+            <button
+              type="button"
+              onClick={startCreate}
+              class="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+            >
+              New Promptset
+            </button>
           </Show>
         </div>
         <Show when={editing()}>
           <Card>
-            <h3 class="text-lg font-semibold mb-3 dark:text-white">{editing() === "create" ? "Create Promptset" : "Edit Promptset"}</h3>
-            <PromptsetForm draft={draft} onChange={onChange} onSubmit={submit} onCancel={cancel} busy={() => busyHash() === "form"} submitLabel={editing() === "create" ? "Create" : "Save"} defaultRegistryHash={defaultRegistryHash} />
+            <h3 class="text-lg font-semibold mb-3 dark:text-white">
+              {editing() === "create" ? "Create Promptset" : "Edit Promptset"}
+            </h3>
+            <PromptsetForm
+              draft={draft}
+              onChange={onChange}
+              onSubmit={submit}
+              onCancel={cancel}
+              busy={() => busyHash() === "form"}
+              submitLabel={editing() === "create" ? "Create" : "Save"}
+              defaultRegistryHash={defaultRegistryHash}
+            />
           </Card>
         </Show>
         <Show when={!promptsets.loading} fallback={<Loading message="Loading promptsets…" />}>
-          <Card><PromptsetsTable promptsets={promptsets} onEdit={startEdit} onDelete={remove} busyHash={busyHash} /></Card>
+          <Card>
+            <PromptsetsTable
+              promptsets={promptsets}
+              onEdit={startEdit}
+              onDelete={remove}
+              busyHash={busyHash}
+            />
+          </Card>
         </Show>
       </div>
     </Layout>

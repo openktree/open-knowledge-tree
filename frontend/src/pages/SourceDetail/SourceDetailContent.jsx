@@ -1,7 +1,7 @@
 import { Show } from "solid-js";
 import Card from "../../components/Card";
-import SourceHeader from "./SourceHeader";
 import SourceBody from "./SourceBody";
+import SourceHeader from "./SourceHeader";
 import SourceImages from "./SourceImages";
 
 /**
@@ -21,11 +21,7 @@ import SourceImages from "./SourceImages";
 export default function SourceDetailContent(props) {
   return (
     <div class="space-y-6">
-      <SourceHeader
-        source={props.source}
-        slug={props.slug}
-        error={props.error}
-      />
+      <SourceHeader source={props.source} slug={props.slug} error={props.error} />
 
       <Card>
         <SourceBody
@@ -40,11 +36,7 @@ export default function SourceDetailContent(props) {
 
       <Show when={(props.images() || []).length > 0}>
         <Card>
-          <SourceImages
-            images={props.images}
-            slug={props.slug}
-            sourceID={props.sourceID}
-          />
+          <SourceImages images={props.images} slug={props.slug} sourceID={props.sourceID} />
         </Card>
       </Show>
     </div>

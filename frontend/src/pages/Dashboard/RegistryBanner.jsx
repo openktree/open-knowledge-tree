@@ -1,4 +1,4 @@
-import { Show, createResource, createMemo } from "solid-js";
+import { createMemo, createResource, Show } from "solid-js";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 
@@ -32,7 +32,9 @@ export default function RegistryBanner(props) {
     }
   });
 
-  const canManage = createMemo(() => props.canManage?.() ?? rbac.hasPermission("repository", "manage"));
+  const canManage = createMemo(
+    () => props.canManage?.() ?? rbac.hasPermission("repository", "manage"),
+  );
 
   const sharing = () => {
     const s = settings();
@@ -62,7 +64,9 @@ export default function RegistryBanner(props) {
           <svg
             xmlns="http://www.w3.org/2000/svg"
             class={`h-4 w-4 flex-shrink-0 ${
-              sharing() ? "text-blue-600 dark:text-blue-400" : "text-indigo-600 dark:text-indigo-400"
+              sharing()
+                ? "text-blue-600 dark:text-blue-400"
+                : "text-indigo-600 dark:text-indigo-400"
             }`}
             viewBox="0 0 24 24"
             fill="none"
@@ -76,20 +80,20 @@ export default function RegistryBanner(props) {
           </svg>
           <span
             class={`text-sm font-medium ${
-              sharing() ? "text-blue-900 dark:text-blue-200" : "text-indigo-900 dark:text-indigo-200"
+              sharing()
+                ? "text-blue-900 dark:text-blue-200"
+                : "text-indigo-900 dark:text-indigo-200"
             }`}
           >
-            <Show when={sharing()}>
-              Sharing is enabled — sources and facts are shared publicly
-            </Show>
-            <Show when={cacheOnly()}>
-              Using a remote knowledge registry as a cache
-            </Show>
+            <Show when={sharing()}>Sharing is enabled — sources and facts are shared publicly</Show>
+            <Show when={cacheOnly()}>Using a remote knowledge registry as a cache</Show>
           </span>
           {/* chevron rotates when open */}
           <svg
             class={`ml-auto h-4 w-4 transition-transform group-open:rotate-180 ${
-              sharing() ? "text-blue-500 dark:text-blue-400" : "text-indigo-500 dark:text-indigo-400"
+              sharing()
+                ? "text-blue-500 dark:text-blue-400"
+                : "text-indigo-500 dark:text-indigo-400"
             }`}
             viewBox="0 0 24 24"
             fill="none"
@@ -104,34 +108,31 @@ export default function RegistryBanner(props) {
         <div class="px-3 pb-3 pt-0">
           <Show when={sharing()}>
             <p class="text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
-              This repository automatically pushes processed sources and their
-              facts to the remote knowledge registry as soon as they finish
-              processing. The retrieved sources and facts are shared publicly
-              with other researchers, who can import them without running the
-              decomposition pipeline again — saving compute and time. A
-              repository admin can disable this in Settings.
+              This repository automatically pushes processed sources and their facts to the remote
+              knowledge registry as soon as they finish processing. The retrieved sources and facts
+              are shared publicly with other researchers, who can import them without running the
+              decomposition pipeline again — saving compute and time. A repository admin can disable
+              this in Settings.
             </p>
           </Show>
           <Show when={cacheOnly()}>
             <p class="text-sm text-indigo-800 dark:text-indigo-300 leading-relaxed">
-              This repository pulls pre-decomposed sources (facts, concepts,
-              embeddings) from the remote knowledge registry when available,
-              skipping the AI pipeline. Sources you fetch are not shared back
-              unless you enable auto-contribute.
+              This repository pulls pre-decomposed sources (facts, concepts, embeddings) from the
+              remote knowledge registry when available, skipping the AI pipeline. Sources you fetch
+              are not shared back unless you enable auto-contribute.
             </p>
             <p class="mt-2 text-sm text-indigo-800 dark:text-indigo-300 leading-relaxed">
-              By enabling auto-contribute, your decomposed sources are shared
-              publicly with other researchers — they can import them without
-              re-running the decomposition pipeline, saving compute and time
-              for everyone working on the same material.
+              By enabling auto-contribute, your decomposed sources are shared publicly with other
+              researchers — they can import them without re-running the decomposition pipeline,
+              saving compute and time for everyone working on the same material.
             </p>
             <div class="mt-2 text-sm text-indigo-800 dark:text-indigo-300">
               <Show
                 when={canManage()}
                 fallback={
                   <span>
-                    Ask a repository admin to enable auto-contribute to share
-                    your sources and facts publicly with other researchers.
+                    Ask a repository admin to enable auto-contribute to share your sources and facts
+                    publicly with other researchers.
                   </span>
                 }
               >
@@ -143,8 +144,7 @@ export default function RegistryBanner(props) {
                   >
                     Repository Settings
                   </a>{" "}
-                  to share processed sources and facts publicly with other
-                  researchers.
+                  to share processed sources and facts publicly with other researchers.
                 </span>
               </Show>
             </div>

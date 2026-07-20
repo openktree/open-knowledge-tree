@@ -1,5 +1,5 @@
-import { For, Show, createResource } from "solid-js";
 import { A } from "@solidjs/router";
+import { createResource, For, Show } from "solid-js";
 import { api } from "../services/api";
 import Badge from "./Badge";
 
@@ -25,7 +25,7 @@ export default function FactConceptTags(props) {
       } catch {
         return [];
       }
-    }
+    },
   );
 
   const concepts = () => (props.concepts ? props.concepts() : fetched());
@@ -38,16 +38,15 @@ export default function FactConceptTags(props) {
         fallback={
           <Show
             when={(concepts() || []).length > 0}
-            fallback={
-              <p class="text-sm text-text-muted">
-                No concepts linked to this fact yet.
-              </p>
-            }
+            fallback={<p class="text-sm text-text-muted">No concepts linked to this fact yet.</p>}
           >
             <div class="flex flex-wrap gap-2">
               <For each={concepts()}>
                 {(concept) => (
-                  <A href={`/${props.slug}/concepts/${concept.id}`} class="inline-flex items-center gap-1">
+                  <A
+                    href={`/${props.slug}/concepts/${concept.id}`}
+                    class="inline-flex items-center gap-1"
+                  >
                     <Badge variant="blue">{concept.canonical_name}</Badge>
                     <span class="text-xs text-text-muted">{concept.context}</span>
                   </A>

@@ -1,5 +1,5 @@
 import Card from "../../components/Card";
-import { formatNumber, formatCost } from "./constants";
+import { formatCost, formatNumber } from "./constants";
 
 // AIUsageSummaryCards renders the top-of-dashboard stat cards.
 // Input / Output tokens are shown separately because pricing
@@ -31,9 +31,7 @@ function StatCard(props) {
       <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
         {props.label}
       </p>
-      <p class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
-        {props.value}
-      </p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{props.value}</p>
     </Card>
   );
 }

@@ -15,7 +15,7 @@ export default function Button(props) {
       disabled={props.disabled || props.loading}
       class={`px-4 py-2 rounded transition text-sm font-medium disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-primary-ring ${variantClasses[props.variant || "primary"]} ${props.class || ""}`}
     >
-      {props.loading ? (props.loadingText || "Loading...") : props.children}
+      {props.loading ? props.loadingText || "Loading..." : props.children}
     </button>
   );
 }

@@ -14,15 +14,15 @@
 // sentences AFTER the list block get wrapped in spans with
 // data-sentence-index. Before the fix, no span after the list block
 // existed.
-import { describe, it, expect } from "vitest";
-import { wrapSentencesHtml } from "./wrapSentences";
-import { segmentSentences } from "./sentences";
 
 // Minimal micromark render — pulled in dynamically so the test stays
 // focused on wrapSentences behavior. Using the same micromark the app
 // uses keeps the fixture realistic.
 import { micromark } from "micromark";
 import { gfm, gfmHtml } from "micromark-extension-gfm";
+import { describe, expect, it } from "vitest";
+import { segmentSentences } from "./sentences";
+import { wrapSentencesHtml } from "./wrapSentences";
 
 function render(md) {
   return micromark(String(md), { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
@@ -110,7 +110,10 @@ The skeptic case has the structure of confounding, the documented heterogeneity 
     for (const s of sentences) {
       if (!/[A-Za-z0-9]/.test(s.text)) continue;
       const attr = `data-sentence-index="${s.index}"`;
-      expect(out, `sentence ${s.index} (${JSON.stringify(s.text.slice(0, 40))}) should produce a span`).toContain(attr);
+      expect(
+        out,
+        `sentence ${s.index} (${JSON.stringify(s.text.slice(0, 40))}) should produce a span`,
+      ).toContain(attr);
     }
   });
 

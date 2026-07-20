@@ -1,6 +1,6 @@
-import { createResource, For, Show, createMemo } from "solid-js";
-import { api } from "../../services/api";
+import { createMemo, createResource, For, Show } from "solid-js";
 import FormField from "../../components/FormField";
+import { api } from "../../services/api";
 
 // PresetPicker renders the "Repository type" dropdown populated from
 // GET /repositories/presets, plus an advanced disclosure that
@@ -45,14 +45,21 @@ export default function PresetPicker(props) {
       >
         <option value="">Default ({defaultPreset() || "general"})</option>
         <For each={list()}>
-          {(p) => <option value={p.id}>{p.label}{p.id === defaultPreset() ? " (default)" : ""}</option>}
+          {(p) => (
+            <option value={p.id}>
+              {p.label}
+              {p.id === defaultPreset() ? " (default)" : ""}
+            </option>
+          )}
         </For>
       </FormField>
       <Show when={selectedPreset()?.description}>
         <p class="text-xs text-gray-500 dark:text-gray-400">{selectedPreset().description}</p>
       </Show>
       <details class="text-sm">
-        <summary class="cursor-pointer text-blue-600 dark:text-blue-400">Advanced (override providers / contexts)</summary>
+        <summary class="cursor-pointer text-blue-600 dark:text-blue-400">
+          Advanced (override providers / contexts)
+        </summary>
         <div class="mt-3 space-y-3">
           <div>
             <p class="text-xs font-medium mb-1 dark:text-gray-300">Search providers</p>
@@ -97,8 +104,8 @@ export default function PresetPicker(props) {
             </div>
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400">
-            Leave providers unchecked to inherit the preset's set. An explicit
-            selection overrides the preset for that kind.
+            Leave providers unchecked to inherit the preset's set. An explicit selection overrides
+            the preset for that kind.
           </p>
         </div>
       </details>

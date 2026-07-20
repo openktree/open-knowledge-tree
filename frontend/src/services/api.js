@@ -131,7 +131,10 @@ export const api = {
   },
 
   retrieveSource(url, repoID, process = false, doi = "") {
-    return request("/sources/retrieve", { method: "POST", body: JSON.stringify({ url, repository_id: repoID || "", process, doi }) });
+    return request("/sources/retrieve", {
+      method: "POST",
+      body: JSON.stringify({ url, repository_id: repoID || "", process, doi }),
+    });
   },
 
   listSources(slug, { q = "", limit = 100, offset = 0 } = {}) {
@@ -151,9 +154,7 @@ export const api = {
   // image has not been mirrored yet (storage_key is NULL on the
   // server) so the caller can fall back to the remote `url`.
   async getSourceImage(slug, sourceID, imageID) {
-    const res = await authedFetch(
-      `/repositories/${slug}/sources/${sourceID}/images/${imageID}`
-    );
+    const res = await authedFetch(`/repositories/${slug}/sources/${sourceID}/images/${imageID}`);
     if (!res) return null;
     const blob = await res.blob();
     return URL.createObjectURL(blob);
@@ -163,9 +164,7 @@ export const api = {
   // returns an object URL. Same contract as getSourceImage:
   // returns null when the body has not been stored.
   async getSourceBody(slug, sourceID) {
-    const res = await authedFetch(
-      `/repositories/${slug}/sources/${sourceID}/body`
-    );
+    const res = await authedFetch(`/repositories/${slug}/sources/${sourceID}/body`);
     if (!res) return null;
     const blob = await res.blob();
     return URL.createObjectURL(blob);
@@ -295,10 +294,13 @@ export const api = {
   },
 
   migrateRepositoryContext(repoID, context, body) {
-    return request(`/repositories/${repoID}/settings/contexts/${encodeURIComponent(context)}/migrate`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    return request(
+      `/repositories/${repoID}/settings/contexts/${encodeURIComponent(context)}/migrate`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
   },
 
   deleteRepositoryContext(repoID, context) {
@@ -320,9 +322,12 @@ export const api = {
   },
 
   deleteRepositoryContextMapping(repoID, localContext) {
-    return request(`/repositories/${repoID}/settings/context-mappings/${encodeURIComponent(localContext)}`, {
-      method: "DELETE",
-    });
+    return request(
+      `/repositories/${repoID}/settings/context-mappings/${encodeURIComponent(localContext)}`,
+      {
+        method: "DELETE",
+      },
+    );
   },
 
   setUnmappedContextPolicy(repoID, body) {
@@ -586,7 +591,13 @@ export const api = {
     });
   },
 
-  listInvestigationFacts(slug, invID, status = "stable", sort = "", { q = "", limit = 100, offset = 0 } = {}) {
+  listInvestigationFacts(
+    slug,
+    invID,
+    status = "stable",
+    sort = "",
+    { q = "", limit = 100, offset = 0 } = {},
+  ) {
     const qs = new URLSearchParams({ status, limit, offset });
     if (sort) qs.set("sort", sort);
     if (q) qs.set("q", q);
@@ -741,7 +752,9 @@ export const api = {
   // expands a decomposition card to browse/troubleshoot the
   // contents without pulling the source locally.
   getRemoteDecomposition(slug, sourceID, modelID) {
-    return request(`/repositories/${slug}/remote/${sourceID}/decompositions/${encodeURIComponent(modelID)}`);
+    return request(
+      `/repositories/${slug}/remote/${sourceID}/decompositions/${encodeURIComponent(modelID)}`,
+    );
   },
 
   pullRemoteSource(slug, sourceID) {

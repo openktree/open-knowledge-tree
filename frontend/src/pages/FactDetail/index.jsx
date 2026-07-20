@@ -1,11 +1,11 @@
-import { createMemo, createResource, createSignal, Show } from "solid-js";
 import { useParams } from "@solidjs/router";
-import { api } from "../../services/api";
-import { useRBAC } from "../../store/rbac";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
+import Alert from "../../components/Alert";
+import EmptyState from "../../components/EmptyState";
 import Layout from "../../components/Layout";
 import Loading from "../../components/Loading";
-import EmptyState from "../../components/EmptyState";
-import Alert from "../../components/Alert";
+import { api } from "../../services/api";
+import { useRBAC } from "../../store/rbac";
 import FactDetailContent from "./FactDetailContent";
 
 // Route entry for /:slug/facts/:factID. The page owns the
@@ -30,7 +30,7 @@ export default function FactDetail() {
         concepts: res.concepts || [],
         conceptCount: res.concept_count || 0,
       };
-    }
+    },
   );
 
   return (
@@ -44,10 +44,7 @@ export default function FactDetail() {
           />
         }
       >
-        <Show
-          when={!data.loading}
-          fallback={<Loading message="Loading fact..." />}
-        >
+        <Show when={!data.loading} fallback={<Loading message="Loading fact..." />}>
           <Show
             when={!data.error}
             fallback={

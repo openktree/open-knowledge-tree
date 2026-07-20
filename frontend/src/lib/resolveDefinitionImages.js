@@ -36,7 +36,7 @@ export async function resolveDefinitionImages(images) {
         }
       }
       map.set(img.id, img.image_url);
-    })
+    }),
   );
   return { map, blobUrls };
 }
@@ -44,6 +44,10 @@ export async function resolveDefinitionImages(images) {
 // revokeBlobUrls revokes a list of object URLs, ignoring errors.
 export function revokeBlobUrls(urls) {
   for (const u of urls) {
-    try { URL.revokeObjectURL(u); } catch { /* noop */ }
+    try {
+      URL.revokeObjectURL(u);
+    } catch {
+      /* noop */
+    }
   }
 }

@@ -1,5 +1,5 @@
-import { createSignal, createContext, useContext, createEffect, createResource } from "solid-js";
 import { useLocation } from "@solidjs/router";
+import { createContext, createEffect, createResource, createSignal, useContext } from "solid-js";
 import { api } from "../services/api";
 import { getTokenSignal } from "./auth";
 
@@ -92,11 +92,7 @@ export function RepositoryProvider(props) {
     },
   };
 
-  return (
-    <RepositoryContext.Provider value={store}>
-      {props.children}
-    </RepositoryContext.Provider>
-  );
+  return <RepositoryContext.Provider value={store}>{props.children}</RepositoryContext.Provider>;
 }
 
 export function useRepository() {

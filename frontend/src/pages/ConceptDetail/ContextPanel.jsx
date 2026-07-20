@@ -1,15 +1,15 @@
-import { For, Show, createResource, createSignal } from "solid-js";
-import Card from "../../components/Card";
-import Button from "../../components/Button";
+import { createResource, createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
+import Button from "../../components/Button";
+import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import Pagination from "../../components/Pagination";
 import SearchInput from "../../components/SearchInput";
+import { api } from "../../services/api";
 import FactRow from "../Facts/FactRow";
+import { PAGE_SIZE } from "./constants";
 import FactSourceBadge from "./FactSourceBadge";
 import SummaryPanel from "./SummaryPanel";
-import { api } from "../../services/api";
-import { PAGE_SIZE } from "./constants";
 
 // ContextPanel renders the selected context's slice of a concept
 // group: the context's description and the paginated facts linked
@@ -32,7 +32,13 @@ export default function ContextPanel(props) {
   const [search, setSearch] = createSignal("");
   const [refreshKey, setRefreshKey] = createSignal(0);
   const [factData, { refetch }] = createResource(
-    () => ({ slug: slug(), conceptID: conceptID(), offset: offset(), q: search(), key: refreshKey() }),
+    () => ({
+      slug: slug(),
+      conceptID: conceptID(),
+      offset: offset(),
+      q: search(),
+      key: refreshKey(),
+    }),
     async ({ slug, conceptID, offset, q }) => {
       if (!slug || !conceptID) return { data: [], total: 0, limit: PAGE_SIZE, offset: 0 };
       try {
@@ -40,7 +46,7 @@ export default function ContextPanel(props) {
       } catch {
         return { data: [], total: 0, limit: PAGE_SIZE, offset: 0 };
       }
-    }
+    },
   );
 
   const facts = () => factData()?.data || [];
@@ -66,7 +72,9 @@ export default function ContextPanel(props) {
         <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div class="flex items-center gap-2 flex-wrap">
             <h2 class="text-lg font-semibold dark:text-white">{context()?.context || "Context"}</h2>
-            <Badge variant="gray">{total().toLocaleString()} fact{total() === 1 ? "" : "s"}</Badge>
+            <Badge variant="gray">
+              {total().toLocaleString()} fact{total() === 1 ? "" : "s"}
+            </Badge>
           </div>
           <div class="flex items-center gap-2 flex-wrap">
             <SearchInput
@@ -88,26 +96,47 @@ export default function ContextPanel(props) {
           when={facts().length > 0}
           fallback={
             <EmptyState
-              title={search() ? "No facts match your search." : "No facts linked to this context yet."}
-              description={search() ? "Try a different query, or clear the search box." : "Once facts are processed and concepts extracted, the facts mentioning this concept under this context will appear here."}
+              title={
+                search() ? "No facts match your search." : "No facts linked to this context yet."
+              }
+              description={
+                search()
+                  ? "Try a different query, or clear the search box."
+                  : "Once facts are processed and concepts extracted, the facts mentioning this concept under this context will appear here."
+              }
             />
           }
         >
           <Show when={total() > limit()}>
-            <Pagination total={total()} limit={limit()} offset={offset()} onOffsetChange={handleOffset} />
+            <Pagination
+              total={total()}
+              limit={limit()}
+              offset={offset()}
+              onOffsetChange={handleOffset}
+            />
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-              Showing {offset() + 1}–{Math.min(offset() + limit(), total())} of {total().toLocaleString()}
+              Showing {offset() + 1}–{Math.min(offset() + limit(), total())} of{" "}
+              {total().toLocaleString()}
             </p>
           </Show>
           <div class="space-y-2 mt-3">
             <For each={facts()}>
               {(fact) => (
-                <FactRow fact={fact} slug={slug()} extra={<FactSourceBadge slug={slug()} factID={fact.id} />} />
+                <FactRow
+                  fact={fact}
+                  slug={slug()}
+                  extra={<FactSourceBadge slug={slug()} factID={fact.id} />}
+                />
               )}
             </For>
           </div>
           <Show when={total() > limit()}>
-            <Pagination total={total()} limit={limit()} offset={offset()} onOffsetChange={handleOffset} />
+            <Pagination
+              total={total()}
+              limit={limit()}
+              offset={offset()}
+              onOffsetChange={handleOffset}
+            />
           </Show>
         </Show>
       </Card>

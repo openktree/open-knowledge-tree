@@ -27,7 +27,12 @@ export default function ReportsTable(props) {
         <h2 class="text-lg font-semibold dark:text-white">Reports</h2>
         <span class="text-xs text-gray-500 dark:text-gray-400">{reports().length} total</span>
       </div>
-      <Show when={reports().length > 0} fallback={<p class="text-sm text-gray-500 dark:text-gray-400">No reports yet. Create one above.</p>}>
+      <Show
+        when={reports().length > 0}
+        fallback={
+          <p class="text-sm text-gray-500 dark:text-gray-400">No reports yet. Create one above.</p>
+        }
+      >
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>

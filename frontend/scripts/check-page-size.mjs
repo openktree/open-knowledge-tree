@@ -41,8 +41,7 @@ const LIMITS = {
 const INTERNAL_COMPONENT_RE =
   /^(?:export\s+default\s+function\s+([A-Z]\w+)|function\s+([A-Z]\w+)\s*\(|const\s+([A-Z]\w+)\s*=\s*(?:\([^)]*\)|[A-Z]\w*)\s*=>)/gm;
 
-const COMPONENT_IMPORT_RE =
-  /from\s+["'][^"']*components\/([A-Z][A-Za-z0-9_]*)\b[^"']*["']/g;
+const COMPONENT_IMPORT_RE = /from\s+["'][^"']*components\/([A-Z][A-Za-z0-9_]*)\b[^"']*["']/g;
 
 const ALLOW_DIRECTIVE = "@okt-page-allow-large";
 
@@ -79,15 +78,14 @@ function checkFile(file) {
     // Acceptable forms:   // @okt-page-allow-large: reason
     //                     // @okt-page-allow-large - reason
     //                     // @okt-page-allow-large — reason
-    const JUSTIFICATION = new RegExp(
-      `${ALLOW_DIRECTIVE}\\s*[:\\-—]\\s*\\S`,
-    );
+    const JUSTIFICATION = new RegExp(`${ALLOW_DIRECTIVE}\\s*[:\\-—]\\s*\\S`);
     if (!JUSTIFICATION.test(head)) {
       violations.push({
         file: rel,
         kind: "allow-directive-without-justification",
-        detail: `Found '${ALLOW_DIRECTIVE}' but no justification on the same line. ` +
-                `Use:  // ${ALLOW_DIRECTIVE}: <one-line reason>`,
+        detail:
+          `Found '${ALLOW_DIRECTIVE}' but no justification on the same line. ` +
+          `Use:  // ${ALLOW_DIRECTIVE}: <one-line reason>`,
       });
     }
     return;
@@ -96,25 +94,23 @@ function checkFile(file) {
   const issues = [];
 
   // Count internal subcomponents (excluding the default export).
+  // The regex's group 1 captures the default export's name only so we
+  // can identify and skip it; groups 2 and 3 are the real internal
+  // subcomponents (`function Foo(` and `const Foo = ... =>`).
   const internalComponents = new Set();
   let im;
   while ((im = INTERNAL_COMPONENT_RE.exec(src)) !== null) {
-    const name = im[1] || im[2] || im[3];
+    const name = im[2] || im[3];
     if (name) internalComponents.add(name);
   }
 
   if (lines.length > LIMITS.maxLines) {
-    issues.push(
-      `${lines.length} lines > limit of ${LIMITS.maxLines}`,
-    );
-  } else if (
-    internalComponents.size > 0 &&
-    lines.length > LIMITS.maxLinesWithSubcomponents
-  ) {
+    issues.push(`${lines.length} lines > limit of ${LIMITS.maxLines}`);
+  } else if (internalComponents.size > 0 && lines.length > LIMITS.maxLinesWithSubcomponents) {
     issues.push(
       `${lines.length} lines with ${internalComponents.size} internal subcomponents ` +
-      `(${[...internalComponents].sort().join(", ")}); > limit of ${LIMITS.maxLinesWithSubcomponents} ` +
-      `lines when the page defines its own subcomponents — split them into the page folder`,
+        `(${[...internalComponents].sort().join(", ")}); > limit of ${LIMITS.maxLinesWithSubcomponents} ` +
+        `lines when the page defines its own subcomponents — split them into the page folder`,
     );
   }
 
@@ -126,7 +122,7 @@ function checkFile(file) {
   if (componentImports.size >= LIMITS.maxComponentImports) {
     issues.push(
       `${componentImports.size} component imports (${[...componentImports].sort().join(", ")}) ` +
-      `>= limit of ${LIMITS.maxComponentImports}`,
+        `>= limit of ${LIMITS.maxComponentImports}`,
     );
   }
 
@@ -155,10 +151,10 @@ for (const v of violations) {
 }
 console.error(
   `Fix: convert the page to a folder per AGENTS.md "Page folder convention" ` +
-  `(${LIMITS.maxLines}-line limit, subcomponent split, state in index.jsx).`,
+    `(${LIMITS.maxLines}-line limit, subcomponent split, state in index.jsx).`,
 );
 console.error(
   `Or, in exceptional cases, add a one-line justification at the top of the file:\n` +
-  `  // ${ALLOW_DIRECTIVE}: <reason this page is allowed to stay flat>`,
+    `  // ${ALLOW_DIRECTIVE}: <reason this page is allowed to stay flat>`,
 );
 process.exit(1);

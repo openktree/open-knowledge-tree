@@ -1,6 +1,6 @@
 import { Show } from "solid-js";
-import Card from "../../components/Card";
 import Button from "../../components/Button";
+import Card from "../../components/Card";
 import FactBadges from "../../components/FactBadges";
 import FactConceptTags from "../../components/FactConceptTags";
 import ImageFromUrl from "../../components/ImageFromUrl";
@@ -45,7 +45,17 @@ export default function FactDetailContent(props) {
         <div class="font-semibold text-gray-700 dark:text-gray-300 mb-1">Metadata</div>
         <div>Kind: {fact()?.fact_kind || "text"}</div>
         <Show when={fact()?.image_url}>
-          <div class="break-all">Image URL: <a href={fact().image_url} target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline dark:text-blue-400">{fact().image_url}</a></div>
+          <div class="break-all">
+            Image URL:{" "}
+            <a
+              href={fact().image_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              {fact().image_url}
+            </a>
+          </div>
         </Show>
         <div>Status: {fact()?.status || ""}</div>
         <Show when={fact()?.created_at}>
@@ -62,9 +72,7 @@ export default function FactDetailContent(props) {
       <Show
         when={(props.sources() || []).length > 0}
         fallback={
-          <p class="text-sm text-gray-500 dark:text-gray-400">
-            No sources linked to this fact.
-          </p>
+          <p class="text-sm text-gray-500 dark:text-gray-400">No sources linked to this fact.</p>
         }
       >
         <FactSourceList sources={props.sources} slug={props.slug} />

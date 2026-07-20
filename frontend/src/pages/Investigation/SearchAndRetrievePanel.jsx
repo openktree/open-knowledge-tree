@@ -1,11 +1,11 @@
-import { createResource, createSignal, Show, For } from "solid-js";
-import { api } from "../../services/api";
-import { useRepository } from "../../store/repository";
+import { createResource, createSignal, For, Show } from "solid-js";
 import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import CollapsibleSection from "../../components/CollapsibleSection";
 import FormField from "../../components/FormField";
 import SearchResult from "../../components/SearchResult";
+import { api } from "../../services/api";
+import { useRepository } from "../../store/repository";
 import { useRetrieveAndLink } from "./useRetrieveAndLink";
 
 export default function SearchAndRetrievePanel(props) {
@@ -91,13 +91,18 @@ export default function SearchAndRetrievePanel(props) {
       <form onSubmit={onSearch} class="flex gap-2 mb-4 flex-wrap">
         <Show when={searchProviders().length > 0}>
           <FormField type="select" value={provider()} onChange={setProvider} inputClass="min-w-0">
-            <For each={searchProviders()}>
-              {(p) => <option value={p.id}>{p.name}</option>}
-            </For>
+            <For each={searchProviders()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
           </FormField>
         </Show>
-        <FormField value={query()} onChange={setQuery} placeholder="Enter search query..." class="flex-1" />
-        <Button type="submit" loading={busy()} loadingText="Searching...">Search</Button>
+        <FormField
+          value={query()}
+          onChange={setQuery}
+          placeholder="Enter search query..."
+          class="flex-1"
+        />
+        <Button type="submit" loading={busy()} loadingText="Searching...">
+          Search
+        </Button>
       </form>
       <Alert variant="error" message={error()} onDismiss={() => setError("")} />
       <Show when={info()}>
@@ -122,7 +127,12 @@ export default function SearchAndRetrievePanel(props) {
         </div>
         <Show when={cursor()}>
           <div class="mt-4">
-            <Button variant="secondary" onClick={onLoadMore} loading={busy()} loadingText="Loading...">
+            <Button
+              variant="secondary"
+              onClick={onLoadMore}
+              loading={busy()}
+              loadingText="Loading..."
+            >
               Load more
             </Button>
           </div>

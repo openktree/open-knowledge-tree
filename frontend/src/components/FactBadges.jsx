@@ -1,5 +1,5 @@
-import { Show } from "solid-js";
 import { A, useParams } from "@solidjs/router";
+import { Show } from "solid-js";
 import Badge from "./Badge";
 
 // Status badge color map. `new` is amber (in flight through the
@@ -40,15 +40,14 @@ export default function FactBadges(props) {
         {kind() === "image" ? "Image" : "Text"}
       </Badge>
       <Badge variant={STATUS_VARIANT[status()] || "gray"}>
-        <span class={status() === "to_delete" ? "line-through" : ""}>
-          {status()}
-        </span>
+        <span class={status() === "to_delete" ? "line-through" : ""}>{status()}</span>
       </Badge>
       <Show
         when={slug() && factID()}
         fallback={
           <Badge variant="blue">
-            {sourceCount() === 1 ? "Mentioned by" : "Confirmed by"} {sourceCount()} {sourceCount() === 1 ? "source" : "sources"}
+            {sourceCount() === 1 ? "Mentioned by" : "Confirmed by"} {sourceCount()}{" "}
+            {sourceCount() === 1 ? "source" : "sources"}
           </Badge>
         }
       >
@@ -57,7 +56,8 @@ export default function FactBadges(props) {
           class="text-xs px-2 py-0.5 rounded font-mono bg-primary/10 text-primary-fg hover:bg-primary/20"
           title="View sources for this fact"
         >
-          {sourceCount() === 1 ? "Mentioned by" : "Confirmed by"} {sourceCount()} {sourceCount() === 1 ? "source" : "sources"}
+          {sourceCount() === 1 ? "Mentioned by" : "Confirmed by"} {sourceCount()}{" "}
+          {sourceCount() === 1 ? "source" : "sources"}
         </A>
       </Show>
       {props.extra}

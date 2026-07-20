@@ -1,12 +1,12 @@
-import { createMemo, createResource, Show, createSignal } from "solid-js";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
+import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
-import Layout from "../../components/Layout";
-import EmptyState from "../../components/EmptyState";
-import Loading from "../../components/Loading";
+import { SORT_OPTIONS, STATUS_OPTIONS } from "./constants";
 import FactsContent from "./FactsContent";
-import { STATUS_OPTIONS, SORT_OPTIONS } from "./constants";
 
 const PAGE_SIZE = 100;
 
@@ -34,7 +34,7 @@ export default function Facts() {
       } catch {
         return null;
       }
-    }
+    },
   );
 
   const onSearch = (q) => {
@@ -53,20 +53,23 @@ export default function Facts() {
           />
         }
       >
-        <Show
-          when={!facts.loading}
-          fallback={<Loading message="Loading facts..." />}
-        >
+        <Show when={!facts.loading} fallback={<Loading message="Loading facts..." />}>
           <FactsContent
             facts={facts}
             slug={() => repo.currentRepo()?.slug || ""}
             hasRepo={() => !!repo.currentRepo()}
             onRefresh={refetch}
             statusFilter={statusFilter}
-            onStatusChange={(v) => { setStatusFilter(v); setOffset(0); }}
+            onStatusChange={(v) => {
+              setStatusFilter(v);
+              setOffset(0);
+            }}
             statusOptions={STATUS_OPTIONS}
             sort={sort}
-            onSortChange={(v) => { setSort(v); setOffset(0); }}
+            onSortChange={(v) => {
+              setSort(v);
+              setOffset(0);
+            }}
             sortOptions={SORT_OPTIONS}
             search={search}
             onSearch={onSearch}

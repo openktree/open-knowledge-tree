@@ -1,10 +1,10 @@
-import { createMemo, createResource, Show, createSignal } from "solid-js";
+import { createMemo, createResource, createSignal, Show } from "solid-js";
+import EmptyState from "../../components/EmptyState";
+import Layout from "../../components/Layout";
+import Loading from "../../components/Loading";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
-import Layout from "../../components/Layout";
-import EmptyState from "../../components/EmptyState";
-import Loading from "../../components/Loading";
 import ConceptsContent from "./ConceptsContent";
 import { PAGE_SIZE } from "./constants";
 
@@ -29,7 +29,7 @@ export default function Concepts() {
       } catch {
         return null;
       }
-    }
+    },
   );
 
   const onSearch = (q) => {

@@ -1,10 +1,10 @@
 import { createResource, createSignal, Show } from "solid-js";
-import { api } from "../../services/api";
 import Alert from "../../components/Alert";
 import EmptyState from "../../components/EmptyState";
-import AIUsageSummaryCards from "./AIUsageSummaryCards";
-import AIUsageChart from "./AIUsageChart";
+import { api } from "../../services/api";
 import AIUsageBreakdownTable from "./AIUsageBreakdownTable";
+import AIUsageChart from "./AIUsageChart";
+import AIUsageSummaryCards from "./AIUsageSummaryCards";
 import { BUCKET_OPTIONS } from "./constants";
 
 // AIUsageContent composes the dashboard. The parent (index.jsx)
@@ -26,8 +26,13 @@ export default function AIUsageContent(props) {
     repository_id: props.repoID || undefined,
   });
 
-  const [summary, { refetch: refetchSummary }] = createResource(filterParams, (p) => api.getAIUsageSummary(p));
-  const [byDay, { refetch: refetchByDay }] = createResource(() => ({ ...filterParams(), bucket: bucket() }), (p) => api.getAIUsageByDay(p));
+  const [summary, { refetch: refetchSummary }] = createResource(filterParams, (p) =>
+    api.getAIUsageSummary(p),
+  );
+  const [byDay, { refetch: refetchByDay }] = createResource(
+    () => ({ ...filterParams(), bucket: bucket() }),
+    (p) => api.getAIUsageByDay(p),
+  );
   const [byOperation] = createResource(filterParams, (p) => api.getAIUsageByOperation(p));
   const [byRepository] = createResource(filterParams, (p) => api.getAIUsageByRepository(p));
   const [bySource] = createResource(filterParams, (p) => api.getAIUsageBySource(p));
@@ -35,10 +40,14 @@ export default function AIUsageContent(props) {
   // The breakdown table reads the dataset for the active tab.
   const breakdownRows = () => {
     switch (activeTab()) {
-      case "operation": return byOperation()?.rows ?? [];
-      case "repository": return byRepository()?.rows ?? [];
-      case "source": return bySource()?.rows ?? [];
-      default: return summary()?.rows ?? [];
+      case "operation":
+        return byOperation()?.rows ?? [];
+      case "repository":
+        return byRepository()?.rows ?? [];
+      case "source":
+        return bySource()?.rows ?? [];
+      default:
+        return summary()?.rows ?? [];
     }
   };
 
@@ -59,7 +68,10 @@ export default function AIUsageContent(props) {
         onToChange={props.onToChange}
         onRepoIDChange={props.onRepoIDChange}
         onBucketChange={setBucket}
-        onRefresh={() => { refetchSummary(); refetchByDay(); }}
+        onRefresh={() => {
+          refetchSummary();
+          refetchByDay();
+        }}
       />
 
       <Show when={!summary.loading} fallback={<EmptyState title="Loading usage data…" />}>
@@ -90,7 +102,11 @@ function FilterBar(props) {
         <input
           type="date"
           value={props.from?.slice(0, 10) || ""}
-          onChange={(e) => props.onFromChange(e.currentTarget.value ? new Date(e.currentTarget.value).toISOString() : "")}
+          onChange={(e) =>
+            props.onFromChange(
+              e.currentTarget.value ? new Date(e.currentTarget.value).toISOString() : "",
+            )
+          }
           class="mt-1 px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm dark:text-white"
         />
       </label>
@@ -99,7 +115,11 @@ function FilterBar(props) {
         <input
           type="date"
           value={props.to?.slice(0, 10) || ""}
-          onChange={(e) => props.onToChange(e.currentTarget.value ? new Date(e.currentTarget.value).toISOString() : "")}
+          onChange={(e) =>
+            props.onToChange(
+              e.currentTarget.value ? new Date(e.currentTarget.value).toISOString() : "",
+            )
+          }
           class="mt-1 px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm dark:text-white"
         />
       </label>
@@ -120,7 +140,9 @@ function FilterBar(props) {
           onChange={(e) => props.onBucketChange(e.currentTarget.value)}
           class="mt-1 px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm dark:text-white"
         >
-          {BUCKET_OPTIONS.map((o) => <option value={o.value}>{o.label}</option>)}
+          {BUCKET_OPTIONS.map((o) => (
+            <option value={o.value}>{o.label}</option>
+          ))}
         </select>
       </label>
       <button

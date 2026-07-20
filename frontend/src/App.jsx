@@ -1,30 +1,30 @@
 import { Route, useNavigate } from "@solidjs/router";
-import { RBACProvider } from "./store/rbac";
-import { RepositoryProvider } from "./store/repository";
-import { setUnauthorizedCallback } from "./services/api";
-import { setToken } from "./store/auth";
 import AuthGuard from "./components/AuthGuard";
-import Login from "./pages/Login";
-import Register from "./pages/Register";
+import AIUsage from "./pages/AIUsage";
+import ConceptDetail from "./pages/ConceptDetail";
+import Concepts from "./pages/Concepts";
 import Dashboard from "./pages/Dashboard";
-import Sources from "./pages/Sources";
-import SourceDetail from "./pages/SourceDetail";
-import Facts from "./pages/Facts";
 import FactDetail from "./pages/FactDetail";
+import Facts from "./pages/Facts";
+import Investigation from "./pages/Investigation";
+import Investigations from "./pages/Investigations";
+import Login from "./pages/Login";
+import Promptsets from "./pages/Promptsets";
 import Providers from "./pages/Providers";
-import Users from "./pages/Users";
+import Register from "./pages/Register";
+import Remote from "./pages/Remote";
+import ReportDetail from "./pages/ReportDetail";
+import Reports from "./pages/Reports";
 import Repositories from "./pages/Repositories";
 import RepositorySettings from "./pages/RepositorySettings";
-import Investigations from "./pages/Investigations";
-import Investigation from "./pages/Investigation";
-import Reports from "./pages/Reports";
-import ReportDetail from "./pages/ReportDetail";
-import Concepts from "./pages/Concepts";
-import ConceptDetail from "./pages/ConceptDetail";
+import SourceDetail from "./pages/SourceDetail";
+import Sources from "./pages/Sources";
 import Tasks from "./pages/Tasks";
-import AIUsage from "./pages/AIUsage";
-import Remote from "./pages/Remote";
-import Promptsets from "./pages/Promptsets";
+import Users from "./pages/Users";
+import { setUnauthorizedCallback } from "./services/api";
+import { setToken } from "./store/auth";
+import { RBACProvider } from "./store/rbac";
+import { RepositoryProvider } from "./store/repository";
 
 function AppLayout(props) {
   const navigate = useNavigate();
@@ -37,9 +37,7 @@ function AppLayout(props) {
 
   return (
     <RBACProvider>
-      <RepositoryProvider>
-        {props.children}
-      </RepositoryProvider>
+      <RepositoryProvider>{props.children}</RepositoryProvider>
     </RBACProvider>
   );
 }
