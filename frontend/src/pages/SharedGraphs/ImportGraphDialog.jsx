@@ -18,6 +18,9 @@ export default function ImportGraphDialog(props) {
   // sourceMode: "registry" when opened from a graph row, "upload"
   // when opened from the "Upload Bundle" button.
   const sourceMode = () => (props.upload ? "upload" : "registry");
+  // graph is passed as a value (the graph object, or null/{} in
+  // upload mode). Access it directly, not as a function.
+  const graphObj = () => props.graph || {};
 
   const [mode, setMode] = createSignal(IMPORT_MODE_NEW);
   const [name, setName] = createSignal("");
@@ -70,7 +73,7 @@ export default function ImportGraphDialog(props) {
           description: description().trim(),
         };
         if (sourceMode() === "registry") {
-          body.registry_graph_id = props.graph().id;
+          body.registry_graph_id = graphObj().id;
         } else {
           body.upload_key = uploadKey();
         }
@@ -83,7 +86,7 @@ export default function ImportGraphDialog(props) {
       } else {
         const body = {};
         if (sourceMode() === "registry") {
-          body.registry_graph_id = props.graph().id;
+          body.registry_graph_id = graphObj().id;
         } else {
           body.upload_key = uploadKey();
         }
@@ -106,7 +109,7 @@ export default function ImportGraphDialog(props) {
           {sourceMode() === "upload" ? "Upload & import graph bundle" : "Import shared graph"}
         </h3>
         <p class="text-sm text-text-muted mb-4 truncate">
-          {sourceMode() === "upload" ? fileName() || "Select a .json.gz file" : props.graph()?.name}
+          {sourceMode() === "upload" ? fileName() || "Select a .json.gz file" : graphObj()?.name}
         </p>
 
         <Show when={sourceMode() === "upload"}>
