@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v1.2.0...frontend-v1.3.0) (2026-07-22)
+
+
+### Features
+
+* **api:** hybrid lexical retrieval for annotate_report + dedup improvements + WIP ([74b24a6](https://github.com/openktree/open-knowledge-tree/commit/74b24a611afc39d369f58bf046f00c0f5c6047d2))
+* **concepts:** concept sources endpoint + MCP tool + UI provenance, and fact-summary curriculum ([1e68182](https://github.com/openktree/open-knowledge-tree/commit/1e6818272256a4800e0f056e4a5bb80c5138a86c))
+* **graph:** embed source images + optional PDFs in graph bundles ([7df06b8](https://github.com/openktree/open-knowledge-tree/commit/7df06b83d70465bc432598351379e932ede993f4))
+* **graph:** synchronous download endpoint for file-based graph export ([1366156](https://github.com/openktree/open-knowledge-tree/commit/13661567fba75fad0950eee42f0a3a678c539df1))
+* **graph:** upload bundle UI in Shared Graphs page ([a663a14](https://github.com/openktree/open-knowledge-tree/commit/a663a1479f59f0e70da3b323ecf3ff4125e5c4ca))
+* **search:** hybrid lexical+TSV retrieval with RRF, plus audit/API keys/claims infra ([59e1698](https://github.com/openktree/open-knowledge-tree/commit/59e1698cb7905f5c45ccef7854c3e8220fbe27bc))
+* **synthesis:** retry synthesize_concept on LLM/write failures + per-concept resynthesize endpoint ([3fa0d28](https://github.com/openktree/open-knowledge-tree/commit/3fa0d28d34c5b2418846309f081fe04bca6d8253))
+
+
+### Bug Fixes
+
+* **graph:** raise server write_timeout + vite proxy timeout for graph download ([a15168a](https://github.com/openktree/open-knowledge-tree/commit/a15168a23d699e37f1cd1e88b22cfe25f7bac722))
+* **graph:** treat props.graph as value not function in import dialog ([191a3fd](https://github.com/openktree/open-knowledge-tree/commit/191a3fd9b996bd381aff478089e57f0941758d21))
+
 ## [1.2.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v1.1.0...frontend-v1.2.0) (2026-07-19)
 
 
