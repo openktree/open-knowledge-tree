@@ -69,6 +69,8 @@ jobs:
 
       - name: Verify tag matches service
         run: scripts/release/verify-tag.sh "$SERVICE"
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.version }}
 
       - name: Derive image tag from release tag
         id: tag
