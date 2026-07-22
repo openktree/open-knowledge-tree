@@ -1038,6 +1038,29 @@ export const api = {
     });
   },
 
+  // downloadRepoGraph builds a graph bundle synchronously and streams
+  // it back as a gzipped JSON attachment. No registry required — the
+  // bundle is built in-process and returned directly. The browser
+  // saves it as <slug>.json.gz. Returns a Blob the caller can turn
+  // into a download via an object URL.
+  async downloadRepoGraph(slug, name) {
+    const token = getToken();
+    const qs = name ? `?name=${encodeURIComponent(name)}` : "";
+    const res = await fetch(`${BASE}/repositories/${slug}/export-graph/download${qs}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let errorMessage = "download failed";
+      try {
+        const data = await res.json();
+        errorMessage = data.error || errorMessage;
+      } catch {}
+      if (res.status === 401 && onUnauthorized) onUnauthorized();
+      throw new Error(errorMessage);
+    }
+    return res.blob();
+  },
+
   // importGraphToNewRepo creates a new repository from a shared graph
   // and enqueues the import. body: { registry_graph_id?, upload_key?,
   // name, slug, description?, tags? }. Returns 202 + { job_id,

@@ -913,11 +913,13 @@ func (h *Handler) repoRoutes(r chi.Router) {
 			// repo context.
 			if h.graph != nil {
 				r.Post("/export-graph", h.repoPerm("graph", "export", h.graph.ExportGraph))
+				r.Get("/export-graph/download", h.repoPerm("graph", "export", h.graph.DownloadGraph))
 				r.Get("/export-graph/{jobID}", h.repoPerm("graph", "export", h.graph.GetExportStatus))
 				r.Post("/import-graph", h.repoPerm("graph", "write", h.graph.ImportGraphToExisting))
 				r.Get("/import-graph/{jobID}", h.repoPerm("graph", "write", h.graph.GetImportStatus))
 			} else {
 				r.Post("/export-graph", notConfigured)
+				r.Get("/export-graph/download", notConfigured)
 				r.Get("/export-graph/{jobID}", notConfigured)
 				r.Post("/import-graph", notConfigured)
 				r.Get("/import-graph/{jobID}", notConfigured)

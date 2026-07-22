@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/graph"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -157,6 +159,89 @@ func (h *Graph) ExportGraph(w http.ResponseWriter, r *http.Request) {
 		"repository_id": repoID.String(),
 		"status":        "queued",
 	})
+}
+
+// ── Export (synchronous file download) ───────────────────────────────
+
+// DownloadGraph builds a graph bundle for the repository synchronously
+// and streams it back as a gzipped JSON attachment. Unlike ExportGraph
+// (which pushes to the registry async), this needs no registry
+// configuration — the bundle is built in-process and returned directly.
+// The Content-Disposition attachment filename is the repo's name
+// (slug-sanitized) + .json.gz so the browser saves it as a file.
+//
+// Query params: ?name= (override the bundle's metadata.name; defaults
+// to the repo's name). The bundle always includes embeddings (the
+// provider/graph.BundleBuilder fetches Qdrant vectors when Qdrant is
+// wired).
+//
+// Gated by graph:export (wiring layer).
+func (h *Graph) DownloadGraph(w http.ResponseWriter, r *http.Request) {
+	repoID, ok := appmw.RepoIDFromContext(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "could not resolve repository ID")
+		return
+	}
+	pool := appmw.PoolFromContext(r.Context())
+	if pool == nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "no per-repo pool on request context")
+		return
+	}
+	queries := store.New(pool)
+
+	// Resolve the repo's name for the bundle metadata + the download
+	// filename.
+	repo, err := h.deps.Store.GetRepositoryByID(r.Context(), repoID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		name = repo.Name
+	}
+
+	// Build the bundle. The builder reads the per-repo pool queries +
+	// the Qdrant store wired on Deps (nil-safe — the bundle's
+	// embeddings section is empty when Qdrant isn't configured).
+	builder := graph.NewBundleBuilder(
+		queries,
+		h.deps.Qdrant,
+		repoID,
+		h.deps.Config.Providers.Embedding.Model,
+		h.deps.Config.Providers.Embedding.Dimensions,
+	)
+	bundle, err := builder.Build(r.Context(), graph.BundleMetadata{
+		Name: name,
+		Tags: []string{},
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "building graph bundle: "+err.Error())
+		return
+	}
+
+	// Gzip the bundle. The bytes are the same shape the registry
+	// stores and the import path (UploadGraphBundle + import_graph
+	// task) accepts, so a downloaded file is directly re-importable
+	// on any OKT instance.
+	gz, err := graph.MarshalGzip(bundle)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "gzipping graph bundle: "+err.Error())
+		return
+	}
+
+	// Stream back as a downloadable attachment. The filename uses the
+	// repo's slug (already slug-safe) + .json.gz.
+	filename := repo.Slug
+	if filename == "" {
+		filename = "graph"
+	}
+	filename += ".json.gz"
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Content-Length", strconv.Itoa(len(gz)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(gz)
 }
 
 // ── Import (existing repo) ───────────────────────────────────────────

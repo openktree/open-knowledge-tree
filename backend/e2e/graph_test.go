@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,7 +79,76 @@ func TestGraph_ExportRequiresPermission(t *testing.T) {
 	}
 }
 
-// TestGraph_ImportToNewRepoWithStubRegistry spins up a stub registry
+// TestGraph_DownloadStream verifies the synchronous download endpoint
+// builds a bundle in-process and streams it back as a gzipped JSON
+// attachment. An empty repo's bundle is valid (zero sources), so this
+// test doesn't need to seed any data — it asserts the response is
+// application/gzip with a Content-Disposition attachment filename, and
+// that the body gunzips to valid JSON with schema_version=1. No
+// registry configuration is needed (the download path is registry-free).
+func TestGraph_DownloadStream(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "graph-download@example.com")
+	_, _, repoID := createRepository(t, admin, "GraphDownload", "graph-download", "desc")
+
+	resp, body := admin.do("GET", "/api/v1/repositories/"+repoID+"/export-graph/download", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("download: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/gzip" {
+		t.Errorf("download: expected Content-Type application/gzip, got %q", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment; filename=\"") || !strings.HasSuffix(cd, ".json.gz\"") {
+		t.Errorf("download: expected Content-Disposition attachment filename ending .json.gz, got %q", cd)
+	}
+	// Gunzip + verify the bundle is valid JSON with schema_version=1.
+	gz, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("download: body is not valid gzip: %v", err)
+	}
+	jsonBytes, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatalf("download: gunzipping body: %v", err)
+	}
+	var bundle struct {
+		SchemaVersion int `json:"schema_version"`
+		Metadata      struct {
+			Name        string `json:"name"`
+			SourceCount int    `json:"source_count"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(jsonBytes, &bundle); err != nil {
+		t.Fatalf("download: bundle is not valid JSON: %v", err)
+	}
+	if bundle.SchemaVersion != 1 {
+		t.Errorf("download: expected schema_version 1, got %d", bundle.SchemaVersion)
+	}
+	if bundle.Metadata.Name != "GraphDownload" {
+		t.Errorf("download: expected metadata.name \"GraphDownload\", got %q", bundle.Metadata.Name)
+	}
+	if bundle.Metadata.SourceCount != 0 {
+		t.Errorf("download: expected empty repo (0 sources), got %d", bundle.Metadata.SourceCount)
+	}
+}
+
+// TestGraph_DownloadRequiresPermission verifies the download endpoint
+// is gated by graph:export. A sysadmin reaches the handler (200 OK on
+// an empty repo); this confirms the RBAC gate fires.
+func TestGraph_DownloadRequiresPermission(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "graph-download-admin@example.com")
+	_, _, repoID := createRepository(t, admin, "GraphDownloadPerm", "graph-download-perm", "desc")
+
+	resp, body := admin.do("GET", "/api/v1/repositories/"+repoID+"/export-graph/download", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("admin download: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+}
+
 // serving a tiny graph bundle, wires it into the test env, and
 // exercises the import-to-new-repo happy path: POST /repositories/
 // import-graph creates a new repo + enqueues the import task. The

@@ -26,6 +26,7 @@ export default function ExportGraphPanel(props) {
   const [description, setDescription] = createSignal("");
   const [tags, setTags] = createSignal("");
   const [busy, setBusy] = createSignal(false);
+  const [downloading, setDownloading] = createSignal(false);
 
   const handleExport = async () => {
     const slug = props.slug?.();
@@ -55,6 +56,41 @@ export default function ExportGraphPanel(props) {
       props.onAlert?.({ variant: "error", message: err.message });
     } finally {
       setBusy(false);
+    }
+  };
+
+  // handleDownload builds the bundle synchronously and saves it as a
+  // gzipped JSON file. No registry required — the bundle is built
+  // in-process on the server and returned as a Blob. The filename is
+  // <slug>.json.gz (the server sets Content-Disposition). The saved
+  // file is directly re-importable on any OKT instance via the
+  // "Upload bundle" path.
+  const handleDownload = async () => {
+    const slug = props.slug?.();
+    if (!slug) {
+      props.onAlert?.({ variant: "error", message: "No repository selected." });
+      return;
+    }
+    setDownloading(true);
+    try {
+      const blob = await api.downloadRepoGraph(slug, name().trim() || undefined);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${slug}.json.gz`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      props.onAlert?.({
+        variant: "success",
+        message:
+          "Graph bundle downloaded. Upload it on another instance via the Shared Graphs page.",
+      });
+    } catch (err) {
+      props.onAlert?.({ variant: "error", message: err.message });
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -121,7 +157,20 @@ export default function ExportGraphPanel(props) {
             >
               {busy() ? "Exporting…" : "Export Graph to Shared Library"}
             </button>
+            <button
+              type="button"
+              disabled={downloading()}
+              onClick={handleDownload}
+              class="text-sm px-3 py-1.5 rounded border bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
+            >
+              {downloading() ? "Downloading…" : "Download Graph File"}
+            </button>
           </div>
+          <p class="text-xs text-gray-400 dark:text-gray-500">
+            "Export" pushes the bundle to the shared registry so others can browse + import it.
+            "Download" saves the bundle as a gzipped JSON file you can re-import on any OKT instance
+            via the Shared Graphs upload path (no registry needed).
+          </p>
         </div>
       </Card>
     </Show>
