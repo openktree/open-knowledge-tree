@@ -1179,6 +1179,38 @@ func (a *graphImportReembedAdapter) EnqueueEmbedConceptsForRepo(ctx context.Cont
 	return err
 }
 
+func (a *graphImportReembedAdapter) EnqueueRecomputeConceptGroups(ctx context.Context, repositoryID string) error {
+	if a.m == nil {
+		return fmt.Errorf("graph_import: manager not wired")
+	}
+	repoID := pgtype.UUID{}
+	if err := repoID.Scan(repositoryID); err != nil {
+		return err
+	}
+	dbName, err := a.m.systemQueriesRepoDBName(ctx, repoID)
+	if err != nil {
+		return err
+	}
+	_, err = a.m.EnqueueRecomputeConceptGroups(ctx, dbName, repositoryID)
+	return err
+}
+
+func (a *graphImportReembedAdapter) EnqueueRefreshConceptRelations(ctx context.Context, repositoryID string) error {
+	if a.m == nil {
+		return fmt.Errorf("graph_import: manager not wired")
+	}
+	repoID := pgtype.UUID{}
+	if err := repoID.Scan(repositoryID); err != nil {
+		return err
+	}
+	dbName, err := a.m.systemQueriesRepoDBName(ctx, repoID)
+	if err != nil {
+		return err
+	}
+	_, err = a.m.EnqueueRefreshConceptRelations(ctx, dbName, repositoryID)
+	return err
+}
+
 // EnqueueExportGraph enqueues an export_graph job for a repo. Used by
 // the POST /{repoID}/export-graph handler. Returns the River job id.
 func (m *Manager) EnqueueExportGraph(ctx context.Context, args tasks.ExportGraphArgs) (string, error) {

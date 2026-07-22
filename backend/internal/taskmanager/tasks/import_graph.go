@@ -60,13 +60,18 @@ type ImportGraphResult struct {
 }
 
 // GraphImportReembedEnqueuer is the minimal contract the import worker
-// needs from the task manager to enqueue an embed_facts + embed_concepts
-// pass when the bundle's embedding model doesn't match the local
-// config. The wiring layer adapts the Manager to this interface (same
-// pattern as RemoteDedupEnqueuer).
+// needs from the task manager to enqueue post-import maintenance jobs:
+// embed_facts + embed_concepts (when the bundle's embedding model
+// doesn't match), recompute_concept_groups (the concept_groups summary
+// table the concept LIST endpoint paginates over), and
+// refresh_concept_relations (the matview the relations endpoint reads).
+// The wiring layer adapts the Manager to this interface (same pattern
+// as RemoteDedupEnqueuer).
 type GraphImportReembedEnqueuer interface {
 	EnqueueEmbedFacts(ctx context.Context, repositoryID, sourceID string) error
 	EnqueueEmbedConceptsForRepo(ctx context.Context, repositoryID string) error
+	EnqueueRecomputeConceptGroups(ctx context.Context, repositoryID string) error
+	EnqueueRefreshConceptRelations(ctx context.Context, repositoryID string) error
 }
 
 // ImportGraphWorker pulls a shared graph bundle and re-inserts every
@@ -196,13 +201,22 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		if err := w.reembedEnqueuer.EnqueueEmbedConceptsForRepo(ctx, args.RepositoryID); err != nil {
 			log.Printf("import_graph: enqueuing embed_concepts for repo %s: %v", args.RepositoryID, err)
 		}
-		// embed_facts is source-scoped; a repo-wide pass isn't directly
-		// available. The imported facts are 'stable' with no embeddings;
-		// a periodic embed sweep or a manual re-extract picks them up.
-		// For MVP we log; a future EnqueueEmbedFactsForRepo helper would
-		// close the gap.
 		log.Printf("import_graph: repo %s needs fact re-embed; enqueue embed_concepts done, facts await periodic sweep",
 			args.RepositoryID)
+	}
+
+	// Recompute the concept_groups summary table so the concept LIST
+	// endpoint paginates correctly. The import inserts concepts +
+	// fact_concepts directly (bypassing the extract_concepts worker
+	// that normally maintains concept_groups), so the table is empty
+	// until this runs.
+	if w.reembedEnqueuer != nil {
+		if err := w.reembedEnqueuer.EnqueueRecomputeConceptGroups(ctx, args.RepositoryID); err != nil {
+			log.Printf("import_graph: enqueuing recompute_concept_groups for repo %s: %v", args.RepositoryID, err)
+		}
+		if err := w.reembedEnqueuer.EnqueueRefreshConceptRelations(ctx, args.RepositoryID); err != nil {
+			log.Printf("import_graph: enqueuing refresh_concept_relations for repo %s: %v", args.RepositoryID, err)
+		}
 	}
 
 	log.Printf("import_graph: repo %s imported sources=%d facts=%d concepts=%d summaries=%d syntheses=%d reports=%d investigations=%d reembed=%v",
