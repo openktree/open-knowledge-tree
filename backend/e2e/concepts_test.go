@@ -758,13 +758,18 @@ func TestExtractConcepts_LLMFailureMarksSkip(t *testing.T) {
 		t.Fatalf("promote fact: %v", err)
 	}
 
-	// An extractor that always fails (simulating an OpenRouter
-	// timeout). The worker must record a skip row and continue.
-	failingExtractor := &failingConceptExtractor{err: errors.New("upstream LLM timeout")}
+	// A PERMANENT error (parse failure — no "timeout"/"connection"
+	// keywords, so ClassifyLLMError returns retryable=false). The
+	// worker must record a soft-skip row (attempts=1) and continue.
+	// Transient errors (timeout, rate-limit wait, network blip) do
+	// NOT record a skip — see TestExtractConcepts_TransientErrorNoSkip.
+	failingExtractor := &failingConceptExtractor{err: errors.New("concept extraction: failed to parse response as JSON array: invalid character 'x'")}
 	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	worker := tasks.NewExtractConceptsWorker(failingExtractor, conceptCfg, registry, systemQueries, nil, nil)
+	worker.SetMaxConceptAttempts(3)
+	worker.SetInJobRetries(0) // disable in-job retry so the test is deterministic
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -793,34 +798,41 @@ func TestExtractConcepts_LLMFailureMarksSkip(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	// The skip row must exist.
-	var skipCount int
+	// The soft-skip row must exist with attempts=3 (the worker
+	// re-attempts the fact until attempts >= max_concept_attempts=3,
+	// so the wave loop processes it 3 times, incrementing attempts
+	// from 1 → 2 → 3, then the 4th fetch excludes it).
+	var skipCount, attempts int
 	if err := env.DB.QueryRow(ctx,
-		`SELECT count(*) FROM okt_repository.fact_concept_skips WHERE fact_id = $1`, factID,
-	).Scan(&skipCount); err != nil {
+		`SELECT count(*), COALESCE(max(attempts), 0) FROM okt_repository.fact_concept_skips WHERE fact_id = $1`, factID,
+	).Scan(&skipCount, &attempts); err != nil {
 		t.Fatalf("query skip row: %v", err)
 	}
 	if skipCount != 1 {
 		t.Errorf("skip rows for failing fact = %d, want 1", skipCount)
 	}
+	if attempts != 3 {
+		t.Errorf("skip attempts = %d, want 3 (re-attempted until attempts >= max=3)", attempts)
+	}
 
-	// The worker must have recorded one error in its result.
+	// The worker must have recorded 3 errors (one per wave) in
+	// its result.
 	var result tasks.ExtractConceptsResult
 	if raw := job.Job.Output(); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &result); err != nil {
 			t.Fatalf("decode output: %v", err)
 		}
 	}
-	if result.Errors != 1 {
-		t.Errorf("result.Errors = %d, want 1", result.Errors)
+	if result.Errors != 3 {
+		t.Errorf("result.Errors = %d, want 3 (one per wave)", result.Errors)
 	}
-	if result.FactsProcessed != 1 {
-		t.Errorf("result.FactsProcessed = %d, want 1", result.FactsProcessed)
+	if result.FactsProcessed != 3 {
+		t.Errorf("result.FactsProcessed = %d, want 3 (one per wave)", result.FactsProcessed)
 	}
 
-	// Re-run: the candidate list now excludes the skipped fact
-	// (NOT EXISTS fact_concept_skips), so the second pass is a
-	// zero-fact no-op even though the fact is still unlinked.
+	// Re-run: the candidate list now EXCLUDES the fact (attempts=3
+	// >= max_concept_attempts=3), so the second pass is a zero-fact
+	// no-op even though the fact is still unlinked.
 	tx2, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin tx2: %v", err)
@@ -840,8 +852,254 @@ func TestExtractConcepts_LLMFailureMarksSkip(t *testing.T) {
 		}
 	}
 	if result2.FactsProcessed != 0 {
-		t.Errorf("second pass FactsProcessed = %d, want 0 (skipped fact must be excluded)", result2.FactsProcessed)
+		t.Errorf("second pass FactsProcessed = %d, want 0 (attempts=3 >= max=3, fact is excluded)", result2.FactsProcessed)
 	}
+}
+
+// TestExtractConcepts_TransientErrorNoSkip verifies that a
+// transient LLM error (timeout, rate-limit wait, network blip,
+// 5xx, 429) does NOT record a fact_concept_skips row. The fact
+// stays in the candidate set (via the NOT EXISTS fact_concepts
+// filter) and is retried on the next pass. This is the core fix
+// for the historical permanent-skip bug (95,627 facts severed by
+// "decoding response: context deadline exceeded" + 13,485 by
+// "rate: Wait(n=1) would exceed context deadline").
+func TestExtractConcepts_TransientErrorNoSkip(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+	ensureRiverSchema(t, env.DB)
+
+	admin := bootstrapSysAdmin(t, env, "transient@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "Transient", "transient", "desc", "")
+	queries := store.New(env.DB)
+
+	srcID := pgtype.UUID{}
+	if err := srcID.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scan src id: %v", err)
+	}
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: srcID, RepositoryID: pgRepoID(t, repoID), Url: "https://example.com/s", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	factIDStr := insertFactWithSource(t, env, pgRepoID(t, repoID), srcID, "A fact that will time out.", 0)
+	factID := pgtype.UUID{}
+	if err := factID.Scan(factIDStr); err != nil {
+		t.Fatalf("scan fact id: %v", err)
+	}
+	if _, err := env.DB.Exec(context.Background(),
+		`UPDATE okt_repository.facts SET status = 'stable' WHERE id = $1`, factID,
+	); err != nil {
+		t.Fatalf("promote fact: %v", err)
+	}
+
+	// A TRANSIENT error (contains "timeout" → ClassifyLLMError
+	// returns retryable=true). The worker must NOT record a skip
+	// row; the fact stays in the candidate set for the next pass.
+	failingExtractor := &failingConceptExtractor{err: errors.New("concept extraction: ai chat failed: openrouter: request failed: Post \"https://openrouter.ai/api/v1/chat/completions\": dial tcp: i/o timeout")}
+	conceptCfg := config.DecompositionConceptConfig{Enabled: true}
+	registry := testutil.NewForTestPool(env.DB)
+	systemQueries := store.New(env.DB)
+	worker := tasks.NewExtractConceptsWorker(failingExtractor, conceptCfg, registry, systemQueries, nil, nil)
+	worker.SetMaxConceptAttempts(3)
+	worker.SetInJobRetries(0) // disable in-job retry so the test is deterministic
+
+	driver := riverpgxv5.New(env.DB)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, worker)
+	testWorker := rivertest.NewWorker(t, driver, &river.Config{
+		Queues:  map[string]river.QueueConfig{tasks.QueueExtractConcepts: {MaxWorkers: 1}},
+		Workers: workers,
+	}, worker)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	job, err := testWorker.Work(ctx, t, tx, tasks.ExtractConceptsArgs{RepositoryID: repoID}, &river.InsertOpts{Queue: tasks.QueueExtractConcepts})
+	if err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("work: %v", err)
+	}
+	if job.EventKind != river.EventKindJobCompleted {
+		tx.Rollback(context.Background())
+		t.Fatalf("expected completed, got %s", job.EventKind)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// NO skip row must exist (transient error → no skip).
+	var skipCount int
+	if err := env.DB.QueryRow(ctx,
+		`SELECT count(*) FROM okt_repository.fact_concept_skips WHERE fact_id = $1`, factID,
+	).Scan(&skipCount); err != nil {
+		t.Fatalf("query skip row: %v", err)
+	}
+	if skipCount != 0 {
+		t.Errorf("skip rows for transient failure = %d, want 0 (transient errors do not skip)", skipCount)
+	}
+
+	// The result must record a TransientError. The no-progress
+	// break fires after the first wave (all facts failed with
+	// transient errors → no progress → break), so only 1 wave runs.
+	var result tasks.ExtractConceptsResult
+	if raw := job.Job.Output(); len(raw) > 0 {
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+	}
+	if result.TransientErrors != 1 {
+		t.Errorf("result.TransientErrors = %d, want 1", result.TransientErrors)
+	}
+	if result.FactsProcessed != 1 {
+		t.Errorf("result.FactsProcessed = %d, want 1 (no-progress break after 1 wave)", result.FactsProcessed)
+	}
+
+	// Re-run: the candidate list still includes the fact (no skip
+	// row), so the second pass re-attempts it.
+	tx2, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	defer tx2.Rollback(context.Background())
+	job2, err := testWorker.Work(ctx, t, tx2, tasks.ExtractConceptsArgs{RepositoryID: repoID}, &river.InsertOpts{Queue: tasks.QueueExtractConcepts})
+	if err != nil {
+		t.Fatalf("second work: %v", err)
+	}
+	var result2 tasks.ExtractConceptsResult
+	if raw := job2.Job.Output(); len(raw) > 0 {
+		if err := json.Unmarshal(raw, &result2); err != nil {
+			t.Fatalf("decode output2: %v", err)
+		}
+	}
+	if result2.FactsProcessed != 1 {
+		t.Errorf("second pass FactsProcessed = %d, want 1 (no skip → fact is re-attempted)", result2.FactsProcessed)
+	}
+}
+
+// TestExtractConcepts_InJobRetryRecovers verifies that the in-job
+// end-of-queue retry re-runs failed chunks and succeeds when the
+// second attempt works. A counting extractor fails the first call
+// then succeeds on the second, so the fact gets linked after the
+// retry round (no skip row, no fact left unlinked).
+func TestExtractConcepts_InJobRetryRecovers(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+	ensureRiverSchema(t, env.DB)
+
+	admin := bootstrapSysAdmin(t, env, "injobretry@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "InJobRetry", "in-job-retry", "desc", "")
+	queries := store.New(env.DB)
+
+	srcID := pgtype.UUID{}
+	if err := srcID.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scan src id: %v", err)
+	}
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: srcID, RepositoryID: pgRepoID(t, repoID), Url: "https://example.com/s", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	factIDStr := insertFactWithSource(t, env, pgRepoID(t, repoID), srcID, "A fact that will succeed on retry.", 0)
+	factID := pgtype.UUID{}
+	if err := factID.Scan(factIDStr); err != nil {
+		t.Fatalf("scan fact id: %v", err)
+	}
+	if _, err := env.DB.Exec(context.Background(),
+		`UPDATE okt_repository.facts SET status = 'stable' WHERE id = $1`, factID,
+	); err != nil {
+		t.Fatalf("promote fact: %v", err)
+	}
+
+	// An extractor that fails the first call then succeeds. The
+	// in-job retry round (round 1) re-runs the failed chunk and
+	// links the fact.
+	recoveringExtractor := &recoveringConceptExtractor{failFirst: true}
+	conceptCfg := config.DecompositionConceptConfig{Enabled: true, FactBatchSize: 10}
+	registry := testutil.NewForTestPool(env.DB)
+	systemQueries := store.New(env.DB)
+	worker := tasks.NewExtractConceptsWorker(recoveringExtractor, conceptCfg, registry, systemQueries, nil, nil)
+	worker.SetMaxConceptAttempts(3)
+	worker.SetInJobRetries(2) // enable in-job retry
+
+	driver := riverpgxv5.New(env.DB)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, worker)
+	testWorker := rivertest.NewWorker(t, driver, &river.Config{
+		Queues:  map[string]river.QueueConfig{tasks.QueueExtractConcepts: {MaxWorkers: 1}},
+		Workers: workers,
+	}, worker)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	tx, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	job, err := testWorker.Work(ctx, t, tx, tasks.ExtractConceptsArgs{RepositoryID: repoID}, &river.InsertOpts{Queue: tasks.QueueExtractConcepts})
+	if err != nil {
+		tx.Rollback(context.Background())
+		t.Fatalf("work: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var result tasks.ExtractConceptsResult
+	if raw := job.Job.Output(); len(raw) > 0 {
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+	}
+	if result.ChunksRetried == 0 {
+		t.Errorf("result.ChunksRetried = %d, want >= 1 (in-job retry should have fired)", result.ChunksRetried)
+	}
+	if result.Errors != 0 {
+		t.Errorf("result.Errors = %d, want 0 (retry recovered)", result.Errors)
+	}
+	// The fact must be linked to a concept (no skip, no unlinked).
+	var linkCount int
+	if err := env.DB.QueryRow(ctx,
+		`SELECT count(*) FROM okt_repository.fact_concepts WHERE fact_id = $1`, factID,
+	).Scan(&linkCount); err != nil {
+		t.Fatalf("query link: %v", err)
+	}
+	if linkCount == 0 {
+		t.Errorf("fact_concepts rows = %d, want >= 1 (in-job retry should have linked the fact)", linkCount)
+	}
+}
+
+// recoveringConceptExtractor fails the first ExtractConcepts call
+// then succeeds on subsequent calls. Used to test the in-job retry
+// round: the main wave fails, the retry round re-runs the chunk
+// and succeeds.
+type recoveringConceptExtractor struct {
+	calls int
+	failFirst bool
+}
+
+func (r *recoveringConceptExtractor) ExtractConcepts(_ context.Context, _ store.DBTX, facts []decomposition.FactInput, _ []decomposition.ContextEntry, _ decomposition.ConceptExtractionAttribution) ([]decomposition.ExtractedConcept, error) {
+	r.calls++
+	if r.failFirst && r.calls == 1 {
+		return nil, errors.New("concept extraction: ai chat failed: openrouter: request failed: dial tcp: i/o timeout")
+	}
+	// Succeed: return one concept per fact.
+	out := make([]decomposition.ExtractedConcept, 0, len(facts))
+	for _, f := range facts {
+		out = append(out, decomposition.ExtractedConcept{
+			FactIndex: f.Index,
+			Concept:   "Test Concept",
+			Context:   "Concept",
+		})
+	}
+	return out, nil
+}
+
+func (r *recoveringConceptExtractor) Describe() decomposition.ProviderDescription {
+	return decomposition.ProviderDescription{Name: "recovering-concept-extractor", Configured: true}
 }
 
 // failingConceptExtractor is a stub that always returns an error,
@@ -1140,17 +1398,74 @@ func TestConcepts_GroupedListCollapsesContexts(t *testing.T) {
 		t.Errorf("Trump total_fact_count = %d, want 4 (3 Politician + 1 Person)", groups[0].TotalFactCount)
 	}
 
-	// ?q= substring search: "tru" matches Trump only.
-	qResp, qRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=tru", nil)
+	// ?q= full-text search: "trump" matches the Trump group via
+	// canonical_name (websearch_to_tsquery stems "trump" -> "trump").
+	// The old substring search matched "tru"; the new tsvector
+	// search needs a full stem, so we use "trump" here.
+	qResp, qRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=trump", nil)
 	if qResp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /concepts?q=tru: %d %s", qResp.StatusCode, qRaw)
+		t.Fatalf("GET /concepts?q=trump: %d %s", qResp.StatusCode, qRaw)
 	}
 	var qList pageEnvelope
 	if err := json.Unmarshal(qRaw, &qList); err != nil {
 		t.Fatalf("decode q list: %v", err)
 	}
 	if qList.Total != 1 {
-		t.Errorf("q=tru total = %d, want 1 (only Trump matches)", qList.Total)
+		t.Errorf("q=trump total = %d, want 1 (only Trump matches)", qList.Total)
+	}
+
+	// ?q= alias search: add an alias "deoxyribonucleic acid" to the
+	// DNA concept and confirm a query that does NOT match the
+	// canonical_name ("DNA") but DOES match the alias surfaces the
+	// DNA group. This is the discoverability win from including
+	// concept_aliases in the search tsv.
+	dnaRow, err := queries.GetConceptByNameContext(context.Background(), store.GetConceptByNameContextParams{
+		RepositoryID: pgRepo, CanonicalName: "DNA", Context: "Biomolecule",
+	})
+	if err != nil {
+		t.Fatalf("lookup DNA/Biomolecule for alias seed: %v", err)
+	}
+	if _, err := queries.AddConceptAlias(context.Background(), store.AddConceptAliasParams{
+		ConceptID: dnaRow.ID, AliasText: "deoxyribonucleic acid",
+	}); err != nil {
+		t.Fatalf("add alias deoxyribonucleic acid: %v", err)
+	}
+
+	aliasResp, aliasRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=deoxyribonucleic", nil)
+	if aliasResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /concepts?q=deoxyribonucleic: %d %s", aliasResp.StatusCode, aliasRaw)
+	}
+	var aliasList pageEnvelope
+	if err := json.Unmarshal(aliasRaw, &aliasList); err != nil {
+		t.Fatalf("decode alias list: %v", err)
+	}
+	if aliasList.Total != 1 {
+		t.Errorf("q=deoxyribonucleic total = %d, want 1 (alias matches DNA group)", aliasList.Total)
+	}
+	aliasGroups := make([]conceptGroupRow, 0, len(aliasList.Data))
+	for _, raw := range aliasList.Data {
+		var g conceptGroupRow
+		if err := json.Unmarshal(raw, &g); err != nil {
+			t.Fatalf("decode alias group row: %v", err)
+		}
+		aliasGroups = append(aliasGroups, g)
+	}
+	if len(aliasGroups) != 1 || aliasGroups[0].CanonicalName != "DNA" {
+		t.Errorf("q=deoxyribonucleic groups = %+v, want [DNA]", aliasGroups)
+	}
+
+	// ?q= no-match: a query that matches neither canonical_name nor
+	// any alias returns an empty page.
+	missResp, missRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=zzznomatch", nil)
+	if missResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /concepts?q=zzznomatch: %d %s", missResp.StatusCode, missRaw)
+	}
+	var missList pageEnvelope
+	if err := json.Unmarshal(missRaw, &missList); err != nil {
+		t.Fatalf("decode miss list: %v", err)
+	}
+	if missList.Total != 0 {
+		t.Errorf("q=zzznomatch total = %d, want 0", missList.Total)
 	}
 }
 

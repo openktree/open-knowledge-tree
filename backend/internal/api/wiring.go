@@ -18,12 +18,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/bootstrap"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ontology"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -54,6 +57,8 @@ type Handler struct {
 	repoSettings  *handler.RepositorySettings
 	promptsets    *handler.Promptsets
 	remote        *handler.Remote
+	audit         *handler.Audit
+	apiKeys       *handler.APIKey
 	repoDBCache    *appmw.RepoDBCache
 	slugCache   *appmw.SlugCache
 	// providerGateCache memoizes the per-repo enabled-provider set
@@ -75,6 +80,15 @@ type Handler struct {
 // `group_members` tables, and avoiding a setter keeps the
 // handler bundles built in NewHandler in a single, atomic step.
 //
+// `auditRecorder` is the audit recorder wired onto Deps.Audit
+// before any handler bundle captures its Deps copy. Passing it
+// here (rather than via a post-construction SetAudit setter)
+// avoids the staleness footgun: every handler bundle holds a
+// Deps value, so a SetAudit that updates the Handler.deps field
+// after NewHandler wouldn't propagate to the bundles. Nil is
+// safe (callers guard with a nil check); tests that don't
+// exercise the audit pipeline pass audit.NoopRecorder{}.
+//
 // The per-repo routing cache (RepoDBCache) is built here so its
 // TTL is a single place to change; the default is 5 minutes,
 // which is short enough that a tier-upgrade takes effect quickly
@@ -88,12 +102,13 @@ type Handler struct {
 // insertion logic; tests that need a no-op simply leave
 // `deps.LazyEnsureRepository` nil (the handler checks for nil
 // before calling it).
-func NewHandler(queries *store.Queries, cfg *config.Config, rbacSvc *rbac.Service, systemPool *pgxpool.Pool, registry *dbpool.Registry) *Handler {
+func NewHandler(queries *store.Queries, cfg *config.Config, rbacSvc *rbac.Service, systemPool *pgxpool.Pool, registry *dbpool.Registry, auditRecorder audit.Recorder) *Handler {
 	deps := handler.Deps{
 		Store:    queries,
 		Config:   cfg,
 		RBAC:     rbacSvc,
 		Registry: registry,
+		Audit:    auditRecorder,
 		LazyEnsureRepository: func(ctx context.Context, ownerID string) error {
 			// Placeholder; SetOntologySource rebinds this once
 			// the ProviderRegistry + OntologySource are wired so
@@ -129,6 +144,8 @@ func NewHandler(queries *store.Queries, cfg *config.Config, rbacSvc *rbac.Servic
 		reports:        handler.NewReports(deps),
 		repoSettings:   handler.NewRepositorySettings(deps),
 		promptsets:     handler.NewPromptsets(deps),
+		audit:          handler.NewAudit(deps),
+		apiKeys:        handler.NewAPIKey(deps),
 		repoDBCache:    appmw.NewRepoDBCache(queries, 5*time.Minute),
 		slugCache:   appmw.NewSlugCache(queries, 5*time.Minute),
 	}
@@ -194,6 +211,41 @@ func (h *Handler) SetOntologySource(s ontology.L3Source) {
 	}
 }
 
+// SetQdrant wires the Qdrant vector store used by the hybrid search
+// path (fact/concept search fuses lexical tsvector results with
+// Qdrant cosine similarity via Reciprocal Rank Fusion). Nil is
+// valid: the search endpoints degrade to lexical-only. Propagates
+// to the Source handler (which holds its own copy for ListRepoFacts)
+// and the MCP handler (for the searchFacts/searchConcepts tools).
+// The Concepts handler reads qdrant from Deps (set here), so it
+// picks up the value without explicit propagation.
+func (h *Handler) SetQdrant(q *qdrantstore.Store) {
+	h.deps.Qdrant = q
+	if h.source != nil {
+		// Source holds its own copy; re-call SetSearchHybrid with
+		// the new qdrant + the existing embedder/cfg values.
+		h.source.SetSearchHybrid(q, h.deps.EmbeddingProvider, h.deps.Config.Providers.Embedding, h.deps.Config.Search.Hybrid)
+	}
+	if h.mcp != nil {
+		h.mcp.SetQdrant(q)
+	}
+}
+
+// SetEmbeddingProvider wires the bulk-embed client used by the
+// hybrid search path to embed the caller's query string before
+// querying Qdrant. Nil is valid (chat-only AI configs): the search
+// endpoints degrade to lexical-only. Propagates the same way
+// SetQdrant does.
+func (h *Handler) SetEmbeddingProvider(ep ai.EmbeddingProvider) {
+	h.deps.EmbeddingProvider = ep
+	if h.source != nil {
+		h.source.SetSearchHybrid(h.deps.Qdrant, ep, h.deps.Config.Providers.Embedding, h.deps.Config.Search.Hybrid)
+	}
+	if h.mcp != nil {
+		h.mcp.SetEmbeddingProvider(ep, h.deps.Config.Providers.Embedding, h.deps.Config.Search.Hybrid)
+	}
+}
+
 // SetSource attaches the source-provider handler bundle. It is split out
 // from NewHandler because the providers may not be known at construction
 // time (e.g. when API keys come from env vars).
@@ -208,6 +260,12 @@ func (h *Handler) SetSource(s *handler.Source) {
 	h.source = s
 	if s != nil && h.deps.Registry != nil && h.repoDBCache != nil {
 		s.SetRepoPoolResolver(h.resolveRepoPool)
+	}
+	// Wire the admin handler's repo pool resolver too (same
+	// resolver) so the concept-reextract and source-reprocess
+	// endpoints can resolve a repo's per-tenant pool.
+	if h.admin != nil && h.deps.Registry != nil && h.repoDBCache != nil {
+		h.admin.SetRepoPoolResolver(h.resolveRepoPool)
 	}
 	// Wire the per-repo provider gate. The gate reads
 	// repository_provider_settings from the system pool (the same
@@ -224,6 +282,22 @@ func (h *Handler) SetSource(s *handler.Source) {
 		// source kinds at CreateSource / UploadSource /
 		// EnqueueRetrieveSource.
 		s.SetSystemStore(h.deps.Store)
+		// Wire the audit recorder so CreateSource / UploadSource /
+		// EnqueueRetrieveSource can emit ingestion_start events.
+		// The actor-email resolver closes over deps.Users (the
+		// rbac.UserManager wired in NewHandler); a nil Users
+		// falls back to an empty username, which the audit row
+		// tolerates (actor_user_id is still recorded from the
+		// request context).
+		s.SetAuditRecorder(h.deps.Audit, func(ctx context.Context, uid pgtype.UUID) string {
+			if h.deps.Users == nil || !uid.Valid {
+				return ""
+			}
+			if u, err := h.deps.Users.GetUser(ctx, rbac.UserID(uid.String())); err == nil {
+				return u.Email
+			}
+			return ""
+		})
 	}
 }
 
@@ -360,6 +434,12 @@ func (h *Handler) SetTaskEnqueuer(eq handler.TaskEnqueuer) {
 	if h.reports != nil {
 		h.reports.SetTaskEnqueuer(eq)
 	}
+	// The admin handler uses the enqueuer for the concept-reextract
+	// and source-reprocess endpoints (on-demand recovery from the
+	// historical permanent-skip bug and any future recurrence).
+	if h.admin != nil {
+		h.admin.SetTaskEnqueuer(eq)
+	}
 }
 
 // SetMigrateEnqueuer wires the migrate-context enqueuer the settings
@@ -494,6 +574,16 @@ func (h *Handler) SetOAuth(o *handler.OAuth) {
 // registered.
 func (h *Handler) SetMCP(m *handler.MCP) {
 	h.mcp = m
+	// Propagate the already-wired qdrant + embedding provider to
+	// the new MCP instance so the searchFacts / searchConcepts
+	// tools can run the hybrid path. SetQdrant / SetEmbeddingProvider
+	// also propagate, but they're typically called before SetMCP
+	// (the MCP handler is built late in the wiring), so we re-push
+	// here to cover both orderings.
+	if m != nil {
+		m.SetQdrant(h.deps.Qdrant)
+		m.SetEmbeddingProvider(h.deps.EmbeddingProvider, h.deps.Config.Providers.Embedding, h.deps.Config.Search.Hybrid)
+	}
 }
 
 // Deps returns the shared dependency bundle. The wiring layer uses it
@@ -606,6 +696,25 @@ func (h *Handler) userRoutes(r chi.Router) {
 	if h.groups != nil {
 		r.Get("/{userID}/groups", h.authed(h.groups.ListUserGroups))
 	}
+	// Personal API keys (personal access tokens). Self-managed:
+	// the handlers read the caller from the session context and
+	// scope every query to that user. A session is required to
+	// manage keys — an API key itself cannot create or revoke
+	// keys. Mounted under /users (rather than /api-keys) so chi's
+	// existing {userID} pattern stays the only user-namespaced
+	// route group. /me/api-keys is a literal path, not a param, so
+	// it matches before /{userID} thanks to chi's
+	// literal-over-param preference.
+	r.Route("/me/api-keys", h.apiKeyRoutes)
+}
+
+// apiKeyRoutes registers the personal-API-key CRUD endpoints under
+// /api/v1/users/me/api-keys. All routes require a session (AuthRequired);
+// the handlers enforce self-only access via httputil.RequestUserID.
+func (h *Handler) apiKeyRoutes(r chi.Router) {
+	r.Get("/", h.authed(h.apiKeys.List))
+	r.Post("/", h.authed(h.apiKeys.Create))
+	r.Delete("/{keyID}", h.authed(h.apiKeys.Revoke))
 }
 
 func (h *Handler) adminRoutes(r chi.Router) {
@@ -615,6 +724,13 @@ func (h *Handler) adminRoutes(r chi.Router) {
 		r.Delete("/users/roles", h.perm("role", "manage", h.admin.RemoveRole))
 		r.Get("/permissions", h.perm("role", "read", h.admin.ListPermissions))
 		r.Get("/databases", h.perm("database", "read", h.adminDB.ListDatabases))
+
+		// Audit log (system view). Gated by audit.read (sysadmin
+		// only at the system scope). Repo-scoped audit lives under
+		// /repositories/{repoID}/audit (see repoRoutes) and is
+		// gated by the same permission at repo scope, where
+		// repoadmin also has it.
+		r.Get("/audit", h.perm("audit", "read", h.audit.ListSystem))
 
 		// Admin task control. The cancel endpoint lets an
 		// operator with the task:cancel permission recover a
@@ -634,6 +750,26 @@ func (h *Handler) adminRoutes(r chi.Router) {
 			r.Post("/tasks/{jobID}/cancel", notConfigured)
 			r.Post("/tasks/rescue", notConfigured)
 		}
+
+		// On-demand concept re-extraction and source reprocessing.
+		// Both endpoints recover from the historical permanent-skip
+		// bug (121,312 facts severed from their concepts by
+		// transient OpenRouter failures) and any future recurrence.
+		// Gated by repositories.*.manage (sysadmin or repo-admin).
+		//   POST /repos/{repoID}/concepts/reextract — clears
+		//     retryable fact_concept_skips + unresolved
+		//     fact_candidates for the repo, then enqueues a repo-
+		//     wide extract_concepts job so the cleared facts get
+		//     another chance at concept linkage.
+		//   POST /repos/{repoID}/sources/{sourceID}/reprocess —
+		//     re-runs source_decomposition for the FAILED chunks of
+		//     a source only (via RetryChunkIndices), so successful
+		//     chunks are not re-LLM'd and no duplicate fact rows are
+		//     created.
+		r.Post("/repos/{repoID}/concepts/reextract", h.perm("repositories", "manage", h.admin.ReextractRepoConcepts))
+		r.Get("/repos/{repoID}/concepts/reextract", h.perm("repositories", "manage", h.admin.PreviewReextractRepoConcepts))
+		r.Post("/repos/{repoID}/sources/{sourceID}/reprocess", h.perm("repositories", "manage", h.admin.ReprocessSource))
+		r.Get("/repos/{repoID}/sources/{sourceID}/reprocess", h.perm("repositories", "manage", h.admin.PreviewReprocessSource))
 	})
 }
 
@@ -725,10 +861,39 @@ func (h *Handler) repoRoutes(r chi.Router) {
 		r.Get("/concepts/{conceptID}/definition", h.repoPerm("concept", "read", h.syntheses.GetDefinition))
 		r.Get("/facts/{factID}/concepts", h.repoPerm("fact", "read", h.concepts.ListFactConcepts))
 
-			// Per-repo scoped task list.
-			if h.tasks != nil {
-				r.Get("/tasks", h.repoPerm("task", "read", h.tasks.ListRepoJobs))
-			}
+		// Per-repo scoped task list + stats. The list endpoint
+		// filters River jobs by the repo_id metadata tag; the
+		// stats endpoint mirrors the system-wide /tasks/stats
+		// aggregation but restricted to the same metadata
+		// containment predicate. Both gated by repo-scope
+		// task.read (repoadmin + editor + curator + viewer via
+		// seed; sysadmin via EnforceSystemAdmin short-circuit).
+		if h.tasks != nil {
+			r.Get("/tasks", h.repoPerm("task", "read", h.tasks.ListRepoJobs))
+			r.Get("/tasks/stats", h.repoPerm("task", "read", h.tasks.ListRepoJobStats))
+		}
+
+		// Per-repo scoped AI Usage dashboard. The handlers force
+		// the repository_id filter from the URL context (set by
+		// WithRepoQueries), ignoring any client-supplied query
+		// param, so a repoadmin of repo A can't see repo B's
+		// usage. Gated by repo-scope ai_usage.read (repoadmin via
+		// seed + migration 0056; sysadmin via short-circuit).
+		if h.aiUsage != nil {
+			r.Route("/ai/usage", func(r chi.Router) {
+				r.Get("/summary", h.repoPerm("ai_usage", "read", h.aiUsage.SummaryRepo))
+				r.Get("/by-day", h.repoPerm("ai_usage", "read", h.aiUsage.ByDayRepo))
+				r.Get("/by-operation", h.repoPerm("ai_usage", "read", h.aiUsage.ByOperationRepo))
+				r.Get("/by-repository", h.repoPerm("ai_usage", "read", h.aiUsage.ByRepositoryRepo))
+				r.Get("/by-source", h.repoPerm("ai_usage", "read", h.aiUsage.BySourceRepo))
+			})
+		}
+
+			// Per-repo audit log. Gated by audit.read at repo
+			// scope (repoadmin and sysadmin). The handler reads
+			// the repo UUID from the request context (set by
+			// WithRepoQueries) and scopes the query to it.
+			r.Get("/audit", h.repoPerm("audit", "read", h.audit.ListRepo))
 
 			// Investigations.
 			r.Route("/investigations", func(r chi.Router) {

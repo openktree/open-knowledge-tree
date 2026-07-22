@@ -11,6 +11,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/openktree/open-knowledge-tree/backend/internal/config"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 )
 
 // retryConfig governs the retry-with-backoff helper used by the
@@ -33,11 +36,38 @@ type retryConfig struct {
 // spends at most ~2+4+8 = 14s of backoff before the final attempt
 // fails — short enough not to dominate a chunk's wall time, long
 // enough to ride out a 429 storm or a brief upstream 5xx blip.
+//
+// PerCallTO defaults to 5m (raised from 180s) so a single LLM call
+// can tolerate a slow OpenRouter streaming-decode without firing
+// the per-call ctx mid-stream. The worker's LLM timeout (20m for
+// extract_concepts via DecompositionConceptConfig.LLMTimeout)
+// must exceed MaxAttempts × PerCallTO + backoffs so all 4 attempts
+// can actually run; historically the worker's 120s outer ctx
+// fired before the first 180s per-call could complete, defeating
+// the retry loop. SetRetryDefaults lets the wiring layer override
+// these from cfg.Providers.LLMRetry at boot.
 var defaultRetryConfig = retryConfig{
 	MaxAttempts: 4,
 	BaseDelay:   2 * time.Second,
 	MaxDelay:    30 * time.Second,
-	PerCallTO:   180 * time.Second,
+	PerCallTO:   5 * time.Minute,
+}
+
+// SetRetryDefaults overrides the package's defaultRetryConfig from
+// the shared cfg.Providers.LLMRetry block. Called once at boot by
+// the wiring layer (cmd/app/api.go) so the four phase providers
+// (fact_extraction, concept_extraction, image_fact_extraction —
+// and the sibling summarization/refinement/synthesis packages have
+// their own SetRetryDefaults) pick up the operator's retry tuning
+// without each provider needing a constructor change. Zero-valued
+// fields fall back to the defaults above via the Or methods.
+func SetRetryDefaults(cfg config.LLMRetryConfig) {
+	defaultRetryConfig = retryConfig{
+		MaxAttempts: cfg.MaxAttemptsOr(0),
+		BaseDelay:   cfg.BaseDelayOr(0),
+		MaxDelay:    cfg.MaxDelayOr(0),
+		PerCallTO:   cfg.PerCallTimeoutOr(0),
+	}
 }
 
 // retryClassifyError inspects an error returned by an AI provider's
@@ -56,8 +86,31 @@ var defaultRetryConfig = retryConfig{
 // cancelled the call, retrying just burns budget against a ctx that
 // is already done.
 func retryClassifyError(err error) (retryable bool, reason string) {
+	return ClassifyLLMError(err)
+}
+
+// ClassifyLLMError is the exported form of retryClassifyError, used
+// by worker-level code (e.g. extract_concepts' decision to record a
+// soft-skip vs. leave the fact for retry) to decide whether an LLM
+// failure is transient (timeout, rate-limit wait, network blip,
+// 5xx, 429) or permanent (parse failure, empty result, auth error).
+// Transient failures stay in the candidate set so the next pass
+// retries them; permanent failures record a soft-skip row that
+// counts against the retry budget.
+//
+// The rate-limiter decorator returns ErrRateLimitWaitTimeout when
+// its waitTimeout budget is exhausted; this is classified as
+// transient so the fact is retried on the next pass instead of
+// being permanently skipped (the historical failure mode that
+// severed 13,485 facts — see the 0024 skip table's
+// "rate: Wait(n=1) would exceed context deadline" rows).
+func ClassifyLLMError(err error) (retryable bool, reason string) {
 	if err == nil {
 		return false, ""
+	}
+	// Rate-limit-wait-timeout from the decorator is transient.
+	if errors.Is(err, ai.ErrRateLimitWaitTimeout) {
+		return true, "rate limit wait timeout"
 	}
 	// Context cancellation is terminal — never retry.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

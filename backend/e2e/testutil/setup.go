@@ -17,6 +17,7 @@ import (
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/api"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/oauth"
@@ -103,6 +104,7 @@ type RecordingTaskEnqueuer struct {
 	Enqueued        []handler.RetrieveSourceArgs
 	Decompositions  []handler.SourceDecompositionArgs
 	ReportAnnotates []handler.AnnotateReportArgs
+	ExtractConcepts []handler.ExtractConceptsArgs
 	nextID          int
 }
 
@@ -273,7 +275,7 @@ func NewMultiDBTestEnv(t testing.TB) *MultiDBTestEnv {
 
 	queries := store.New(defaultPool)
 	storageBackend := NewTestStorageBackend(t)
-	h := api.NewHandler(queries, cfg, rbacSvc, defaultPool, registry)
+	h := api.NewHandler(queries, cfg, rbacSvc, defaultPool, registry, audit.NewPostgresRecorder(defaultPool))
 	h.SetSource(handler.NewSource(nil, fetchStrategy, nil, nil, nil, storageBackend, TestParsers()))
 	WireRepoSettings(h, nil, fetchStrategy)
 	h.SetStorage(handler.NewStorage(storageBackend))
@@ -338,6 +340,32 @@ func (r *RecordingTaskEnqueuer) EnqueueAnnotateReportFromHTTP(_ context.Context,
 	r.nextID++
 	r.ReportAnnotates = append(r.ReportAnnotates, args)
 	return "test-annotate-1", nil
+}
+
+func (r *RecordingTaskEnqueuer) EnqueueExtractConceptsFromHTTP(_ context.Context, args handler.ExtractConceptsArgs) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	r.ExtractConcepts = append(r.ExtractConcepts, args)
+	return "test-extract-concepts-1", nil
+}
+
+// ExtractConceptsCount returns the number of extract_concepts calls
+// recorded so far. Thread-safe.
+func (r *RecordingTaskEnqueuer) ExtractConceptsCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.ExtractConcepts)
+}
+
+// ExtractConceptsSnapshot returns a copy of the recorded
+// extract_concepts calls so tests can inspect them.
+func (r *RecordingTaskEnqueuer) ExtractConceptsSnapshot() []handler.ExtractConceptsArgs {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]handler.ExtractConceptsArgs, len(r.ExtractConcepts))
+	copy(out, r.ExtractConcepts)
+	return out
 }
 
 // ReportAnnotateCount returns the number of annotate_report calls
@@ -479,7 +507,7 @@ func newTestEnvWithSearch(
 
 	queries := store.New(pool)
 	storageBackend := NewTestStorageBackend(t)
-	h := api.NewHandler(queries, cfg, rbacSvc, pool, registry)
+	h := api.NewHandler(queries, cfg, rbacSvc, pool, registry, audit.NewPostgresRecorder(pool))
 	h.SetSource(handler.NewSource(searchProviders, fetchStrategy, nil, nil, nil, storageBackend, TestParsers()))
 	WireRepoSettings(h, searchProviders, fetchStrategy)
 	h.SetStorage(handler.NewStorage(storageBackend))
@@ -601,7 +629,7 @@ func newTestEnv(
 
 	queries := store.New(pool)
 	storageBackend := NewTestStorageBackend(t)
-	h := api.NewHandler(queries, cfg, rbacSvc, pool, registry)
+	h := api.NewHandler(queries, cfg, rbacSvc, pool, registry, audit.NewPostgresRecorder(pool))
 	h.SetSource(handler.NewSource(nil, fetchStrategy, chunkers, factExtractors, nil, storageBackend, TestParsers()))
 	WireRepoSettings(h, nil, fetchStrategy)
 	h.SetStorage(handler.NewStorage(storageBackend))

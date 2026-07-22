@@ -1,6 +1,7 @@
 import { Route, useNavigate } from "@solidjs/router";
 import AuthGuard from "./components/AuthGuard";
 import AIUsage from "./pages/AIUsage";
+import Audit from "./pages/Audit";
 import ConceptDetail from "./pages/ConceptDetail";
 import Concepts from "./pages/Concepts";
 import Dashboard from "./pages/Dashboard";
@@ -9,14 +10,18 @@ import Facts from "./pages/Facts";
 import Investigation from "./pages/Investigation";
 import Investigations from "./pages/Investigations";
 import Login from "./pages/Login";
+import Profile from "./pages/Profile";
 import Promptsets from "./pages/Promptsets";
 import Providers from "./pages/Providers";
 import Register from "./pages/Register";
 import Remote from "./pages/Remote";
+import RepoAIUsage from "./pages/RepoAIUsage";
+import RepoAudit from "./pages/RepoAudit";
 import ReportDetail from "./pages/ReportDetail";
 import Reports from "./pages/Reports";
 import Repositories from "./pages/Repositories";
 import RepositorySettings from "./pages/RepositorySettings";
+import RepoTasks from "./pages/RepoTasks";
 import SourceDetail from "./pages/SourceDetail";
 import Sources from "./pages/Sources";
 import Tasks from "./pages/Tasks";
@@ -57,6 +62,9 @@ export default function App() {
         <Route path="/:slug/concepts/:conceptID" component={ConceptDetail} />
         <Route path="/repositories" component={Repositories} />
         <Route path="/repositories/:repoID/settings" component={RepositorySettings} />
+        <Route path="/repositories/:slug/audit" component={RepoAudit} />
+        <Route path="/:slug/tasks" component={RepoTasks} />
+        <Route path="/:slug/ai-usage" component={RepoAIUsage} />
         <Route path="/investigations" component={Investigations} />
         <Route path="/:slug/investigations/:invID" component={Investigation} />
         <Route path="/:slug/investigations/:invID/:phase" component={Investigation} />
@@ -67,6 +75,8 @@ export default function App() {
         <Route path="/remote" component={Remote} />
         <Route path="/promptsets" component={Promptsets} />
         <Route path="/ai-usage" component={AIUsage} />
+        <Route path="/audit" component={Audit} />
+        <Route path="/profile" component={Profile} />
       </Route>
       <Route path="/login" component={Login} />
       <Route path="/register" component={Register} />

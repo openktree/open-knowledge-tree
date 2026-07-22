@@ -34,8 +34,16 @@ type Config struct {
 	Isolation IsolationConfig           `mapstructure:"isolation"`
 	Auth      AuthConfig                `mapstructure:"auth"`
 	OAuth     OAuthConfig               `mapstructure:"oauth"`
+	APIKeys   APIKeysConfig              `mapstructure:"api_keys"`
 	Providers ProvidersConfig           `mapstructure:"providers"`
 	Bootstrap BootstrapConfig           `mapstructure:"bootstrap"`
+	Audit     AuditConfig               `mapstructure:"audit"`
+	// Search tunes the fact/concept search endpoints. It is
+	// separate from Providers.Search (which configures external
+	// search providers like Serper/OpenAlex); this block only
+	// governs the in-repo fact/concept search behavior (lexical
+	// vs hybrid fusion with the Qdrant embedding index).
+	Search    SearchConfig              `mapstructure:"search"`
 
 	// RepositoryPresets is the catalog of repository "types" the
 	// create-repository UI offers (e.g. Scientific, General,
@@ -281,6 +289,19 @@ type ProvidersConfig struct {
 	Reports           ReportsConfig                `mapstructure:"reports"`
 	Registry          RegistryConfig               `mapstructure:"registry"`
 	Registries        []RegistryConfig             `mapstructure:"registries"`
+	// LLMRetry tunes the retryWithBackoff loop shared by every
+	// AI-provider Chat/Embed call (decomposition, summarization,
+	// refinement, synthesis). Defaults via LLMRetryConfig's Or
+	// methods: MaxAttempts=4, BaseDelay=2s, MaxDelay=30s,
+	// PerCallTO=5m. PerCallTO is the per-attempt context timeout;
+	// the worker's LLM ctx (e.g. extract_concepts' 20m timeout)
+	// must exceed MaxAttempts × PerCallTO + backoffs so the retry
+	// loop can actually complete its 4 attempts instead of being
+	// killed by the worker's outer ctx (the historical 120s value
+	// that fired before the 4 retry attempts could complete and
+	// permanently skipped 95,627 facts). See the four retry.go
+	// files (decomposition, summarization, refinement, synthesis).
+	LLMRetry LLMRetryConfig `mapstructure:"llm_retry"`
 	// PromptsetDefault is the global default promptset hash a
 	// repository inherits when its active_promptset_hash column is
 	// NULL. An empty value here means "use the built-in
@@ -290,6 +311,73 @@ type ProvidersConfig struct {
 	// okt_system.promptsets). Set via providers.promptset_default
 	// in config.default.yaml.
 	PromptsetDefault  string                       `mapstructure:"promptset_default"`
+}
+
+// LLMRetryConfig tunes the retryWithBackoff loop shared by every
+// AI-provider Chat/Embed call (decomposition, summarization,
+// refinement, synthesis). The defaults are tuned so a single LLM
+// call can ride out a transient OpenRouter degradation: 4 attempts
+// × 5m per-call timeout + 2s/4s/8s backoffs ≈ 20m total, which
+// fits inside the workers' new 20-25m LLM timeouts. The historical
+// values (MaxAttempts=4, PerCallTO=180s) were reasonable per-call
+// but were defeated by the workers' 120s outer ctx — the outer ctx
+// fired before the first attempt's 180s per-call could complete,
+// and every subsequent retry attempt inherited the already-dead
+// ctx. Decoupling the worker timeout (now 20m) from the per-call
+// timeout (now 5m) lets all 4 attempts actually run.
+type LLMRetryConfig struct {
+	MaxAttempts int           `mapstructure:"max_attempts"` // total attempts including the first; default 4
+	BaseDelay   time.Duration `mapstructure:"base_delay"`   // backoff for attempt 2; default 2s, grows exponentially
+	MaxDelay    time.Duration `mapstructure:"max_delay"`     // cap on per-attempt backoff; default 30s
+	PerCallTO   time.Duration `mapstructure:"per_call_timeout"` // per-attempt ctx timeout; default 5m
+}
+
+// MaxAttemptsOr returns the configured MaxAttempts or the default (4)
+// when unset/non-positive.
+func (c LLMRetryConfig) MaxAttemptsOr(def int) int {
+	if c.MaxAttempts > 0 {
+		return c.MaxAttempts
+	}
+	if def > 0 {
+		return def
+	}
+	return 4
+}
+
+// BaseDelayOr returns the configured BaseDelay or the default (2s)
+// when unset/non-positive.
+func (c LLMRetryConfig) BaseDelayOr(def time.Duration) time.Duration {
+	if c.BaseDelay > 0 {
+		return c.BaseDelay
+	}
+	if def > 0 {
+		return def
+	}
+	return 2 * time.Second
+}
+
+// MaxDelayOr returns the configured MaxDelay or the default (30s)
+// when unset/non-positive.
+func (c LLMRetryConfig) MaxDelayOr(def time.Duration) time.Duration {
+	if c.MaxDelay > 0 {
+		return c.MaxDelay
+	}
+	if def > 0 {
+		return def
+	}
+	return 30 * time.Second
+}
+
+// PerCallTimeoutOr returns the configured PerCallTO or the default
+// (5m) when unset/non-positive.
+func (c LLMRetryConfig) PerCallTimeoutOr(def time.Duration) time.Duration {
+	if c.PerCallTO > 0 {
+		return c.PerCallTO
+	}
+	if def > 0 {
+		return def
+	}
+	return 5 * time.Minute
 }
 
 // RegistryConfig configures the connection to the Knowledge Registry
@@ -488,6 +576,25 @@ func (d DedupConfig) CatchupMaxAgeDuration() time.Duration {
 	return 168 * time.Hour
 }
 
+// AuditConfig configures the audit-log subsystem. RetentionDays is
+// the age beyond which okt_system.permission_audit rows are deleted
+// by the daily audit_cleanup periodic job. The default of 30 is
+// returned by RetentionDaysOr when the field is zero or negative so
+// a missing/invalid value never silently disables retention.
+type AuditConfig struct {
+	RetentionDays int `mapstructure:"retention_days"` // 30
+}
+
+// RetentionDaysOr returns the configured retention in days, falling
+// back to def when the field is zero or negative. Callers (the
+// audit_cleanup worker) use this so the default lives in one place.
+func (a AuditConfig) RetentionDaysOr(def int) int {
+	if a.RetentionDays <= 0 {
+		return def
+	}
+	return a.RetentionDays
+}
+
 type DecompositionProvidersConfig struct {
 	Chunking          DecompositionChunkingConfig `mapstructure:"chunking"`
 	FactExtraction    DecompositionFactConfig     `mapstructure:"fact_extraction"`
@@ -534,9 +641,19 @@ type DecompositionChunkingConfig struct {
 }
 
 type DecompositionFactConfig struct {
-	Provider    string `mapstructure:"provider"`
-	Model       string `mapstructure:"model"`
-	Concurrency int    `mapstructure:"concurrency"`
+	Provider      string `mapstructure:"provider"`
+	Model         string `mapstructure:"model"`
+	Concurrency   int    `mapstructure:"concurrency"`
+	ThinkingLevel string `mapstructure:"thinking_level"` // default "low"
+	// InJobRetries is how many times source_decomposition re-runs
+	// FAILED chunks at the end of the main wave before giving up
+	// and recording chunk_failures on the source row (leaving the
+	// source un-processed for an operator to re-trigger via the
+	// reprocess admin endpoint). Only the failed chunks are
+	// re-LLM'd; successful chunks are not re-run, so no duplicate
+	// fact rows are created (CreateFact has no ON CONFLICT; only
+	// AddFactSource is idempotent). Default 2 via InJobRetriesOr.
+	InJobRetries int `mapstructure:"in_job_retries"`
 }
 
 // ConcurrencyOr returns the configured fact-extraction concurrency or
@@ -551,6 +668,18 @@ func (c DecompositionFactConfig) ConcurrencyOr(def int) int {
 		return def
 	}
 	return 4
+}
+
+// InJobRetriesOr returns the configured in-job retry count or the
+// default (2) when unset/negative. See InJobRetries for the behavior.
+func (c DecompositionFactConfig) InJobRetriesOr(def int) int {
+	if c.InJobRetries > 0 {
+		return c.InJobRetries
+	}
+	if def > 0 {
+		return def
+	}
+	return 2
 }
 
 // DecompositionConceptConfig configures the concept-extraction
@@ -578,6 +707,70 @@ type DecompositionConceptConfig struct {
 	Model         string `mapstructure:"model"`
 	FactBatchSize int    `mapstructure:"fact_batch_size"`
 	Concurrency   int    `mapstructure:"concurrency"`
+	// LLMTimeout is the per-call wall-clock timeout for a concept-
+	// extraction LLM call. Default 20m via LLMTimeoutOr: comfortably
+	// exceeds the retry budget (4 attempts × PerCallTO 5m +
+	// backoffs ≈ 20m) so the existing retryWithBackoff can ride out
+	// an OpenRouter streaming-decode slowdown instead of being
+	// killed by the worker's outer ctx (the historical 120s value
+	// that fired before the 4 retry attempts could complete and
+	// permanently skipped 95,627 facts with the
+	// "decoding response: context deadline exceeded" signature).
+	LLMTimeout time.Duration `mapstructure:"llm_timeout"`
+	// MaxAttempts is the soft-skip budget: how many consecutive
+	// PERMANENT failures (parse error, empty result) a fact can
+	// accumulate on fact_concept_skips before it's excluded from
+	// the candidate set. Transient failures (timeout, rate-limit
+	// wait, network blip) never write a skip row, so they don't
+	// count against this budget. Default 3 via MaxAttemptsOr.
+	MaxAttempts int32 `mapstructure:"max_attempts"`
+	// InJobRetries is how many times the worker re-runs failed
+	// chunks at the end of the main wave before giving up. Each
+	// retry round re-LLM's only the failed chunks; successful
+	// chunks are not re-run, so no duplicate fact_concepts rows
+	// are written (the junction's ON CONFLICT DO NOTHING is also
+	// a guard). Default 2 via InJobRetriesOr.
+	InJobRetries int `mapstructure:"in_job_retries"`
+}
+
+// LLMTimeoutOr returns the configured per-call LLM timeout or the
+// default (20m) when unset/non-positive. The default comfortably
+// exceeds the retry budget (4 attempts × 5m per-call + 2s/4s/8s
+// backoffs ≈ 20m+) so retryWithBackoff can ride out an OpenRouter
+// streaming-decode slowdown. See LLMRetryConfig for the per-call
+// retry knobs.
+func (c DecompositionConceptConfig) LLMTimeoutOr(def time.Duration) time.Duration {
+	if c.LLMTimeout > 0 {
+		return c.LLMTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 20 * time.Minute
+}
+
+// MaxAttemptsOr returns the configured soft-skip budget or the
+// default (3) when unset/non-positive.
+func (c DecompositionConceptConfig) MaxAttemptsOr(def int32) int32 {
+	if c.MaxAttempts > 0 {
+		return c.MaxAttempts
+	}
+	if def > 0 {
+		return def
+	}
+	return 3
+}
+
+// InJobRetriesOr returns the configured in-job retry count or the
+// default (2) when unset/negative.
+func (c DecompositionConceptConfig) InJobRetriesOr(def int) int {
+	if c.InJobRetries > 0 {
+		return c.InJobRetries
+	}
+	if def > 0 {
+		return def
+	}
+	return 2
 }
 
 // FactBatchSizeOr returns the configured fact batch size or the
@@ -629,6 +822,24 @@ type RefinementConfig struct {
 	PruneThreshold       int    `mapstructure:"prune_threshold"`
 	MaxTokens            int    `mapstructure:"max_tokens"`
 	MaxConcurrency       int    `mapstructure:"max_concurrency"`
+	// LLMTimeout is the per-call wall-clock timeout for a
+	// refinement LLM call. Default 20m via LLMTimeoutOr. See
+	// DecompositionConceptConfig.LLMTimeout for the rationale
+	// (same retry-budget-vs-timeout tradeoff; the historical 120s
+	// worker ctx killed the 4-attempt retry loop early).
+	LLMTimeout time.Duration `mapstructure:"llm_timeout"`
+}
+
+// LLMTimeoutOr returns the configured per-call LLM timeout or the
+// default (20m) when unset/non-positive.
+func (r RefinementConfig) LLMTimeoutOr(def time.Duration) time.Duration {
+	if r.LLMTimeout > 0 {
+		return r.LLMTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 20 * time.Minute
 }
 
 // MaxTokensOr returns the configured MaxTokens or the default (400)
@@ -693,6 +904,22 @@ type SummarizationConfig struct {
 	MaxConceptsPerRun int           `mapstructure:"max_concepts_per_run"` // chunk size for fan-out; default 40
 	LockStaleness     time.Duration `mapstructure:"lock_staleness"`       // reclaimable-after window; default 2h
 	MaxTokens         int           `mapstructure:"max_tokens"`           // per-slice output token cap; default 600
+	// LLMTimeout is the per-call wall-clock timeout for a summary
+	// slice LLM call. Default 20m via LLMTimeoutOr. See
+	// DecompositionConceptConfig.LLMTimeout for the rationale.
+	LLMTimeout time.Duration `mapstructure:"llm_timeout"`
+}
+
+// LLMTimeoutOr returns the configured per-call LLM timeout or the
+// default (20m) when unset/non-positive.
+func (s SummarizationConfig) LLMTimeoutOr(def time.Duration) time.Duration {
+	if s.LLMTimeout > 0 {
+		return s.LLMTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 20 * time.Minute
 }
 
 // BatchSizeOr returns the configured BatchSize or the default (20)
@@ -781,6 +1008,40 @@ type SynthesisConfig struct {
 	// "low" for synthesis since it's primarily a prose-composition task where
 	// extended reasoning chains waste tokens.
 	ThinkingLevel string `mapstructure:"thinking_level"`
+	// PickerTimeout is the per-call wall-clock timeout for the
+	// image-picker LLM call. Default 20m via PickerTimeoutOr. See
+	// DecompositionConceptConfig.LLMTimeout for the rationale.
+	PickerTimeout time.Duration `mapstructure:"picker_timeout"`
+	// LLMTimeout is the per-call wall-clock timeout for the
+	// synthesis LLM call. Default 25m via LLMTimeoutOr (synthesis
+	// produces longer output than the picker, hence the larger
+	// default). See DecompositionConceptConfig.LLMTimeout for the
+	// rationale.
+	LLMTimeout time.Duration `mapstructure:"llm_timeout"`
+}
+
+// PickerTimeoutOr returns the configured picker LLM timeout or the
+// default (20m) when unset/non-positive.
+func (s SynthesisConfig) PickerTimeoutOr(def time.Duration) time.Duration {
+	if s.PickerTimeout > 0 {
+		return s.PickerTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 20 * time.Minute
+}
+
+// LLMTimeoutOr returns the configured synthesis LLM timeout or the
+// default (25m) when unset/non-positive.
+func (s SynthesisConfig) LLMTimeoutOr(def time.Duration) time.Duration {
+	if s.LLMTimeout > 0 {
+		return s.LLMTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 25 * time.Minute
 }
 
 // MaxTokensOr returns the configured MaxTokens or the default (1200)
@@ -875,6 +1136,7 @@ type ReportsConfig struct {
 	MaxFactsPerSentence   int                     `mapstructure:"max_facts_per_sentence"`   // 5
 	MinSentenceRunes      int                     `mapstructure:"min_sentence_runes"`       // 40
 	PostureClassifier     PostureClassifierConfig `mapstructure:"posture_classifier"`
+	ClaimExtractor        ClaimExtractorConfig    `mapstructure:"claim_extractor"`
 }
 
 // PostureClassifierConfig configures the autocite posture classifier,
@@ -901,7 +1163,29 @@ type PostureClassifierConfig struct {
 	Model         string `mapstructure:"model"`           // chat model id
 	BatchSize     int    `mapstructure:"batch_size"`      // sentences per LLM call; default 8
 	MaxConcurrent int    `mapstructure:"max_concurrent"`  // in-flight LLM calls per worker; default 4
-	MaxTokens     int    `mapstructure:"max_tokens"`      // output token cap per batch; default 800
+	MaxTokens     int    `mapstructure:"max_tokens"`      // output token cap per batch; default 2000
+	// ContextWindowBefore / ContextWindowAfter control how many
+	// sentences immediately before / after the candidate sentence
+	// the worker includes in the classifier prompt as
+	// disambiguation context. Default 2/2. The window is clamped
+	// to the available sentence range (no synthesized padding at
+	// the report boundaries). 0 on either side disables context
+	// for that side. A per-repo override lives in
+	// repository_report_settings.context_window_before /
+	// context_window_after and takes precedence when in [0, 10].
+	ContextWindowBefore int `mapstructure:"context_window_before"` // default 2
+	ContextWindowAfter  int `mapstructure:"context_window_after"`  // default 2
+	// ThinkingLevel controls the model's reasoning effort
+	// ("low", "medium", "high"). Only applies to models that
+	// support the reasoning_effort parameter (DeepSeek R1/V4,
+	// OpenAI o-series, etc.). Set to "low" for the posture
+	// classifier because it's a tight instruction-following JSON-
+	// emission task where extended reasoning chains waste tokens
+	// and increase latency without improving classification
+	// quality. The value is threaded into the ChatRequest's
+	// ThinkingLevel field, which the OpenRouter provider maps to
+	// the `reasoning_effort` request parameter.
+	ThinkingLevel string `mapstructure:"thinking_level"` // default "low"
 }
 
 // SimilarityThresholdOr returns the configured threshold or the
@@ -952,12 +1236,76 @@ func (p PostureClassifierConfig) MaxConcurrentOr(def int) int {
 }
 
 // MaxTokensOr returns the configured posture-classifier MaxTokens
-// or the default (800) when zero/negative.
+// or the default (4000) when zero/negative. Raised from 800 → 2000
+// → 4000 because DeepSeek V4 Flash is a reasoning model — even at
+// thinking_level="low" it spends tokens on hidden reasoning before
+// emitting the JSON, and those reasoning tokens count toward the
+// output budget on OpenRouter. 4000 gives room for ~2500 reasoning
+// tokens + 1440 JSON tokens for a full 40-pair batch.
 func (p PostureClassifierConfig) MaxTokensOr(def int) int {
 	if p.MaxTokens > 0 {
 		return p.MaxTokens
 	}
 	return def
+}
+
+// ContextWindowBeforeOr returns the configured number of sentences
+// before the candidate the classifier receives as context, or the
+// default (2) when zero/negative. A per-repo override
+// (repository_report_settings.context_window_before) takes
+// precedence when in [0, 10].
+func (p PostureClassifierConfig) ContextWindowBeforeOr(def int) int {
+	if p.ContextWindowBefore > 0 {
+		return p.ContextWindowBefore
+	}
+	return def
+}
+
+// ContextWindowAfterOr returns the configured number of sentences
+// after the candidate the classifier receives as context, or the
+// default (2) when zero/negative. A per-repo override
+// (repository_report_settings.context_window_after) takes
+// precedence when in [0, 10].
+func (p PostureClassifierConfig) ContextWindowAfterOr(def int) int {
+	if p.ContextWindowAfter > 0 {
+		return p.ContextWindowAfter
+	}
+	return def
+}
+
+// ClaimExtractorConfig configures the claim-extraction pass that
+// runs at the front of the annotate_report worker. One LLM call per
+// BatchSize sentences emits the verifiable assertions each sentence
+// makes (numeric values, causal claims, comparisons, quotations,
+// definitions); the worker uses the extracted claims to drive an
+// additional retrieval pass per claim (numeric → tsvector, prose →
+// embedding) so the posture classifier sees facts that match the
+// sentence's SPECIFIC assertion, not just its broad topic.
+//
+// When the chat/AI provider is not configured (or Enabled is false)
+// the worker skips the claim-driven retrieval path and runs the
+// legacy embedding-only retrieval. A per-repo
+// repository_model_settings row for task_kind='claim_extraction'
+// overrides both Provider+Model (via ModelResolver) without touching
+// the global config. BatchSize is sentences per LLM call (multi-
+// sentence batching so a report produces a few calls, not one per
+// sentence); MaxConcurrent bounds in-flight calls per worker.
+type ClaimExtractorConfig struct {
+	Enabled       bool   `mapstructure:"enabled"`         // global on/off; default true
+	Provider      string `mapstructure:"provider"`        // ai provider id, e.g. "openrouter"
+	Model         string `mapstructure:"model"`           // chat model id
+	BatchSize     int    `mapstructure:"batch_size"`      // sentences per LLM call; default 8
+	MaxConcurrent int    `mapstructure:"max_concurrent"`  // in-flight LLM calls per worker; default 6
+	MaxTokens     int    `mapstructure:"max_tokens"`      // output token cap per batch; default 6000
+	// ThinkingLevel controls the model's reasoning effort
+	// ("low", "medium", "high"). Only applies to models that
+	// support the reasoning_effort parameter. Set to "low" for
+	// the claim extractor because it's a structural NLP
+	// extraction task (pick verbatim values + categorize) where
+	// extended reasoning chains waste tokens and increase
+	// latency without improving extraction quality. Threaded
+	// into the ChatRequest's ThinkingLevel field.
+	ThinkingLevel string `mapstructure:"thinking_level"` // default "low"
 }
 
 // MaxFactsPerSentenceOr returns the configured cap or the default
@@ -982,19 +1330,152 @@ func (r ReportsConfig) MinSentenceRunesOr(def int) int {
 	return def
 }
 
+// BatchSizeOr returns the configured claim-extractor BatchSize or
+// the default (8) when zero/negative. Lowered from 16 to 8 because
+// dense claim batches (a 16-sentence block from a numeric-heavy
+// report can carry 30+ claims) can exceed the OpenRouter 120s HTTP
+// client timeout; smaller batches ride out the variance better and
+// the raised MaxConcurrent keeps throughput flat.
+func (c ClaimExtractorConfig) BatchSizeOr(def int) int {
+	if c.BatchSize > 0 {
+		return c.BatchSize
+	}
+	return def
+}
+
+// MaxConcurrentOr returns the configured claim-extractor MaxConcurrent
+// or the default (6) when zero/negative. Raised from 4 to 6 to keep
+// throughput flat after BatchSize was lowered from 16 to 8.
+func (c ClaimExtractorConfig) MaxConcurrentOr(def int) int {
+	if c.MaxConcurrent > 0 {
+		return c.MaxConcurrent
+	}
+	return def
+}
+
+// ThinkingLevelOr returns the configured claim-extractor
+// ThinkingLevel or the default ("low") when empty. "low" is the
+// right default for a structural NLP extraction task where
+// extended reasoning chains waste tokens.
+func (c ClaimExtractorConfig) ThinkingLevelOr(def string) string {
+	if c.ThinkingLevel != "" {
+		return c.ThinkingLevel
+	}
+	return def
+}
+
+// ThinkingLevelOr returns the configured posture-classifier
+// ThinkingLevel or the default ("low") when empty. "low" is the
+// right default for a tight instruction-following JSON-emission
+// task where extended reasoning chains waste tokens.
+func (p PostureClassifierConfig) ThinkingLevelOr(def string) string {
+	if p.ThinkingLevel != "" {
+		return p.ThinkingLevel
+	}
+	return def
+}
+
+// MaxTokensOr returns the configured claim-extractor MaxTokens or
+// the default (8000) when zero/negative. Raised from 2000 → 4000 →
+// 6000 → 8000 because DeepSeek V4 Flash is a reasoning model —
+// even at thinking_level="low" it spends tokens on hidden reasoning
+// before emitting the JSON, and those reasoning tokens count toward
+// the output budget on OpenRouter. 8000 gives room for ~5000
+// reasoning tokens + 3000 JSON tokens for a dense 8-sentence batch.
+func (c ClaimExtractorConfig) MaxTokensOr(def int) int {
+	if c.MaxTokens > 0 {
+		return c.MaxTokens
+	}
+	return def
+}
+
 type AIProvidersConfig struct {
 	Ollama      OllamaProviderConfig      `mapstructure:"ollama"`
 	OllamaCloud OllamaCloudProviderConfig `mapstructure:"ollama_cloud"`
 	OpenRouter  OpenRouterProviderConfig  `mapstructure:"openrouter"`
 	Models      []AIModelConfig           `mapstructure:"models"`
+	// RateLimitWaitTimeout caps how long a Chat/Embed call will
+	// BLOCK waiting for a token from the per-model rate.Limiter
+	// bucket before returning a transient rate-limit error. The
+	// wait happens on a background context decoupled from the
+	// caller's LLM-call timeout (which historically fired first,
+	// permanently skipping 13,485 facts — see the 0024 skip table
+	// "rate: Wait(n=1) would exceed context deadline" rows).
+	//
+	// Default 1h: a task waiting up to an hour for capacity is
+	// preferable to permanently skipping 10 facts. The wait
+	// happens inside the rate limiter decorator, OUTSIDE the
+	// per-task retryWithBackoff, so a wait that exceeds this
+	// budget is classified as transient (retryable) — the caller
+	// retries on the next pass instead of recording a permanent
+	// skip. 0 disables the wait cap (waits forever).
+	RateLimitWaitTimeout time.Duration `mapstructure:"rate_limit_wait_timeout"`
+}
+
+// DefaultRateLimitWaitTimeout is the per-call cap on how long a
+// Chat/Embed call blocks waiting for a rate-limiter token. 1h
+// matches the "prefer a one-hour wait over a permanent skip" policy:
+// under sustained OpenRouter degradation, workers queue on the
+// shared per-model bucket and proceed as capacity refills, instead
+// of timing out at the LLM-call deadline and severing facts from
+// their concepts. See ratelimit.go for the decorator that uses it.
+const DefaultRateLimitWaitTimeout = time.Hour
+
+// RateLimitWaitTimeoutOr applies DefaultRateLimitWaitTimeout when
+// the operator left the field unset (zero). Negative values are
+// clamped to 0 (interpreted by the decorator as "wait forever").
+func (c AIProvidersConfig) RateLimitWaitTimeoutOr() time.Duration {
+	if c.RateLimitWaitTimeout > 0 {
+		return c.RateLimitWaitTimeout
+	}
+	if c.RateLimitWaitTimeout < 0 {
+		return 0
+	}
+	return DefaultRateLimitWaitTimeout
 }
 
 type OllamaProviderConfig struct {
 	BaseURL string `mapstructure:"base_url"`
+	// HTTPTimeout is the per-request timeout for the underlying
+	// http.Client used to talk to Ollama. Default 10m via
+	// HTTPTimeoutOr — must not undercut the retry PerCallTO (5m
+	// default) or the worker LLM timeouts (20-25m). The historical
+	// hardcoded 120s was shorter than the retry PerCallTO (180s)
+	// and killed requests before the per-call retry could finish.
+	HTTPTimeout time.Duration `mapstructure:"http_timeout"`
+}
+
+// HTTPTimeoutOr returns the configured HTTP timeout or the default
+// (10m) when unset/non-positive.
+func (o OllamaProviderConfig) HTTPTimeoutOr(def time.Duration) time.Duration {
+	if o.HTTPTimeout > 0 {
+		return o.HTTPTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 10 * time.Minute
 }
 
 type OllamaCloudProviderConfig struct {
 	APIKey string `mapstructure:"api_key"`
+	// HTTPTimeout is the per-request timeout for the underlying
+	// http.Client used to talk to Ollama Cloud. Default 10m via
+	// HTTPTimeoutOr. See OllamaProviderConfig.HTTPTimeout for the
+	// rationale.
+	HTTPTimeout time.Duration `mapstructure:"http_timeout"`
+}
+
+// HTTPTimeoutOr returns the configured HTTP timeout or the default
+// (10m) when unset/non-positive.
+func (o OllamaCloudProviderConfig) HTTPTimeoutOr(def time.Duration) time.Duration {
+	if o.HTTPTimeout > 0 {
+		return o.HTTPTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 10 * time.Minute
 }
 
 type OpenRouterProviderConfig struct {
@@ -1006,6 +1487,26 @@ type OpenRouterProviderConfig struct {
 	// limit. Lower this if embed_facts fails with
 	// "embed response has no data". Defaults to 64 when unset or <=0.
 	EmbedBatchSize int `mapstructure:"embed_batch_size"`
+	// HTTPTimeout is the per-request timeout for the underlying
+	// http.Client used to talk to OpenRouter. Default 10m via
+	// HTTPTimeoutOr. The historical hardcoded 240s was shorter
+	// than the worker LLM timeout (now 20m) and could kill a
+	// streaming decode that the worker would otherwise have
+	// tolerated. 10m comfortably exceeds the retry PerCallTO (5m)
+	// so a slow stream isn't killed mid-decode by the HTTP client.
+	HTTPTimeout time.Duration `mapstructure:"http_timeout"`
+}
+
+// HTTPTimeoutOr returns the configured HTTP timeout or the default
+// (10m) when unset/non-positive.
+func (o OpenRouterProviderConfig) HTTPTimeoutOr(def time.Duration) time.Duration {
+	if o.HTTPTimeout > 0 {
+		return o.HTTPTimeout
+	}
+	if def > 0 {
+		return def
+	}
+	return 10 * time.Minute
 }
 
 type AIModelConfig struct {
@@ -1032,6 +1533,59 @@ type AIModelConfig struct {
 // workers; operators raising it (or setting 0 for unlimited) is
 // the intended tuning knob. See ratelimit.go for the decorator.
 const DefaultModelRateLimitRPM = 30
+
+// SearchConfig tunes the in-repo fact/concept search endpoints. It
+// governs the hybrid search behavior (lexical Postgres FTS fused
+// with the Qdrant vector index via Reciprocal Rank Fusion). When
+// hybrid is disabled, or when Qdrant/the embedding provider is not
+// configured at boot, the search endpoints fall back to the
+// existing lexical-only path. The hybrid path is only attempted
+// when the caller supplies a non-empty query string — an empty
+// query always runs the lexical path (there is no meaningful
+// vector to embed for an empty string).
+type SearchConfig struct {
+	Hybrid SearchHybridConfig `mapstructure:"hybrid"`
+}
+
+// SearchHybridConfig configures Reciprocal Rank Fusion of the
+// lexical (Postgres tsvector) and semantic (Qdrant cosine) search
+// channels. The two channels run concurrently; each over-fetches
+// `over_fetch_multiplier` × limit so the fused ranking has enough
+// candidates before pagination slices the final page.
+type SearchHybridConfig struct {
+	// Enabled is the master switch. When false (or when Qdrant /
+	// the embedding provider is nil at boot), every search runs
+	// the lexical path. Default true.
+	Enabled bool `mapstructure:"enabled"`
+	// RRFK is the Reciprocal Rank Fusion damping constant. Higher
+	// values dampen the rank contribution of top hits, surfacing
+	// more consensus hits; the standard 60 is a sensible default.
+	// Tunable per-corpus once real query distributions are
+	// observed.
+	RRFK int `mapstructure:"rrf_k"`
+	// MinScore is the Qdrant cosine similarity floor for semantic
+	// hits. 0.0 accepts every Qdrant hit and lets RRF do the
+	// reordering; raising it filters out low-relevance vectors
+	// before fusion.
+	MinScore float32 `mapstructure:"min_score"`
+	// OverFetchMultiplier is how many × limit each channel
+	// fetches before fusion. 3 is a reasonable default: each side
+	// returns up to 3×limit candidates, the fused ranking reorders
+	// them, and pagination slices the final limit. Raising it
+	// improves recall at the cost of more work per search.
+	OverFetchMultiplier int `mapstructure:"over_fetch_multiplier"`
+}
+
+// DefaultSearchHybridConfig is the in-memory default applied when
+// the loaded config omits the search.hybrid block (Viper leaves
+// the struct zero-valued). Mirrors the defaults in
+// configs/config.default.yaml.
+var DefaultSearchHybridConfig = SearchHybridConfig{
+	Enabled:             true,
+	RRFK:                60,
+	MinScore:            0.0,
+	OverFetchMultiplier: 3,
+}
 
 type SearchProvidersConfig struct {
 	Provider string                 `mapstructure:"provider"`
@@ -1301,6 +1855,27 @@ type AuthConfig struct {
 	TokenTTL  time.Duration `mapstructure:"token_ttl"`
 }
 
+// APIKeysConfig configures personal API keys (personal access
+// tokens). Keys are opaque, sha256-hashed-at-rest credentials a user
+// creates from the Profile page; they authenticate the REST surface
+// the same way a session does, but are scoped to a subset of
+// (object, action) permissions and optionally to a single repository.
+// See internal/api/middleware/apikey.go + handler/apikey.go.
+type APIKeysConfig struct {
+	// MaxPerUser caps the number of active (non-revoked) keys a
+	// single user may hold. 0 falls back to 20. The cap is a guard
+	// against runaway automation, not a hard security boundary.
+	MaxPerUser int `mapstructure:"max_per_user"`
+	// DefaultTTL is applied when the create body omits
+	// expires_in_days. 0 means "no expiry" (the key never expires
+	// on its own; only revocation or the MaxTTL cap limit it).
+	DefaultTTL time.Duration `mapstructure:"default_ttl"`
+	// MaxTTL is the upper bound on any key's lifetime. A request
+	// for a longer TTL is clamped, not rejected. 0 falls back to
+	// 90 days (2160h).
+	MaxTTL time.Duration `mapstructure:"max_ttl"`
+}
+
 // Load reads the configuration from the layered set of sources
 // described below and returns the parsed *Config.
 //
@@ -1544,6 +2119,29 @@ func Load(configPath string) (*Config, error) {
 	}
 	cfg.Providers.Synthesis.MaxRelatedConcepts = n1
 	cfg.Providers.Synthesis.MaxRelatedSyntheses = n2
+
+	// Search hybrid defaults: when the operator doesn't set the
+	// search.hybrid block, Viper leaves the struct zero-valued
+	// (Enabled=false, RRFK=0, etc.). A zero Enabled is ambiguous
+	// (it could mean "explicitly disabled" or "not configured"),
+	// so we apply the documented defaults whenever the whole
+	// block is zero. An operator who explicitly sets any field
+	// gets the rest filled from defaults; an operator who
+	// explicitly sets Enabled=false keeps it false. The simplest
+	// heuristic: when RRFK == 0 and OverFetchMultiplier == 0 the
+	// block was never configured, so seed it from
+	// DefaultSearchHybridConfig. MinScore=0 is a valid setting so
+	// it doesn't participate in the "unconfigured" check.
+	if cfg.Search.Hybrid.RRFK == 0 && cfg.Search.Hybrid.OverFetchMultiplier == 0 {
+		cfg.Search.Hybrid = DefaultSearchHybridConfig
+	} else {
+		if cfg.Search.Hybrid.RRFK == 0 {
+			cfg.Search.Hybrid.RRFK = DefaultSearchHybridConfig.RRFK
+		}
+		if cfg.Search.Hybrid.OverFetchMultiplier == 0 {
+			cfg.Search.Hybrid.OverFetchMultiplier = DefaultSearchHybridConfig.OverFetchMultiplier
+		}
+	}
 
 	// Validate cross-references. Bail at boot if the operator
 	// referenced a database that doesn't exist; we want this to be

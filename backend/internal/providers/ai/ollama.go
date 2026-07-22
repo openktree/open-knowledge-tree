@@ -29,14 +29,28 @@ func NewOllamaProvider(baseURL string, models []ModelInfo) *OllamaProvider {
 	return &OllamaProvider{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// 10m comfortably exceeds the retry PerCallTO (5m) so
+			// a slow Ollama generation isn't killed mid-stream by
+			// the HTTP client. Override via WithHTTPTimeout from
+			// cfg.Providers.AI.Ollama.HTTPTimeout.
+			Timeout: 10 * time.Minute,
 		},
 		models: models,
 	}
 }
 
+// WithHTTPTimeout overrides the underlying http.Client's timeout.
+// Values <=0 fall back to 10m.
+func (p *OllamaProvider) WithHTTPTimeout(d time.Duration) *OllamaProvider {
+	if d <= 0 {
+		d = 10 * time.Minute
+	}
+	p.httpClient = &http.Client{Timeout: d}
+	return p
+}
+
 func NewOllamaProviderFromConfig(cfg config.OllamaProviderConfig, models []ModelInfo) *OllamaProvider {
-	return NewOllamaProvider(cfg.BaseURL, models)
+	return NewOllamaProvider(cfg.BaseURL, models).WithHTTPTimeout(cfg.HTTPTimeoutOr(0))
 }
 
 type ollamaChatRequest struct {

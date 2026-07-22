@@ -31,7 +31,12 @@ backend/dist/
 # re-added accidentally. Binaries should be built on demand.
 /backend/api
 /backend/dbpedia-pull
+/backend/backfill-source-metadata
 /registry/backfill-embedding-models
+
+# Experiment outputs (regenerable)
+scripts/experiments/multihop_rag/answers_*/
+scripts/experiments/multihop_rag/results/
 
 # Test output & coverage
 backend/*.out

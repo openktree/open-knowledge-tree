@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
@@ -178,6 +179,68 @@ func (t *Tasks) ListJobStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
+	writeJobStatsResponse(w, r, rows, t.queueConfigs)
+}
+
+// ListRepoJobStats handles GET /{repoID}/tasks/stats.
+//
+// It is the per-repo scoped counterpart to ListJobStats: the same
+// queue/state aggregation, but restricted to jobs whose metadata
+// carries the `repo_id` tag written at enqueue time (see
+// tasks.MarshalMetadata). The filter uses River's metadata
+// containment check (`metadata @> fragment::jsonb`), so a partial
+// JSON object is enough to match. Jobs that carry no metadata
+// (e.g. fact_catchup) won't match and are correctly excluded —
+// matching the ListRepoJobs scoping contract.
+//
+// The endpoint lives under the /{repoID} route group, so the
+// WithRepoQueries middleware has already resolved and attached the
+// repository UUID to the request context (appmw.RepoIDFromContext).
+//
+// Auth: requires repo-scope task.read (enforced by RequireRepoPermission).
+// Returns 503 when the task database pool is not wired.
+func (t *Tasks) ListRepoJobStats(w http.ResponseWriter, r *http.Request) {
+	if t.client == nil || t.pool == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "task manager not configured")
+		return
+	}
+
+	repoID, ok := appmw.RepoIDFromContext(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+
+	meta := map[string]string{"repo_id": repoIDString(repoID)}
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "encoding metadata filter: "+err.Error())
+		return
+	}
+
+	rows, err := t.pool.Query(r.Context(),
+		`SELECT queue, state, count(*)::bigint AS count
+		 FROM river_job
+		 WHERE metadata @> $1::jsonb
+		 GROUP BY queue, state
+		 ORDER BY queue, state`,
+		string(metaJSON))
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	writeJobStatsResponse(w, r, rows, t.queueConfigs)
+}
+
+// writeJobStatsResponse is the shared aggregation + JSON-shaping
+// tail used by both ListJobStats (system-wide) and ListRepoJobStats
+// (repo-scoped). The caller passes the already-opened rows iterator
+// (system call has no WHERE; repo call adds `metadata @> $1`); this
+// helper accumulates per-queue/per-state counts, sorts queue names,
+// applies the queue-config worker caps, and writes the response.
+// The rows iterator is closed by this helper (deferred).
+func writeJobStatsResponse(w http.ResponseWriter, r *http.Request, rows pgx.Rows, queueConfigs map[string]int) {
 
 	// Accumulate: queueName → { stateName → count },
 	// and per-state totals.
@@ -227,7 +290,7 @@ func (t *Tasks) ListJobStats(w http.ResponseWriter, r *http.Request) {
 	queueList := make([]map[string]interface{}, 0, len(queueNames))
 	for _, q := range queueNames {
 		qa := queues[q]
-		mw, ok := t.queueConfigs[q]
+		mw, ok := queueConfigs[q]
 		if !ok {
 			mw = defaultQueueWorkers
 		}

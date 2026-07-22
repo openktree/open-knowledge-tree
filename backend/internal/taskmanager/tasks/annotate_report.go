@@ -16,6 +16,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
@@ -79,6 +80,7 @@ type AnnotateReportWorker struct {
 	embeddingCfg       config.EmbeddingConfig
 	reportsCfg         config.ReportsConfig
 	postureClassifier  posture.Classifier
+	claimExtractor     claims.Extractor
 	qdrant             *qdrantstore.Store
 	registry           *dbpool.Registry
 	systemQueries      *store.Queries
@@ -91,6 +93,7 @@ func NewAnnotateReportWorker(
 	embeddingCfg config.EmbeddingConfig,
 	reportsCfg config.ReportsConfig,
 	postureClassifier posture.Classifier,
+	claimExtractor claims.Extractor,
 	qdrant *qdrantstore.Store,
 	registry *dbpool.Registry,
 	systemQueries *store.Queries,
@@ -102,6 +105,7 @@ func NewAnnotateReportWorker(
 		embeddingCfg:      embeddingCfg,
 		reportsCfg:        reportsCfg,
 		postureClassifier: postureClassifier,
+		claimExtractor:    claimExtractor,
 		qdrant:            qdrant,
 		registry:          registry,
 		systemQueries:     systemQueries,
@@ -160,6 +164,8 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 	lexicalFloor := w.reportsCfg.LexicalSimilarityFloorOr(0.6)
 	postureEnabled := w.reportsCfg.PostureClassifier.Enabled
 	maxFacts := w.reportsCfg.MaxFactsPerSentenceOr(5)
+	ctxBefore := w.reportsCfg.PostureClassifier.ContextWindowBeforeOr(2)
+	ctxAfter := w.reportsCfg.PostureClassifier.ContextWindowAfterOr(2)
 	if setting, err := w.systemQueries.GetRepositoryReportSettings(ctx, repoID); err == nil {
 		if setting.SimilarityThreshold != nil && *setting.SimilarityThreshold > 0 {
 			threshold = *setting.SimilarityThreshold
@@ -188,6 +194,20 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 		if setting.LexicalSimilarityFloor != nil && *setting.LexicalSimilarityFloor >= 0 && *setting.LexicalSimilarityFloor <= 1 {
 			lexicalFloor = *setting.LexicalSimilarityFloor
 		}
+		// Per-repo context_window_before / context_window_after
+		// override. NULL (or out of [0,10]) inherits the global
+		// default (2/2). 0 on either side disables context for that
+		// side (the worker emits empty ContextBefore/ContextAfter
+		// slices for every sentence). The window is clamped to the
+		// available sentence range at batch-build time, so a
+		// boundary sentence yields fewer than N context entries
+		// instead of synthesized padding.
+		if setting.ContextWindowBefore != nil && *setting.ContextWindowBefore >= 0 && *setting.ContextWindowBefore <= 10 {
+			ctxBefore = int(*setting.ContextWindowBefore)
+		}
+		if setting.ContextWindowAfter != nil && *setting.ContextWindowAfter >= 0 && *setting.ContextWindowAfter <= 10 {
+			ctxAfter = int(*setting.ContextWindowAfter)
+		}
 	}
 
 	// Resolve per-repo model override for the posture classifier.
@@ -197,14 +217,20 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 	// instance (or nil); only the model id is overridden here. The
 	// classifier's promptset is swapped to the repo's effective
 	// philosophy via WithPromptset so the posture phase runs under
-	// the same philosophy as the facts it is classifying.
+	// the same philosophy as the facts it is classifying. The
+	// ThinkingLevel from PostureClassifierConfig (default "low")
+	// is applied to both the global and per-repo classifier so
+	// DeepSeek V4 Flash runs with minimal reasoning effort — the
+	// posture task is a tight JSON-emission task where extended
+	// reasoning chains waste tokens and increase latency.
 	var postureModelOverride string
+	postureThinkingLevel := w.reportsCfg.PostureClassifier.ThinkingLevelOr("low")
 	postureClassifier := w.postureClassifier
 	if w.promptsetResolver != nil {
 		ps := w.promptsetResolver.Effective(ctx, repoID)
 		w.promptsetResolver.LogEffective(ctx, repoID, "annotate_report")
 		if c, ok := postureClassifier.(*posture.AIClassifier); ok {
-			postureClassifier = c.WithPromptset(ps)
+			postureClassifier = c.WithPromptset(ps).WithThinkingLevel(postureThinkingLevel)
 		}
 	}
 	if w.modelResolver != nil {
@@ -212,9 +238,9 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 			postureModelOverride = r.ModelID
 			if w.promptsetResolver != nil {
 				ps := w.promptsetResolver.Effective(ctx, repoID)
-				postureClassifier = posture.NewAIClassifier(r.Provider, r.ModelID).WithPromptset(ps)
+				postureClassifier = posture.NewAIClassifier(r.Provider, r.ModelID).WithPromptset(ps).WithThinkingLevel(postureThinkingLevel)
 			} else {
-				postureClassifier = posture.NewAIClassifier(r.Provider, r.ModelID)
+				postureClassifier = posture.NewAIClassifier(r.Provider, r.ModelID).WithThinkingLevel(postureThinkingLevel)
 			}
 		}
 	}
@@ -291,16 +317,156 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 		return w.failReport(ctx, queries, reportID, fmt.Errorf("clearing annotations: %w", err))
 	}
 
-	// Collect Qdrant hits per sentence. sentenceHits maps
-	// sentence_index -> []qdrantstore.Hit so we can batch-fetch fact
-	// text once and join it back.
+	// Index the candidate sentence's embedding by sentence_index so
+	// the claim-driven retrieval path (which runs per-claim, not
+	// per-candidate) can look it up without a linear scan.
+	candidateEmbeddingByIndex := make(map[int][]float32, len(candidates))
+	for i, c := range candidates {
+		candidateEmbeddingByIndex[c.Index] = resp.Embeddings[i]
+	}
+
+	// Phase 0: extract direct inline citations from each candidate
+	// sentence's text. The synthesis convention is
+	//   [text](<fact:uuid>)   (text citation)
+	//   ![alt](<fact:uuid>)   (image citation)
+	// An author who placed one of these in the report body is
+	// explicitly asserting "this fact verifies this sentence" — the
+	// worker persists each as an annotation with posture="supports"
+	// and score=1.0, OUTSIDE the maxFacts cap and WITHOUT going
+	// through the posture classifier (the author's judgment
+	// overrides the LLM). Non-existent fact_ids are dropped silently
+	// (the author may have referenced a fact that was since
+	// deleted).
+	directCitations := extractDirectCitations(candidates)
+	directCitationIDs := make([]pgtype.UUID, 0)
+	for _, ids := range directCitations {
+		for _, id := range ids {
+			directCitationIDs = append(directCitationIDs, uuidToPg(id))
+		}
+	}
+	directCitationValid := make(map[uuid.UUID]bool, len(directCitationIDs))
+	if len(directCitationIDs) > 0 {
+		// Batch-validate so we don't issue one query per fact. The
+		// result is a set of valid fact_ids; non-valid ids are
+		// silently dropped from the directCitations map.
+		validRows, vErr := queries.GetFactsByIDs(ctx, directCitationIDs)
+		if vErr != nil {
+			log.Printf("annotate_report: validating direct citations for report %s failed: %v (will still persist best-effort)", args.ReportID, vErr)
+			// Be lenient: if the validation query fails, assume
+			// every direct citation is valid so we don't silently
+			// drop the author's explicit citations.
+			for _, ids := range directCitations {
+				for _, id := range ids {
+					directCitationValid[id] = true
+				}
+			}
+		} else {
+			for _, f := range validRows {
+				if f.ID.Valid {
+					directCitationValid[f.ID.Bytes] = true
+				}
+			}
+		}
+	}
+	// Build a per-sentence set of valid direct-citation fact_ids so
+	// the retrieval loops below can exclude them from the top-N
+	// pool (they're going to be persisted as extras, not as part of
+	// the maxFacts budget).
+	directCitationSet := make(map[int]map[uuid.UUID]bool, len(directCitations))
+	for sidx, ids := range directCitations {
+		m := make(map[uuid.UUID]bool, len(ids))
+		for _, id := range ids {
+			if directCitationValid[id] {
+				m[id] = true
+			}
+		}
+		if len(m) > 0 {
+			directCitationSet[sidx] = m
+		}
+	}
+
+	// Phase 1: extract verifiable claims from each candidate sentence.
+	// One LLM call per BatchSize sentences; the claims are ephemeral
+	// (worker-local, never persisted). When the claim extractor is
+	// not configured (or the per-repo model override is unresolvable),
+	// sentenceClaims is empty and the worker falls back to
+	// embedding-only retrieval for every sentence (the legacy
+	// behavior). The claim extractor uses the same model as the
+	// posture classifier (DeepSeek V4 Flash by default) but is
+	// resolved independently via TaskKindClaimExtraction so an
+	// operator can pin a different model per repo.
+	var sentenceClaims map[int][]claims.Claim
+	claimThinkingLevel := w.reportsCfg.ClaimExtractor.ThinkingLevelOr("low")
+	claimExtractor := w.claimExtractor
+	// Apply the configured ThinkingLevel to the global extractor
+	// (the per-repo override path below applies it to its own
+	// instance). "low" is the default because claim extraction is
+	// a structural NLP task where extended reasoning chains waste
+	// tokens.
+	if ce, ok := claimExtractor.(*claims.AIClaimExtractor); ok {
+		claimExtractor = ce.WithThinkingLevel(claimThinkingLevel)
+	}
+	claimModelOverride := ""
+	if w.promptsetResolver != nil {
+		// Claim extraction is philosophy-neutral (it's a structural
+		// NLP pass), so we don't swap the promptset. The LogEffective
+		// call is preserved for symmetry with the posture path so
+		// the operator's logs show both phases.
+		w.promptsetResolver.LogEffective(ctx, repoID, "claim_extraction")
+	}
+	if w.modelResolver != nil {
+		if r := w.modelResolver.Resolve(ctx, repoID, TaskKindClaimExtraction); r.Provider != nil {
+			claimModelOverride = r.ModelID
+			claimExtractor = claims.NewAIClaimExtractor(r.Provider, r.ModelID).WithThinkingLevel(claimThinkingLevel)
+		}
+	}
+	if claimExtractor != nil && claimExtractor.Configured() {
+		sentenceClaims, err = w.extractClaimsForReport(ctx, pool.Pool, candidates, claimExtractor, claimModelOverride, jobIDStr, args)
+		if err != nil {
+			log.Printf("annotate_report: claim extraction failed for report %s; falling back to embedding-only retrieval: %v", args.ReportID, err)
+			sentenceClaims = nil
+		}
+	}
+
+	// Phase 2: embedding retrieval over every candidate sentence.
+	// sentenceHits maps sentence_index -> []qdrantstore.Hit so we
+	// can batch-fetch fact text once and join it back. Direct
+	// citations are excluded from the top-N pool (they'll be
+	// persisted as extras later).
 	sentenceHits := make(map[int][]qdrantstore.Hit)
 	hitCount := 0
 	for i, c := range candidates {
-		hits, err := w.qdrant.SearchSimilar(ctx, resp.Embeddings[i], repoUUID, uuid.Nil, float32(threshold), maxFacts)
-		if err != nil {
-			log.Printf("annotate_report: qdrant search for sentence %d of report %s failed: %v", c.Index, args.ReportID, err)
-			continue
+		// Cap maxFacts minus the direct citations already claimed
+		// for this sentence, so a sentence with 2 direct citations
+		// leaves room for maxFacts-2 auto-retrieved hits (and never
+		// exceeds the configured density).
+		budget := maxFacts
+		if dc, ok := directCitationSet[c.Index]; ok {
+			budget -= len(dc)
+			if budget < 0 {
+				budget = 0
+			}
+		}
+		var hits []qdrantstore.Hit
+		if budget > 0 {
+			hits, err = w.qdrant.SearchSimilar(ctx, resp.Embeddings[i], repoUUID, uuid.Nil, float32(threshold), budget)
+			if err != nil {
+				log.Printf("annotate_report: qdrant search for sentence %d of report %s failed: %v", c.Index, args.ReportID, err)
+				continue
+			}
+		}
+		// Drop any Qdrant hit whose fact_id is also a direct
+		// citation for this sentence (the direct citation wins and
+		// is persisted separately as an extra).
+		if dc, ok := directCitationSet[c.Index]; ok && len(hits) > 0 {
+			filtered := hits[:0]
+			for _, h := range hits {
+				if dc[h.ID] {
+					continue
+				}
+				filtered = append(filtered, h)
+			}
+			hits = filtered
 		}
 		if len(hits) == 0 {
 			continue
@@ -309,123 +475,245 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 		hitCount += len(hits)
 	}
 
-	// Hybrid retrieval: for each candidate sentence that has at least
-	// one numeric token, run a lexical (tsvector) search over the
-	// repository's facts and union the hits with the Qdrant hits. This
-	// catches the case where a sentence quotes "0.9 kg weight gain"
-	// and a fact states "0.9 kilograms (1.98 lb) increase" — the
-	// embedding cosine similarity may fall below threshold because the
-	// surrounding prose differs, but the exact numeric match is a
-	// citation the user wants.
+	// Phase 2b: claim-driven retrieval. For each sentence with
+	// extracted claims, retrieve additional candidate facts per
+	// claim:
+	//   - numeric claim  → tsvector search on the claim Term (the
+	//     verbatim value + unit, e.g. "0.9 kg", "508 kcal/day"),
+	//     reusing the existing SearchFactsByNumericTokens query but
+	//     driven by the extracted claim Term instead of the whole
+	//     sentence text. This is more precise than the legacy
+	//     whole-sentence tsquery because the claim extractor already
+	//     picked out the specific value the sentence is asserting.
+	//   - prose claim    → embed the claim Term, run a Qdrant
+	//     similarity search scoped to the repo, reusing the same
+	//     threshold + maxFacts budget. This catches facts whose
+	//     phrasing differs from the sentence but matches the claim
+	//     term the extractor pulled out (e.g. a "SelfCheckGPT"
+	//     claim surfaces a fact about "SelfCheckGPT" even when the
+	//     surrounding sentence embedding is dominated by other
+	//     prose).
 	//
-	// Apples-to-oranges guard: when lexical_similarity_floor > 0 (the
-	// default 0.6, or the per-repo override), each lexical hit is
-	// re-checked against the sentence embedding. The worker already
-	// has the sentence vector in resp.Embeddings[i] (i indexes the
-	// candidates slice); it fetches the candidate fact vectors via
-	// GetFactVectorsByIDs and computes cosine similarity. Hits below
-	// the floor are dropped even when the tsvector match was exact,
-	// so "0.9 kg weight gain" does NOT surface "0.9 kg CO2 emissions"
-	// purely on the numeric token match. Setting the floor to 0.0
-	// disables the semantic gate entirely (accept every lexical hit).
-	// Survivors get score = actual_cosine (not a sentinel 0.0) so they
-	// rank naturally among the Qdrant hits and the UI's score badge
-	// reflects how strong the semantic match really was. Dedup by
+	// Both paths union with the Phase 2 Qdrant hits, dedup by
 	// fact_id within a sentence (a fact that hit both ways counts
-	// once, keeping the Qdrant score).
+	// once, keeping the higher score). Direct citations are excluded
+	// (already persisted as extras). The apples-to-oranges guard
+	// (lexical_similarity_floor) applies to numeric claim hits the
+	// same way it applied to the legacy lexical fallback: each
+	// tsvector hit is re-checked against the sentence embedding and
+	// dropped if cosine similarity is below the floor.
 	lexicalHitCount := 0
 	lexicalDroppedCount := 0
-	for i, c := range candidates {
-		tsq := extractNumericTsquery(c.Text)
-		if tsq == "" {
+	proseHitCount := 0
+	// Pre-build a per-sentence exclude list (Qdrant hits + direct
+	// citations) so the tsvector query doesn't re-surface facts that
+	// are already in the candidate pool.
+	for _, c := range candidates {
+		cs, hasClaims := sentenceClaims[c.Index]
+		if !hasClaims || len(cs) == 0 {
 			continue
 		}
-		excludeIDs := make([]pgtype.UUID, 0, len(sentenceHits[c.Index]))
-		seen := make(map[uuid.UUID]bool, len(sentenceHits[c.Index]))
+		// Build the exclude set: direct citations + existing Qdrant
+		// hits for this sentence.
+		excludeSet := make(map[uuid.UUID]bool)
+		if dc, ok := directCitationSet[c.Index]; ok {
+			for id := range dc {
+				excludeSet[id] = true
+			}
+		}
 		for _, h := range sentenceHits[c.Index] {
-			if seen[h.ID] {
-				continue
-			}
-			seen[h.ID] = true
-			excludeIDs = append(excludeIDs, uuidToPg(h.ID))
+			excludeSet[h.ID] = true
 		}
-		// Cap the lexical fallback at maxFacts so a single sentence
-		// with many shared numbers doesn't flood the candidate set.
-		lexRows, err := queries.SearchFactsByNumericTokens(ctx, store.SearchFactsByNumericTokensParams{
-			RepositoryID: repoID,
-			Tsquery:      tsq,
-			ExcludeIds:   excludeIDs,
-			RowLimit:     int32(maxFacts),
-		})
-		if err != nil {
-			log.Printf("annotate_report: lexical fallback for sentence %d of report %s failed: %v", c.Index, args.ReportID, err)
-			continue
+		excludeIDs := make([]pgtype.UUID, 0, len(excludeSet))
+		for id := range excludeSet {
+			excludeIDs = append(excludeIDs, uuidToPg(id))
 		}
-		if len(lexRows) == 0 {
-			continue
+		// Remaining budget for this sentence under maxFacts.
+		used := len(sentenceHits[c.Index]) + len(directCitationSet[c.Index])
+		budget := maxFacts - used
+		if budget < 0 {
+			budget = 0
 		}
-
-		// Semantic gate: fetch the candidate fact vectors and compute
-		// cosine similarity against the sentence embedding. Skip the
-		// gate entirely when the floor is 0.0 (operator disabled it).
-		var factVecs map[uuid.UUID][]float32
-		if lexicalFloor > 0 {
-			ids := make([]uuid.UUID, 0, len(lexRows))
-			for _, f := range lexRows {
-				if f.ID.Valid {
-					ids = append(ids, f.ID.Bytes)
-				}
+		for _, cl := range cs {
+			if budget <= 0 {
+				break
 			}
-			fetched, err := w.qdrant.GetFactVectorsByIDs(ctx, ids)
-			if err != nil {
-				log.Printf("annotate_report: lexical gate vector fetch for sentence %d of report %s failed: %v", c.Index, args.ReportID, err)
-				// Without vectors we can't apply the gate. Be
-				// conservative: skip this sentence's lexical
-				// fallback rather than accept unverified hits.
-				continue
-			}
-			factVecs = make(map[uuid.UUID][]float32, len(fetched))
-			for fid, fp := range fetched {
-				factVecs[fid] = fp.Vector
-			}
-		}
-
-		for _, f := range lexRows {
-			if !f.ID.Valid {
-				continue
-			}
-			fid := f.ID.Bytes
-			var score float64
-			if lexicalFloor > 0 {
-				vec, ok := factVecs[fid]
-				if !ok {
-					// Vector missing from Qdrant (fact deleted
-					// between Postgres query and vector fetch).
-					// Drop rather than accept unverified.
-					lexicalDroppedCount++
+			switch cl.Type {
+			case claims.ClaimNumeric:
+				// tsvector search on the claim Term. Reuses the
+				// existing extractNumericTsquery + the lexical-floor
+				// gate. The Term is the verbatim value + unit, so
+				// the tsquery is tighter than the legacy whole-
+				// sentence one.
+				tsq := extractNumericTsquery(cl.Term)
+				if tsq == "" {
 					continue
 				}
-				cos := cosineSimilarity(resp.Embeddings[i], vec)
-				if cos < lexicalFloor {
-					// Below the semantic gate — the numeric
-					// token match is coincidental (different
-					// claim context). Drop.
-					lexicalDroppedCount++
+				lexRows, lerr := queries.SearchFactsByNumericTokens(ctx, store.SearchFactsByNumericTokensParams{
+					RepositoryID: repoID,
+					Tsquery:      tsq,
+					ExcludeIds:   excludeIDs,
+					RowLimit:     int32(budget),
+				})
+				if lerr != nil {
+					log.Printf("annotate_report: claim tsvector search for sentence %d of report %s failed: %v", c.Index, args.ReportID, lerr)
 					continue
 				}
-				score = cos
+				if len(lexRows) == 0 {
+					continue
+				}
+				// Apples-to-oranges gate. Reuse the sentence
+				// embedding from the candidate array.
+				sentVec, ok := candidateEmbeddingByIndex[c.Index]
+				var factVecs map[uuid.UUID][]float32
+				if ok && lexicalFloor > 0 {
+					ids := make([]uuid.UUID, 0, len(lexRows))
+					for _, f := range lexRows {
+						if f.ID.Valid {
+							ids = append(ids, f.ID.Bytes)
+						}
+					}
+					fetched, ferr := w.qdrant.GetFactVectorsByIDs(ctx, ids)
+					if ferr != nil {
+						log.Printf("annotate_report: claim gate vector fetch for sentence %d of report %s failed: %v", c.Index, args.ReportID, ferr)
+						continue
+					}
+					factVecs = make(map[uuid.UUID][]float32, len(fetched))
+					for fid, fp := range fetched {
+						factVecs[fid] = fp.Vector
+					}
+				}
+				for _, f := range lexRows {
+					if !f.ID.Valid {
+						continue
+					}
+					fid := f.ID.Bytes
+					if excludeSet[fid] {
+						continue
+					}
+					var score float64
+					if lexicalFloor > 0 {
+						vec, ok := factVecs[fid]
+						if !ok {
+							lexicalDroppedCount++
+							continue
+						}
+						cos := cosineSimilarity(sentVec, vec)
+						if cos < lexicalFloor {
+							lexicalDroppedCount++
+							continue
+						}
+						score = cos
+					}
+					sentenceHits[c.Index] = append(sentenceHits[c.Index], qdrantstore.Hit{
+						ID:    fid,
+						Score: float32(score),
+					})
+					excludeSet[fid] = true
+					excludeIDs = append(excludeIDs, uuidToPg(fid))
+					lexicalHitCount++
+					hitCount++
+					budget--
+				}
+			case claims.ClaimCausal, claims.ClaimComparison, claims.ClaimQuotation, claims.ClaimDefinition, claims.ClaimOther:
+				// Prose claim: embed the claim Term, search Qdrant
+				// scoped to the repo. Skip when the embedding
+				// provider isn't available (defensive — the worker
+				// already checked it once, but the claim extractor
+				// could run with a different provider).
+				if w.embeddingProvider == nil {
+					continue
+				}
+				embedResp, eerr := w.embeddingProvider.Embed(ctx, pool.Pool, ai.EmbeddingRequest{
+					Model:  w.embeddingCfg.Model,
+					Inputs: []string{cl.Term},
+					TaskID: ptrString(jobIDStr),
+					Attribution: ai.Attribution{
+						RepositoryID: args.RepositoryID,
+						SourceID:     args.ReportID,
+						Operation:    "claim_embedding",
+					},
+				})
+				if eerr != nil || len(embedResp.Embeddings) == 0 {
+					if eerr != nil {
+						log.Printf("annotate_report: claim embedding for sentence %d of report %s failed: %v", c.Index, args.ReportID, eerr)
+					}
+					continue
+				}
+				claimVec := embedResp.Embeddings[0]
+				claimHits, herr := w.qdrant.SearchSimilar(ctx, claimVec, repoUUID, uuid.Nil, float32(threshold), budget)
+				if herr != nil {
+					log.Printf("annotate_report: claim qdrant search for sentence %d of report %s failed: %v", c.Index, args.ReportID, herr)
+					continue
+				}
+				for _, h := range claimHits {
+					if excludeSet[h.ID] {
+						continue
+					}
+					sentenceHits[c.Index] = append(sentenceHits[c.Index], h)
+					excludeSet[h.ID] = true
+					excludeIDs = append(excludeIDs, uuidToPg(h.ID))
+					proseHitCount++
+					hitCount++
+					budget--
+				}
 			}
-			sentenceHits[c.Index] = append(sentenceHits[c.Index], qdrantstore.Hit{
-				ID:    fid,
-				Score: float32(score),
-			})
-			lexicalHitCount++
-			hitCount++
 		}
 	}
-	if lexicalHitCount > 0 || lexicalDroppedCount > 0 {
-		log.Printf("annotate_report: hybrid retrieval for report %s — %d lexical hits added, %d dropped by semantic floor %.2f",
-			args.ReportID, lexicalHitCount, lexicalDroppedCount, lexicalFloor)
+	if lexicalHitCount > 0 || lexicalDroppedCount > 0 || proseHitCount > 0 {
+		log.Printf("annotate_report: claim-driven retrieval for report %s — %d numeric hits added, %d numeric dropped by semantic floor %.2f, %d prose hits added",
+			args.ReportID, lexicalHitCount, lexicalDroppedCount, lexicalFloor, proseHitCount)
+	}
+
+	// Persist direct citations as extras (posture="supports",
+	// score=1.0). These bypass the posture classifier (the author's
+	// explicit citation overrides the LLM) and the maxFacts cap
+	// (they sit alongside the auto-retrieved top-N hits).
+	directCitationCount := 0
+	for sidx, ids := range directCitations {
+		// Find the candidate's text by sentence_index (the
+		// chunker's index is the source of truth for both).
+		var sentenceText string
+		for _, c := range candidates {
+			if c.Index == sidx {
+				sentenceText = c.Text
+				break
+			}
+		}
+		if sentenceText == "" {
+			// The direct citation landed on a sentence that wasn't a
+			// candidate (e.g. a short heading below min_runes). Skip
+			// — we have no candidate sentence_index slot for it.
+			// (The chunker splits headings as their own unit, so the
+			// fact:uuid would be in that heading's text; persisting
+			// it under the heading's sentence_index is the right
+			// thing if the heading was a candidate. If it wasn't,
+			// the citation is on a too-short unit and we drop it
+			// rather than synthesize a candidate slot.)
+			continue
+		}
+		ps := string(posture.Supports)
+		for _, id := range ids {
+			if !directCitationValid[id] {
+				continue
+			}
+			factID := uuidToPg(id)
+			if !factID.Valid {
+				continue
+			}
+			if err := queries.AddReportAnnotation(ctx, store.AddReportAnnotationParams{
+				ReportID:      reportID,
+				SentenceIndex: int32(sidx),
+				SentenceText:  sentenceText,
+				FactID:        factID,
+				Score:         1.0,
+				Posture:       &ps,
+			}); err != nil {
+				log.Printf("annotate_report: adding direct citation (report %s, sentence %d, fact %s): %v", args.ReportID, sidx, id, err)
+				continue
+			}
+			directCitationCount++
+		}
 	}
 
 	// Decide whether the posture classifier runs for this report.
@@ -475,38 +763,57 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 					factText[f.ID.Bytes] = f.Text
 				}
 			}
-			// Build the SentenceFacts batches the classifier
-			// consumes (one batch of BatchSize sentences per LLM
-			// call).
-			batchSize := w.reportsCfg.PostureClassifier.BatchSizeOr(8)
-			var batches []posture.SentenceFacts
-			for _, c := range candidates {
-				hits, ok := sentenceHits[c.Index]
-				if !ok || len(hits) == 0 {
+		// Build the SentenceFacts batches the classifier
+		// consumes (one batch of BatchSize sentences per LLM
+		// call).
+		//
+		// Context window: each batch entry carries up to
+		// ctxBefore/ctxAfter surrounding sentences from the FULL
+		// sentence array (not just the candidates that passed the
+		// min-runes filter). A heading or short list marker that
+		// was too short to be a candidate itself is still useful
+		// disambiguation context for the longer sentence that
+		// follows it, so context is sourced from `sentences`
+		// (every chunk) rather than `candidates` (filtered). The
+		// window is clamped to the available range — the first
+		// sentence yields fewer than ctxBefore context entries
+		// (no synthesized padding at the report boundary).
+		sentenceByTextIndex := make(map[int]string, len(sentences))
+		for _, s := range sentences {
+			sentenceByTextIndex[s.Index] = s.Text
+		}
+		batchSize := w.reportsCfg.PostureClassifier.BatchSizeOr(8)
+		var batches []posture.SentenceFacts
+		for _, c := range candidates {
+			hits, ok := sentenceHits[c.Index]
+			if !ok || len(hits) == 0 {
+				continue
+			}
+			sf := posture.SentenceFacts{
+				SentenceIndex: c.Index,
+				SentenceText: c.Text,
+				ContextBefore: contextWindowBefore(sentenceByTextIndex, c.Index, ctxBefore),
+				ContextAfter:  contextWindowAfter(sentenceByTextIndex, c.Index, ctxAfter),
+				Claims:        sentenceClaims[c.Index],
+			}
+			for _, h := range hits {
+				text, ok := factText[h.ID]
+				if !ok {
 					continue
 				}
-				sf := posture.SentenceFacts{
-					SentenceIndex: c.Index,
-					SentenceText: c.Text,
-				}
-				for _, h := range hits {
-					text, ok := factText[h.ID]
-					if !ok {
-						continue
-					}
-					sf.Facts = append(sf.Facts, posture.FactCandidate{ID: h.ID, Text: text})
-				}
-				if len(sf.Facts) > 0 {
-					batches = appendBatches(batches, sf, batchSize)
-				}
+				sf.Facts = append(sf.Facts, posture.FactCandidate{ID: h.ID, Text: text})
 			}
+			if len(sf.Facts) > 0 {
+				batches = appendBatches(batches, sf, batchSize)
+			}
+		}
 			// Run batches with bounded concurrency. Each batch
 			// produces one LLM call; we cap in-flight calls at
 			// MaxConcurrent. A batch failure logs and falls back to
 			// keep-all for that batch (posture = NULL) so one flaky
 			// LLM call doesn't fail the whole report.
 			maxConc := w.reportsCfg.PostureClassifier.MaxConcurrentOr(4)
-			maxTokens := w.reportsCfg.PostureClassifier.MaxTokensOr(800)
+			maxTokens := w.reportsCfg.PostureClassifier.MaxTokensOr(4000)
 
 			classifications, dropCount, err := w.classifyBatches(ctx, pool.Pool, batches, postureModel, postureModelOverride, maxConc, maxTokens, jobIDStr, args, postureClassifier)
 			if err != nil {
@@ -914,4 +1221,189 @@ func cosineSimilarity(a, b []float32) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
+// contextWindowBefore returns up to `n` sentences immediately before
+// the candidate at sentenceIndex, ordered oldest → newest (so the
+// classifier reads them in narrative order). The window is clamped
+// to the available range — indices < 0 are skipped (no synthesized
+// padding at the report boundary). Returns an empty slice when n is
+// 0 or the candidate is the first sentence. Sourced from the FULL
+// sentence array (every chunk, including short ones the min-runes
+// filter dropped from the candidate set) so a heading or list
+// marker can still disambiguate the longer sentence that follows.
+func contextWindowBefore(sentences map[int]string, sentenceIndex, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]string, 0, n)
+	for i := sentenceIndex - n; i < sentenceIndex; i++ {
+		if i < 0 {
+			continue
+		}
+		if t, ok := sentences[i]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// contextWindowAfter returns up to `n` sentences immediately after
+// the candidate at sentenceIndex, in narrative order. The window is
+// clamped to the available range — indices past the last sentence
+// are skipped. Returns an empty slice when n is 0 or the candidate
+// is the last sentence. Sourced from the FULL sentence array so a
+// short heading following the candidate can still serve as context.
+func contextWindowAfter(sentences map[int]string, sentenceIndex, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]string, 0, n)
+	for i := sentenceIndex + 1; i <= sentenceIndex+n; i++ {
+		if t, ok := sentences[i]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// directCitationPattern matches the synthesis convention for
+// inline fact citations:
+//   [text](<fact:uuid>)   (text citation)
+//   ![alt](<fact:uuid>)   (image citation)
+// The link target is the literal string "fact:" followed by a
+// canonical UUID. The angle brackets are part of the markdown link
+// target delimiters (the synthesizer emits them so a UUID
+// containing no special markdown chars still parses as one link
+// target). The pattern is permissive about the surrounding
+// markdown link syntax so it catches both the canonical form and
+// minor variants (no angle brackets, extra whitespace); the UUID
+// is the load-bearing part.
+var directCitationPattern = regexp.MustCompile(`fact:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`)
+
+// extractDirectCitations scans each candidate sentence's text for
+// inline fact:uuid citations and returns a map sentence_index ->
+// []fact_id. A sentence may carry multiple direct citations (the
+// synthesis convention allows several [text](<fact:uuid>) links in
+// one sentence). Duplicate fact_ids within a sentence are deduped
+// (the same fact cited twice in one sentence is one annotation).
+// The ids are returned in the order they appear in the text so the
+// persistence step writes them in a stable, reader-facing order.
+//
+// The caller is responsible for validating that each id refers to
+// an existing fact in the repository (the author may have
+// referenced a fact that was since deleted); invalid ids are
+// dropped at persistence time.
+func extractDirectCitations(candidates []decomposition.Chunk) map[int][]uuid.UUID {
+	out := make(map[int][]uuid.UUID)
+	for _, c := range candidates {
+		matches := directCitationPattern.FindAllStringSubmatch(c.Text, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		seen := make(map[uuid.UUID]bool, len(matches))
+		var ids []uuid.UUID
+		for _, m := range matches {
+			id, err := uuid.Parse(m[1])
+			if err != nil {
+				continue
+			}
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if len(ids) > 0 {
+			out[c.Index] = ids
+		}
+	}
+	return out
+}
+
+// extractClaimsForReport runs the claim extractor over the report's
+// candidate sentences in batches of BatchSize, with bounded
+// concurrency. Returns a map sentence_index -> []Claim (sentences
+// with no claims are absent from the map). A batch failure logs and
+// the sentences in that batch get no claims (the worker falls back
+// to embedding-only retrieval for them); the report still annotates.
+// Mirrors the classifyBatches concurrency pattern.
+func (w *AnnotateReportWorker) extractClaimsForReport(
+	ctx context.Context,
+	db store.DBTX,
+	candidates []decomposition.Chunk,
+	extractor claims.Extractor,
+	modelOverride string,
+	jobIDStr string,
+	args AnnotateReportArgs,
+) (map[int][]claims.Claim, error) {
+	batchSize := w.reportsCfg.ClaimExtractor.BatchSizeOr(8)
+	// Build batches of sentences. Each batch is a slice of
+	// SentenceInput. Unlike the posture batches (which are keyed
+	// by fact count), claim batches are keyed by sentence count
+	// (one LLM call per BatchSize sentences).
+	var batches [][]claims.SentenceInput
+	cur := make([]claims.SentenceInput, 0, batchSize)
+	for _, c := range candidates {
+		cur = append(cur, claims.SentenceInput{Index: c.Index, Text: c.Text})
+		if len(cur) >= batchSize {
+			batches = append(batches, cur)
+			cur = make([]claims.SentenceInput, 0, batchSize)
+		}
+	}
+	if len(cur) > 0 {
+		batches = append(batches, cur)
+	}
+
+	maxConc := w.reportsCfg.ClaimExtractor.MaxConcurrentOr(6)
+	maxTokens := w.reportsCfg.ClaimExtractor.MaxTokensOr(8000)
+
+	sem := make(chan struct{}, maxConc)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	out := make(map[int][]claims.Claim)
+	var firstErr error
+	var once sync.Once
+
+	for _, batch := range batches {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		wg.Add(1)
+		go func(b []claims.SentenceInput) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			res, err := extractor.Extract(ctx, db, claims.ExtractRequest{
+				Sentences: b,
+				Model:     modelOverride,
+				MaxTokens: maxTokens,
+				TaskID:    jobIDStr,
+				Attribution: ai.Attribution{
+					RepositoryID: args.RepositoryID,
+					SourceID:     args.ReportID,
+					Operation:    "claim_extraction",
+				},
+			})
+			if err != nil {
+				log.Printf("annotate_report: claim extraction batch failed (sentences %d-%d); falling back to embedding-only for these: %v",
+					b[0].Index, b[len(b)-1].Index, err)
+				once.Do(func() { firstErr = err })
+				return
+			}
+			mu.Lock()
+			for _, sc := range res {
+				out[sc.SentenceIndex] = sc.Claims
+			}
+			mu.Unlock()
+		}(batch)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		log.Printf("annotate_report: claim extraction had %d batch-level failures; affected sentences fall back to embedding-only", countBatchErrs(firstErr))
+	}
+	return out, nil
 }

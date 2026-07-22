@@ -42,8 +42,14 @@ const defaultOpenRouterEmbedBatchSize = 32
 
 func NewOpenRouterProvider(apiKey string, models []ModelInfo) *OpenRouterProvider {
 	return &OpenRouterProvider{
-		apiKey:          apiKey,
-		httpClient:      &http.Client{Timeout: 120 * time.Second},
+		apiKey: apiKey,
+		// 10m comfortably exceeds the retry PerCallTO (5m) so a
+		// slow stream isn't killed mid-decode by the HTTP client.
+		// The historical hardcoded 240s was shorter than the worker
+		// LLM timeout (20m) and could kill a streaming decode the
+		// worker would otherwise have tolerated. Override via
+		// WithHTTPTimeout from cfg.Providers.AI.OpenRouter.HTTPTimeout.
+		httpClient:      &http.Client{Timeout: 10 * time.Minute},
 		models:          models,
 		embedBatchSize:  defaultOpenRouterEmbedBatchSize,
 	}
@@ -61,8 +67,21 @@ func (p *OpenRouterProvider) WithEmbedBatchSize(n int) *OpenRouterProvider {
 	return p
 }
 
+// WithHTTPTimeout overrides the underlying http.Client's timeout.
+// Values <=0 fall back to 10m. Used by NewOpenRouterProviderFromConfig
+// to apply cfg.Providers.AI.OpenRouter.HTTPTimeout.
+func (p *OpenRouterProvider) WithHTTPTimeout(d time.Duration) *OpenRouterProvider {
+	if d <= 0 {
+		d = 10 * time.Minute
+	}
+	p.httpClient = &http.Client{Timeout: d}
+	return p
+}
+
 func NewOpenRouterProviderFromConfig(cfg config.OpenRouterProviderConfig, models []ModelInfo) *OpenRouterProvider {
-	return NewOpenRouterProvider(cfg.APIKey, models).WithEmbedBatchSize(cfg.EmbedBatchSize)
+	return NewOpenRouterProvider(cfg.APIKey, models).
+		WithEmbedBatchSize(cfg.EmbedBatchSize).
+		WithHTTPTimeout(cfg.HTTPTimeoutOr(0))
 }
 
 type openRouterRequest struct {
@@ -155,7 +174,7 @@ func (p *OpenRouterProvider) Describe() ProviderDescription {
 		Requires:    "OPENROUTER_API_KEY or providers.ai.openrouter.api_key",
 		Configured:  true,
 		Models:      p.models,
-		Timeout:     "120s",
+		Timeout:     "240s",
 		Notes:       "Models are configured in providers.ai.models. Supports reasoning_effort for thinking models.",
 	}
 }

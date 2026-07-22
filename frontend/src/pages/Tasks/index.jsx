@@ -4,6 +4,7 @@ import Button from "../../components/Button";
 import Card from "../../components/Card";
 import Layout from "../../components/Layout";
 import { useRBAC } from "../../store/rbac";
+import { useRepository } from "../../store/repository";
 import JobDetail from "./JobDetail";
 import TasksFilters from "./TasksFilters";
 import TasksStats from "./TasksStats";
@@ -13,8 +14,10 @@ import { useTasks } from "./useTasks";
 export default function Tasks() {
   const t = useTasks();
   const rbac = useRBAC();
+  const repo = useRepository();
   const [selectedJob, setSelectedJob] = createSignal(null);
   const canRescue = () => rbac.hasPermission("task", "manage");
+  const canReextract = () => rbac.hasPermission("repositories", "manage");
 
   const reload = () => {
     setSelectedJob(null);
@@ -37,6 +40,11 @@ export default function Tasks() {
           canRescue={canRescue()}
           rescuing={t.rescuing()}
           onRescue={t.rescueStuckJobs}
+          canReextract={canReextract()}
+          reextracting={t.reextracting()}
+          onReextract={t.reextractConcepts}
+          repositories={repo.repositories()}
+          currentRepo={repo.currentRepo()}
         />
         <Show
           when={!selectedJob()}

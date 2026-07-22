@@ -17,7 +17,15 @@ const PAGE_SIZE = 50;
 // Returns an object with the signals + actions the view binds to.
 // The signals are Solid accessors; the view reads them in JSX and
 // calls the actions on user input.
-export function useTasks() {
+//
+// The optional repoSlug argument switches the hook from the
+// system-wide endpoints (api.listTasks / api.getTaskStats) to the
+// per-repo scoped ones (api.listRepoTasks / api.getRepoTaskStats).
+// The RepoTasks page passes the current repo's slug; the system
+// Tasks page leaves it undefined. Rescue is always system-side
+// (the repo page passes canRescue=false to the stats card so the
+// rescue action is never invoked from the repo page).
+export function useTasks(repoSlug) {
   const [state, setState] = createSignal("");
   const [kind, setKind] = createSignal("");
   const [queue, setQueue] = createSignal("");
@@ -30,6 +38,7 @@ export function useTasks() {
   const [stats, setStats] = createSignal(null);
   const [statsLoading, setStatsLoading] = createSignal(true);
   const [rescuing, setRescuing] = createSignal(false);
+  const [reextracting, setReextracting] = createSignal(false);
 
   // fetchPage applies current filters + optional cursor. append
   // concatenates (Load more); otherwise replaces (initial load +
@@ -47,7 +56,9 @@ export function useTasks() {
       if (kind()) params.kind = kind();
       if (queue()) params.queue = queue();
       if (pageCursor) params.cursor = pageCursor;
-      const data = await api.listTasks(params);
+      const data = repoSlug
+        ? await api.listRepoTasks(repoSlug, params)
+        : await api.listTasks(params);
       const next = data.jobs || [];
       setJobs((cur) => (append ? [...cur, ...next] : next));
       setHasMore(!!data.has_more);
@@ -80,7 +91,7 @@ export function useTasks() {
   async function fetchStats() {
     setStatsLoading(true);
     try {
-      const data = await api.getTaskStats();
+      const data = repoSlug ? await api.getRepoTaskStats(repoSlug) : await api.getTaskStats();
       setStats(data);
     } catch {
       setStats(null);
@@ -116,6 +127,26 @@ export function useTasks() {
     }
   }
 
+  // reextractConcepts calls the admin endpoint that clears
+  // retryable fact_concept_skips + unresolved fact_candidates
+  // for a repo and enqueues a repo-wide extract_concepts job.
+  // On-demand recovery from the historical permanent-skip bug.
+  // Returns the API result so the caller can surface a toast.
+  async function reextractConcepts(repoID, maxAttempts) {
+    setReextracting(true);
+    setAlert(null);
+    try {
+      const result = await api.reextractRepoConcepts(repoID, maxAttempts);
+      await fetchStats();
+      return result;
+    } catch (err) {
+      setAlert({ variant: "error", message: err.message });
+      return null;
+    } finally {
+      setReextracting(false);
+    }
+  }
+
   // Reload whenever a filter signal flips. The lastFilters guard
   // prevents a loop on setJobs (createEffect re-runs whenever a
   // signal it read changes; we only fetch when the filter combo
@@ -145,9 +176,11 @@ export function useTasks() {
     stats,
     statsLoading,
     rescuing,
+    reextracting,
     reload,
     loadMore,
     reloadStats,
     rescueStuckJobs,
+    reextractConcepts,
   };
 }

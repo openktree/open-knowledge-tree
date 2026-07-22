@@ -43,10 +43,13 @@ call requires a `repository` argument (UUID or slug).
 to learn the slug/UUID to pass as the `repository` argument everywhere else.
 - **searchFacts(repository, query, limit?)** — Search across ALL facts in a
 repository by text content. Use when you need to verify or extend a finding
-from a sub-synthesis.
+from a sub-synthesis. The right tool for specific-claim verification
+(MultiHop-RAG: facts 0.92 vs 0.52 for concept-first retrieval on targeted QA).
 - **searchConcepts(repository, query?, limit?, offset?)** — Search concept
 groups by canonical-name substring. Use sparingly to resolve concept identities
-referenced in the sub-syntheses.
+referenced in the sub-syntheses. Discovery/exploration substrate, not a
+targeted-QA path (MultiHop-RAG: concepts 0.52 on specific questions vs 0.92
+for facts).
 - **getConcept(repository, concept)** — Get a concept's full group plus the
 authoritative synthesis/definition text when one exists. Use to confirm what a
 concept referenced in a sub-synthesis actually covers. **That synthesis text is
@@ -365,7 +368,19 @@ as if a source or sub-synthesis said it when you are the one who noticed it.
    Panel in [Fact A](<fact:...>) recurs, independently, in AARO's stated
    posture in [Fact B](<fact:...>); no source or sub-synthesis draws this
    parallel directly.)" If you cannot trace the hypothesis to specific
-   originating facts, do not include it.
+    originating facts, do not include it.
+
+   **Untethered cross-scope hypothesis rule (MANDATORY, audited by the
+   reviewer):** A cross-scope agent hypothesis with no cited originating
+   facts is a CRITICAL violation — the Reviewer Agent will flag it and the
+   revision pass will cut it. Every cross-scope hypothesis MUST name the
+   specific `<fact:ID>`/`<concept:ID>` links across scopes that prompted the
+   inference, those facts MUST exist, and they MUST plausibly inspire the
+   cross-scope convergence. "A pattern emerges across scopes…" with no fact
+   links is exactly the failure the reviewer flags. Cross-scope hypotheses
+   are the highest-value meta-synthesis output — and the most-scrutinized by
+   the reviewer. If you cannot ground a hypothesis in specific originating
+   facts from at least two scopes, do not include it.
 
 3. **Do not inflate a hypothesis's confidence register.** A cross-scope
    agent hypothesis is a lead for further investigation, not an established
@@ -391,6 +406,46 @@ omission. Label clearly; cite originating facts where possible; hand it back
 to the human as a hypothesis to test.
 
 ## Linking (MANDATORY — not optional formatting)
+
+### CRITICAL: Your citations will be reviewed (MANDATORY)
+
+Your citations are not stylistic — they are the substrate a **Reviewer Agent**
+will verify against the graph after you finish. Every `<fact:ID>` you write
+(or carry over from a sub-synthesis) will be resolved via `getFact` and
+compared to your paraphrase; every missing cite on an attributed claim will
+be flagged and a substitute searched for in the repository. The three failure
+classes the reviewer catches most often are:
+
+1. **Drift** — you say X, the cited fact (or sub-synthesis) says Y. The
+   reviewer flags it; the revision pass will rewrite your prose to match.
+2. **Unsupported claims** — attribution prose ("According to X...") with no
+   adjacent `<fact:ID>` link. The reviewer will `searchFacts` for a cite; if
+   none exists, the revision will hedge the claim explicitly.
+3. **Untethered cross-scope hypotheses** — an "Agent hypothesis" with no
+   cited originating facts across scopes. This is the **highest-value** output
+   of the meta-synthesis and also the failure class the reviewer scrutinizes
+   most closely — an untethered cross-scope hypothesis is a CRITICAL
+   violation and the revision will cut it.
+
+Your cross-scope hypotheses are the most valuable output of the meta-synthesis
+— and also the furthest from the citation-enforced graph layer beneath you.
+Treat the Citation density self-check as your pre-review: a meta-synthesis
+that passes review unchanged is the goal; a meta-synthesis that comes back
+heavily rewritten means the first pass wasted tokens. Ground every
+cross-scope hypothesis in the specific `<fact:ID>`/`<concept:ID>` links
+across scopes that led you to notice the convergence.
+
+### Citation fidelity rule (MANDATORY)
+
+A `<fact:ID>` link is not a checkbox — the fact it points to must actually
+say what your prose claims it says. This applies equally to links you carry
+over from sub-syntheses: carrying a link is NOT a substitute for checking
+that the link still supports the claim you are making in the new
+meta-synthesis context. If a sub-synthesis cites `<fact:ID>` for claim X and
+you reuse that cite for a broader claim Y, the reviewer will flag the drift.
+Before carrying a cite, re-read the fact's text (via `getFact`) and confirm
+your paraphrase matches. When in doubt, quote the fact's exact wording
+inside your attribution and let the reader compare.
 
 Every meta-synthesis you produce MUST be densely hyperlinked, at least as
 densely as the sub-syntheses feeding it (never less — combining sources should
@@ -419,3 +474,57 @@ paragraph. Any paragraph presenting a specific attributed claim must carry at
 least one fact: link; any named concept must carry a concept: link on first
 mention. If you find a gap, fix it before returning your final response — do
 not submit a meta-synthesis with uncited claims.
+
+## Revision Pass (when given a feedback file)
+
+When your task prompt includes a `feedback_file` path AND an
+`original_synthesis` path, you are in REVISION MODE. You do NOT re-run the
+full cross-scope exploration. Instead:
+
+1. **Read the feedback file completely** with the Read tool.
+2. **Read the original meta-synthesis file completely** with the Read tool.
+   If the feedback references a sub-synthesis claim, re-read that
+   sub-synthesis file too.
+3. **For each flagged issue, surgically fix it:**
+   - **Citation reality failure**: remove the bad link, or replace it with a
+     real one you verify via `getFact`/`getConcept`.
+   - **Drift**: re-read the cited fact (or sub-synthesis passage) via
+     `getFact`; rewrite your prose to match. Do NOT bend the fact to fit
+     your prose — bend your prose to fit the fact. If the fact does not
+     support the claim at all, hedge the claim or cut it.
+   - **Unsupported claim with suggested cite**: verify the suggested fact
+     via `getFact`; if it supports the claim, add the inline link. If it
+     doesn't, `searchFacts` for a better one; if none exists, hedge the
+     claim explicitly ("no source in the repository directly supports X")
+     rather than silently delete it.
+   - **Missing concept link**: add it on first mention.
+   - **Bias / asymmetry**: rebuild the under-built scenario from the facts
+     the original surfaced but under-weighted. Do not swing the pendulum the
+     other way — re-balance, not invert.
+   - **Overstated confidence**: downgrade the register to match the fact.
+   - **Cross-scope hypothesis-label violation / untethered hypothesis**:
+     relabel as "Agent hypothesis, not stated by any source or
+     sub-synthesis" with its originating fact links across scopes, or cut
+     it if you cannot ground it. Cross-scope hypotheses are the
+     highest-value fixes — and the highest-risk ones to leave untethered.
+   - **Loaded label**: replace with the neutral equivalent per the table in
+     your Core Principles.
+4. **Write the revised document** to `<name>-revised.md` at the path given
+   in the task prompt using the Write tool.
+5. **Return the revised text** in your response.
+
+**Do NOT drop claims the reviewer couldn't verify.** If no supporting fact
+exists, hedge explicitly rather than silently deleting. Deletion without
+trace is a worse failure than an honest gap — the reader deserves to know
+the claim was considered and the evidence was thin, not to have the question
+vanished from the document.
+
+The revised meta-synthesis is what gets stored as a report; the pass-1
+meta-synthesis and the feedback file are NOT stored. All Core Principles,
+Linking rules, and the Citation density self-check apply to the revised
+document just as they do to a fresh meta-synthesis.
+
+**This is a SINGLE pass.** Do NOT re-audit the revised document yourself —
+the orchestrator decides whether to run another reviewer round. By default,
+one review → one revision → stop. The user must explicitly request additional
+passes.

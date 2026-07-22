@@ -17,6 +17,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -609,15 +610,25 @@ func (h *RepositorySettings) GetSettings(w http.ResponseWriter, r *http.Request)
 	// similarity_threshold = inherit global default (0.84). Absent
 	// row = inherit both threshold and posture_classifier_enabled.
 	reportsSection := map[string]interface{}{
-		"similarity_threshold":       nil,
-		"posture_classifier_enabled": h.deps.Config.Providers.Reports.PostureClassifier.Enabled,
-		"default_threshold":          h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
+		"similarity_threshold":          nil,
+		"posture_classifier_enabled":    h.deps.Config.Providers.Reports.PostureClassifier.Enabled,
+		"default_threshold":             h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
+		"context_window_before":         nil,
+		"default_context_window_before": int32(h.deps.Config.Providers.Reports.PostureClassifier.ContextWindowBeforeOr(2)),
+		"context_window_after":          nil,
+		"default_context_window_after":  int32(h.deps.Config.Providers.Reports.PostureClassifier.ContextWindowAfterOr(2)),
 	}
 	if repRow, repErr := h.deps.Store.GetRepositoryReportSettings(r.Context(), repoID); repErr == nil {
 		if repRow.SimilarityThreshold != nil {
 			reportsSection["similarity_threshold"] = *repRow.SimilarityThreshold
 		}
 		reportsSection["posture_classifier_enabled"] = repRow.PostureClassifierEnabled
+		if repRow.ContextWindowBefore != nil {
+			reportsSection["context_window_before"] = *repRow.ContextWindowBefore
+		}
+		if repRow.ContextWindowAfter != nil {
+			reportsSection["context_window_after"] = *repRow.ContextWindowAfter
+		}
 	} else if !errors.Is(repErr, pgx.ErrNoRows) {
 		log.Printf("repository_settings: reading report settings for GetSettings: %v", repErr)
 	}
@@ -760,6 +771,9 @@ func (h *RepositorySettings) SetProviderEnabled(w http.ResponseWriter, r *http.R
 	if h.gateInvalidator != nil {
 		h.gateInvalidator(repoID.String())
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.SourceProvider, repoID,
+		fmt.Sprintf("%s:%s", body.ProviderKind, body.ProviderID),
+		map[string]any{"provider_kind": body.ProviderKind, "provider_id": body.ProviderID, "enabled": body.Enabled})
 	httputil.WriteJSON(w, http.StatusOK, row)
 }
 
@@ -791,7 +805,7 @@ func (h *RepositorySettings) SetModelSetting(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	if !validKind {
-		httputil.WriteError(w, http.StatusBadRequest, "task_kind must be one of: fact_extraction, image_extraction, concept_extraction, alias_generation, summarization, synthesis, report_annotation")
+		httputil.WriteError(w, http.StatusBadRequest, "task_kind must be one of: fact_extraction, image_extraction, concept_extraction, alias_generation, summarization, synthesis, report_annotation, claim_extraction")
 		return
 	}
 	if body.ModelID != "" {
@@ -808,6 +822,11 @@ func (h *RepositorySettings) SetModelSetting(w http.ResponseWriter, r *http.Requ
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to clear model setting")
 			return
 		}
+		recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.AIProvider, repoID, body.TaskKind, map[string]any{
+			"task_kind": body.TaskKind,
+			"model_id":  nil,
+			"action":    "clear",
+		})
 		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"task_kind": body.TaskKind,
 			"model_id":  nil,
@@ -823,6 +842,10 @@ func (h *RepositorySettings) SetModelSetting(w http.ResponseWriter, r *http.Requ
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update model setting")
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.AIProvider, repoID, body.TaskKind, map[string]any{
+		"task_kind": body.TaskKind,
+		"model_id":  body.ModelID,
+	})
 	httputil.WriteJSON(w, http.StatusOK, row)
 }
 
@@ -840,6 +863,8 @@ func (h *RepositorySettings) GetReportSettings(w http.ResponseWriter, r *http.Re
 	}
 	globalMaxFacts := int32(h.deps.Config.Providers.Reports.MaxFactsPerSentenceOr(5))
 	globalLexicalFloor := h.deps.Config.Providers.Reports.LexicalSimilarityFloorOr(0.6)
+	globalCtxBefore := int32(h.deps.Config.Providers.Reports.PostureClassifier.ContextWindowBeforeOr(2))
+	globalCtxAfter := int32(h.deps.Config.Providers.Reports.PostureClassifier.ContextWindowAfterOr(2))
 	out := map[string]interface{}{
 		"similarity_threshold":       nil,
 		"posture_classifier_enabled": h.deps.Config.Providers.Reports.PostureClassifier.Enabled,
@@ -848,6 +873,10 @@ func (h *RepositorySettings) GetReportSettings(w http.ResponseWriter, r *http.Re
 		"default_max_facts":          globalMaxFacts,
 		"lexical_similarity_floor":  nil,
 		"default_lexical_floor":     globalLexicalFloor,
+		"context_window_before":      nil,
+		"default_context_window_before": globalCtxBefore,
+		"context_window_after":       nil,
+		"default_context_window_after":  globalCtxAfter,
 	}
 	row, err := h.deps.Store.GetRepositoryReportSettings(r.Context(), repoID)
 	if err == nil {
@@ -860,6 +889,12 @@ func (h *RepositorySettings) GetReportSettings(w http.ResponseWriter, r *http.Re
 		}
 		if row.LexicalSimilarityFloor != nil {
 			out["lexical_similarity_floor"] = *row.LexicalSimilarityFloor
+		}
+		if row.ContextWindowBefore != nil {
+			out["context_window_before"] = *row.ContextWindowBefore
+		}
+		if row.ContextWindowAfter != nil {
+			out["context_window_after"] = *row.ContextWindowAfter
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to read report settings")
@@ -874,11 +909,14 @@ func (h *RepositorySettings) GetReportSettings(w http.ResponseWriter, r *http.Re
 // { "similarity_threshold": float64|null,
 //   "posture_classifier_enabled": bool,
 //   "max_facts_per_sentence": int|null,
-//   "lexical_similarity_floor": float64|null }.
+//   "lexical_similarity_floor": float64|null,
+//   "context_window_before": int|null,
+//   "context_window_after": int|null }.
 // A null for any numeric field clears that override (inherit global
 // default). Ranges: similarity_threshold (0, 1]; max_facts_per_sentence
 // [1, 50]; lexical_similarity_floor [0, 1] (0 disables the semantic
-// gate on lexical hits entirely).
+// gate on lexical hits entirely); context_window_before / after
+// [0, 10] (0 disables context on that side; default 2/2).
 func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Request) {
 	repoID, ok := parseRepoID(w, r)
 	if !ok {
@@ -889,6 +927,8 @@ func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Re
 		PostureClassifierEnabled *bool   `json:"posture_classifier_enabled"`
 		MaxFactsPerSentence     *int32   `json:"max_facts_per_sentence"`
 		LexicalSimilarityFloor  *float64 `json:"lexical_similarity_floor"`
+		ContextWindowBefore     *int32   `json:"context_window_before"`
+		ContextWindowAfter      *int32   `json:"context_window_after"`
 	}
 	if err := httputil.DecodeBody(r, &body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
@@ -921,27 +961,51 @@ func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Re
 		}
 		lexicalFloor = &v
 	}
+	var ctxBefore *int32
+	if body.ContextWindowBefore != nil {
+		v := *body.ContextWindowBefore
+		if v < 0 || v > 10 {
+			httputil.WriteError(w, http.StatusBadRequest, "context_window_before must be in [0, 10]")
+			return
+		}
+		ctxBefore = &v
+	}
+	var ctxAfter *int32
+	if body.ContextWindowAfter != nil {
+		v := *body.ContextWindowAfter
+		if v < 0 || v > 10 {
+			httputil.WriteError(w, http.StatusBadRequest, "context_window_after must be in [0, 10]")
+			return
+		}
+		ctxAfter = &v
+	}
 	enabled := h.deps.Config.Providers.Reports.PostureClassifier.Enabled
 	if body.PostureClassifierEnabled != nil {
 		enabled = *body.PostureClassifierEnabled
 	}
-	// When all four fields are at their inherit-null state (threshold
+	// When all six fields are at their inherit-null state (threshold
 	// nil + enabled == global default + max_facts nil + lexical_floor
-	// nil), drop the override row so the repo inherits cleanly.
-	// Otherwise upsert.
+	// nil + context_before nil + context_after nil), drop the override
+	// row so the repo inherits cleanly. Otherwise upsert.
 	globalDefault := h.deps.Config.Providers.Reports.PostureClassifier.Enabled
 	globalMaxFacts := int32(h.deps.Config.Providers.Reports.MaxFactsPerSentenceOr(5))
 	globalLexicalFloor := h.deps.Config.Providers.Reports.LexicalSimilarityFloorOr(0.6)
-	if threshold == nil && body.PostureClassifierEnabled == nil && maxFacts == nil && lexicalFloor == nil {
+	globalCtxBefore := int32(h.deps.Config.Providers.Reports.PostureClassifier.ContextWindowBeforeOr(2))
+	globalCtxAfter := int32(h.deps.Config.Providers.Reports.PostureClassifier.ContextWindowAfterOr(2))
+	if threshold == nil && body.PostureClassifierEnabled == nil && maxFacts == nil && lexicalFloor == nil && ctxBefore == nil && ctxAfter == nil {
 		_ = h.deps.Store.DeleteRepositoryReportSettings(r.Context(), repoID)
 		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"similarity_threshold":       nil,
-			"posture_classifier_enabled": globalDefault,
-			"default_threshold":          h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
-			"max_facts_per_sentence":     nil,
-			"default_max_facts":          globalMaxFacts,
-			"lexical_similarity_floor":   nil,
-			"default_lexical_floor":      globalLexicalFloor,
+			"similarity_threshold":            nil,
+			"posture_classifier_enabled":      globalDefault,
+			"default_threshold":               h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
+			"max_facts_per_sentence":          nil,
+			"default_max_facts":               globalMaxFacts,
+			"lexical_similarity_floor":         nil,
+			"default_lexical_floor":           globalLexicalFloor,
+			"context_window_before":           nil,
+			"default_context_window_before":   globalCtxBefore,
+			"context_window_after":            nil,
+			"default_context_window_after":     globalCtxAfter,
 		})
 		return
 	}
@@ -951,16 +1015,20 @@ func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Re
 		PostureClassifierEnabled: enabled,
 		MaxFactsPerSentence:     maxFacts,
 		LexicalSimilarityFloor:  lexicalFloor,
+		ContextWindowBefore:     ctxBefore,
+		ContextWindowAfter:      ctxAfter,
 	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update report settings")
 		return
 	}
 	out := map[string]interface{}{
-		"posture_classifier_enabled": row.PostureClassifierEnabled,
-		"default_threshold":          h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
-		"default_max_facts":          globalMaxFacts,
-		"default_lexical_floor":      globalLexicalFloor,
+		"posture_classifier_enabled":      row.PostureClassifierEnabled,
+		"default_threshold":               h.deps.Config.Providers.Reports.SimilarityThresholdOr(0.84),
+		"default_max_facts":               globalMaxFacts,
+		"default_lexical_floor":           globalLexicalFloor,
+		"default_context_window_before":   globalCtxBefore,
+		"default_context_window_after":    globalCtxAfter,
 	}
 	if row.SimilarityThreshold != nil {
 		out["similarity_threshold"] = *row.SimilarityThreshold
@@ -977,6 +1045,24 @@ func (h *RepositorySettings) SetReportSettings(w http.ResponseWriter, r *http.Re
 	} else {
 		out["lexical_similarity_floor"] = nil
 	}
+	if row.ContextWindowBefore != nil {
+		out["context_window_before"] = *row.ContextWindowBefore
+	} else {
+		out["context_window_before"] = nil
+	}
+	if row.ContextWindowAfter != nil {
+		out["context_window_after"] = *row.ContextWindowAfter
+	} else {
+		out["context_window_after"] = nil
+	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Reports, repoID, "report_settings", map[string]any{
+		"similarity_threshold":       body.SimilarityThreshold,
+		"posture_classifier_enabled": body.PostureClassifierEnabled,
+		"max_facts_per_sentence":     body.MaxFactsPerSentence,
+		"lexical_similarity_floor":   body.LexicalSimilarityFloor,
+		"context_window_before":      body.ContextWindowBefore,
+		"context_window_after":       body.ContextWindowAfter,
+	})
 	httputil.WriteJSON(w, http.StatusOK, out)
 }
 //
@@ -1024,6 +1110,11 @@ func (h *RepositorySettings) AddContext(w http.ResponseWriter, r *http.Request) 
 		}
 		row = existing
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, body.Context, map[string]any{
+		"action":      "add_context",
+		"context":     body.Context,
+		"description": body.Description,
+	})
 	httputil.WriteJSON(w, http.StatusCreated, row)
 }
 
@@ -1064,6 +1155,11 @@ func (h *RepositorySettings) UpdateContext(w http.ResponseWriter, r *http.Reques
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update context")
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, ctxLabel, map[string]any{
+		"action":      "update_context",
+		"context":     ctxLabel,
+		"description": body.Description,
+	})
 	httputil.WriteJSON(w, http.StatusOK, row)
 }
 
@@ -1127,6 +1223,12 @@ func (h *RepositorySettings) MigrateContext(w http.ResponseWriter, r *http.Reque
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, ctxLabel, map[string]any{
+		"action":         "migrate_context",
+		"old_context":    ctxLabel,
+		"new_context":    body.TargetContext,
+		"job_id":         jobID,
+	})
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id":        jobID,
 		"old_context":   ctxLabel,
@@ -1175,6 +1277,10 @@ func (h *RepositorySettings) DeleteContext(w http.ResponseWriter, r *http.Reques
 	}); err != nil {
 		log.Printf("repository_settings: deleting context mapping for %q: %v", ctxLabel, err)
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, ctxLabel, map[string]any{
+		"action":  "delete_context",
+		"context": ctxLabel,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "context deleted"})
 }
 
@@ -1347,6 +1453,11 @@ func (h *RepositorySettings) UpsertContextMapping(w http.ResponseWriter, r *http
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to upsert context mapping")
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, body.LocalContext, map[string]any{
+		"action":           "upsert_context_mapping",
+		"local_context":    body.LocalContext,
+		"registry_context": body.RegistryContext,
+	})
 	httputil.WriteJSON(w, http.StatusOK, row)
 }
 
@@ -1378,6 +1489,10 @@ func (h *RepositorySettings) DeleteContextMappingHandler(w http.ResponseWriter, 
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete context mapping")
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, localContext, map[string]any{
+		"action":        "delete_context_mapping",
+		"local_context": localContext,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "mapping deleted"})
 }
 
@@ -1434,6 +1549,11 @@ func (h *RepositorySettings) SetUnmappedPolicy(w http.ResponseWriter, r *http.Re
 	if catchAll != nil {
 		resp["catch_all_context"] = *catchAll
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, "unmapped_policy", map[string]any{
+		"action":            "set_unmapped_policy",
+		"policy":            body.Policy,
+		"catch_all_context": catchAll,
+	})
 	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
@@ -1503,6 +1623,10 @@ func (h *RepositorySettings) ContributeAll(w http.ResponseWriter, r *http.Reques
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionIngestionStart, rbac.Objects.Repositories, repoID, "contribute_all", map[string]any{
+		"action": "contribute_all",
+		"job_id": jobID,
+	})
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id": jobID,
 		"status": "queued",
@@ -1537,6 +1661,10 @@ func (h *RepositorySettings) PullAllFromRegistry(w http.ResponseWriter, r *http.
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionIngestionStart, rbac.Objects.Repositories, repoID, "pull_all", map[string]any{
+		"action": "pull_all_from_registry",
+		"job_id": jobID,
+	})
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id": jobID,
 		"status": "queued",
@@ -1578,12 +1706,16 @@ func (h *RepositorySettings) SetAutoContribute(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if err := h.deps.Store.SetRepositoryAutoContribute(r.Context(), store.SetRepositoryAutoContributeParams{
-		ID:             repoID,
-		AutoContribute:  body.Enabled,
+		ID:            repoID,
+		AutoContribute: body.Enabled,
 	}); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update auto_contribute")
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, "auto_contribute", map[string]any{
+		"action":          "set_auto_contribute",
+		"auto_contribute": body.Enabled,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"auto_contribute": body.Enabled,
 	})
@@ -1729,6 +1861,12 @@ func (h *RepositorySettings) SetRegistrySettings(w http.ResponseWriter, r *http.
 		h.gateInvalidator(repoID.String())
 	}
 
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, newID, map[string]any{
+		"action":           "set_registry",
+		"registry_id":      newID,
+		"registry_enabled": newEnabled,
+		"allowed_models":   body.AllowedModels,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"registry_id":      newID,
 		"registry_enabled": newEnabled,
@@ -1804,6 +1942,11 @@ func (h *RepositorySettings) SetSyncLevels(w http.ResponseWriter, r *http.Reques
 		h.gateInvalidator(repoID.String())
 	}
 
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, "sync_levels", map[string]any{
+		"action":           "set_sync_levels",
+		"registry_push_level": newPush,
+		"registry_pull_level": newPull,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"registry_push_level": newPush,
 		"registry_pull_level": newPull,
@@ -1894,6 +2037,10 @@ func (h *RepositorySettings) SetContentTypes(w http.ResponseWriter, r *http.Requ
 		h.gateInvalidator(repoID.String())
 	}
 
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, "content_types", map[string]any{
+		"action":                 "set_content_types",
+		"allowed_content_types":  body.AllowedContentTypes,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"allowed_content_types": body.AllowedContentTypes,
 	})
@@ -2153,6 +2300,11 @@ func (h *RepositorySettings) SetPromptset(w http.ResponseWriter, r *http.Request
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update repository promptset")
 		return
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Promptset, repoID, "promptset", map[string]any{
+		"action":          "set_promptset",
+		"active_hash":     active,
+		"accepted_hashes": accepted,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"active_hash":     active,
 		"accepted_hashes": accepted,
@@ -2307,6 +2459,11 @@ func (h *RepositorySettings) SetContributor(w http.ResponseWriter, r *http.Reque
 	if newNamePtr != nil {
 		respName = *newNamePtr
 	}
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionProviderSet, rbac.Objects.Repositories, repoID, "contributor", map[string]any{
+		"action":      "set_contributor",
+		"display_name": respName,
+		"anonymous":    newAnonymous,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"display_name": respName,
 		"anonymous":    newAnonymous,

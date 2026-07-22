@@ -25,14 +25,29 @@ func NewOllamaCloudProvider(apiKey string, models []ModelInfo) *OllamaCloudProvi
 	return &OllamaCloudProvider{
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// 10m comfortably exceeds the retry PerCallTO (5m) so
+			// a slow Ollama Cloud generation isn't killed mid-
+			// stream by the HTTP client. Override via
+			// WithHTTPTimeout from cfg.Providers.AI.OllamaCloud.
+			// HTTPTimeout.
+			Timeout: 10 * time.Minute,
 		},
 		models: models,
 	}
 }
 
+// WithHTTPTimeout overrides the underlying http.Client's timeout.
+// Values <=0 fall back to 10m.
+func (p *OllamaCloudProvider) WithHTTPTimeout(d time.Duration) *OllamaCloudProvider {
+	if d <= 0 {
+		d = 10 * time.Minute
+	}
+	p.httpClient = &http.Client{Timeout: d}
+	return p
+}
+
 func NewOllamaCloudProviderFromConfig(cfg config.OllamaCloudProviderConfig, models []ModelInfo) *OllamaCloudProvider {
-	return NewOllamaCloudProvider(cfg.APIKey, models)
+	return NewOllamaCloudProvider(cfg.APIKey, models).WithHTTPTimeout(cfg.HTTPTimeoutOr(0))
 }
 
 type ollamaCloudChatRequest struct {

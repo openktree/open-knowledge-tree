@@ -152,7 +152,7 @@ task:
     # the LLM provider's rate limit, not Postgres.
     #
     # Heavy LLM-bound extraction/summarization/synthesis/decomposition
-    # queues get 100 workers each — the throughput knobs for
+    # queues get 50 workers each — the throughput knobs for
     # ingestion. Everything else (embedding, dedup, cleanup, refresh,
     # registry sync, reports, migration) gets 50, which is generous
     # for their lighter per-job cost.
@@ -167,30 +167,30 @@ task:
     # impersonation) well-saturated for the majority of URLs that
     # never reach FlareSolverr, while the heavy tier self-throttles.
     retrieve_source: 20
-    source_decomposition: 100
+    source_decomposition: 50
     embed_facts: 50
     deduplicate_facts: 50
-    extract_concepts: 100
+    extract_concepts: 50
     # refine_concepts resolves unresolved concept_candidates (LLM
     # alias-generation pass). It fans out from extract_concepts and
     # runs BEFORE summarize_concepts so the summarizer sees final
-    # canonical names. 100 workers lets the candidate backlog drain
+    # canonical names. 50 workers lets the candidate backlog drain
     # concurrently with extraction; the per-candidate advisory lock
     # keeps two workers from refining the same canonical at once.
-    refine_concepts: 100
+    refine_concepts: 50
     embed_concepts: 50
     cleanup_facts: 50
     # summarize_concepts is fanned out from extract_concepts in
-    # parallel with embed_concepts. 100 workers lets a large repo's
+    # parallel with embed_concepts. 50 workers lets a large repo's
     # concept chunks drain concurrently; the per-concept advisory
     # lock (ClaimConceptForSummary) keeps two workers from
     # summarizing the same concept at once.
-    summarize_concepts: 100
+    summarize_concepts: 50
     # Concept synthesis ("definition") is chained from
     # summarize_concepts: every time a slice is written/updated, one
-    # synthesize_concept job is enqueued. 100 workers lets synthesis
+    # synthesize_concept job is enqueued. 50 workers lets synthesis
     # keep up with the summarization fan-out.
-    synthesize_concept: 100
+    synthesize_concept: 50
     # Concept-relations matview refresh. The refresh is deduped per-
     # database (only one runs at a time) and is a single CONCURRENTLY-
     # refresh statement, so high concurrency is wasted here; 50 is
@@ -216,6 +216,11 @@ task:
     # Each job does one GET per source + potentially imports facts/
     # concepts/embeddings, which can be intensive.
     pull_all_from_registry: 50
+    # Audit log retention. Daily sweep that deletes
+    # okt_system.permission_audit rows older than
+    # audit.retention_days (default 30). One job per day, single
+    # statement; 1 worker is plenty.
+    audit_cleanup: 1
 
 auth:
   jwt_secret: "change-me-in-production"
@@ -243,6 +248,56 @@ oauth:
   access_token_ttl: 15m
   refresh_token_ttl: 720h   # 30d
   auth_code_ttl: 10m
+
+# Personal API keys (personal access tokens). Users create these
+# from the Profile page to authenticate the REST surface without a
+# browser session — useful for CI, scripts, and the CLI. Each key
+# is scoped to a subset of (object, action) permission pairs and
+# optionally to a single repository; the key never grants anything
+# its owner couldn't already do via RBAC. Keys are opaque, stored
+# as sha256(hex) hashes (like sessions and OAuth refresh tokens);
+# the raw okt_-prefixed token is shown to the user exactly once at
+# creation. See internal/api/middleware/apikey.go + handler/apikey.go.
+api_keys:
+  # max_per_user caps the number of active keys a single user may
+  # hold. 0 falls back to the built-in default of 20. The cap is a
+  # guard against runaway automation, not a hard security boundary.
+  max_per_user: 20
+  # default_ttl is applied when the create body omits
+  # expires_in_days. 0 means "no expiry" — the key lives until
+  # revoked. Override to force rotation.
+  default_ttl: 0
+  # max_ttl is the upper bound on any key's lifetime. A request for
+  # a longer TTL is clamped to this value. 0 falls back to 90 days
+  # (2160h). Set to 0 to disable the cap (not recommended for
+  # production).
+  max_ttl: 2160h   # 90d
+
+# search tunes the in-repo fact/concept search endpoints. It is
+# separate from providers.search (which configures external search
+# providers like Serper/OpenAlex); this block only governs the
+# in-repo fact/concept search behavior (lexical vs hybrid fusion
+# with the Qdrant embedding index). When hybrid is disabled, or
+# when Qdrant or the embedding provider is not configured at boot,
+# the search endpoints fall back to the existing lexical-only path.
+search:
+  hybrid:
+    # enabled is the master switch. When false (or when Qdrant /
+    # the embedding provider is nil at boot), every search runs the
+    # lexical path.
+    enabled: true
+    # rrf_k is the Reciprocal Rank Fusion damping constant. Higher
+    # values dampen the rank contribution of top hits, surfacing
+    # more consensus hits; the standard 60 is a sensible default.
+    rrf_k: 60
+    # min_score is the Qdrant cosine similarity floor for semantic
+    # hits. 0.0 accepts every Qdrant hit and lets RRF reorder.
+    min_score: 0.0
+    # over_fetch_multiplier is how many x limit each channel
+    # fetches before fusion. 3 is a reasonable default: each side
+    # returns up to 3x limit candidates, the fused ranking
+    # reorders them, and pagination slices the final limit.
+    over_fetch_multiplier: 3
 
 providers:
   # promptset_default is the global default promptset hash a
@@ -359,6 +414,14 @@ providers:
     fact_extraction:
       provider: "openrouter"
       model: "google/gemma-4-31b-it"
+      # thinking_level controls the model's reasoning effort. Valid values:
+      #   "low" — minimal reasoning chain, faster + cheaper but less thorough
+      #   "medium" — balanced reasoning depth (default when unset)
+      #   "high" — deep reasoning, slower + more expensive
+      # Only applies to models that support the reasoning_effort parameter.
+      # Set to "low" because fact extraction is a structured-extraction task
+      # where extended reasoning chains waste tokens.
+      thinking_level: "low"
       # Concurrency caps how many chunks are sent to the model in
       # parallel within one source_decomposition job. The AI calls fan
       # out (phase 1); the DB persistence stays serial (phase 2) so DB
@@ -366,6 +429,14 @@ providers:
       # Lower this if your provider returns 429 storms; the per-call
       # retry/backoff already handles transient rate limits.
       concurrency: 4
+      # InJobRetries is how many times source_decomposition re-runs
+      # FAILED chunks at the end of the main wave before giving up
+      # and recording chunk_failures on the source row (leaving the
+      # source un-processed for an operator to re-trigger via the
+      # reprocess admin endpoint). Only failed chunks are re-LLM'd;
+      # successful chunks are not re-run, so no duplicate fact rows
+      # are created. Default 2.
+      in_job_retries: 2
     # Image fact extraction: a multimodal model that receives each
     # image attached to a source (inline image URL fetched via the
     # fetch provider, or PDF page render bytes from the DB) plus the
@@ -423,6 +494,26 @@ providers:
       # serial persistence phase preserves fact #2's FindConceptByAlias
       # seeing concepts created by fact #1.
       concurrency: 4
+      # LLMTimeout is the per-call wall-clock timeout for a
+      # concept-extraction LLM call. Default 20m: comfortably exceeds
+      # the retry budget (4 attempts × 5m PerCallTO + backoffs ≈ 20m)
+      # so retryWithBackoff can ride out an OpenRouter streaming-decode
+      # slowdown instead of being killed by the worker's outer ctx
+      # (the historical 120s value that severed 95,627 facts with the
+      # "decoding response: context deadline exceeded" signature).
+      llm_timeout: 20m
+      # MaxAttempts is the soft-skip budget: how many consecutive
+      # PERMANENT failures (parse error, empty result) a fact can
+      # accumulate on fact_concept_skips before it's excluded from
+      # the candidate set. Transient failures (timeout, rate-limit
+      # wait, network blip) never write a skip row, so they don't
+      # count against this budget. Default 3.
+      max_attempts: 3
+      # InJobRetries is how many times the worker re-runs failed
+      # chunks at the end of the main wave before giving up. Each
+      # retry round re-LLM's only the failed chunks; successful
+      # chunks are not re-run. Default 2.
+      in_job_retries: 2
   # Embedding provider used by the embed_facts task to vectorize
   # extracted facts into Qdrant. The provider name must match a key
   # in the `ai` block (the same provider instances are reused); the
@@ -504,18 +595,78 @@ providers:
     # overrides Provider+Model per repo (resolved via ModelResolver).
     posture_classifier:
       enabled: true
-      # Provider + model match the rest of the AI stack (fact
-      # extraction, summarization, synthesis all use Gemma on
-      # OpenRouter). A per-repo repository_model_settings row for
+      # Provider + model for the autocite posture classifier. Uses
+      # DeepSeek V4 Flash via OpenRouter's Nitro routing (:turbo),
+      # the fastest provider for this model. DeepSeek V4 Flash only
+      # supports reasoning_effort "high" and "xhigh" — "low" is
+      # not supported and silently ignored — so the model always
+      # reasons at high effort. The :turbo routing is what keeps
+      # latency acceptable; the non-turbo (Balanced) routing was
+      # too slow and caused 240s timeouts on dense batches. A per-
+      # repo repository_model_settings row for
       # task_kind='report_annotation' can override this model per
       # repo without touching the global config. An operator that
       # wants the classifier off sets enabled: false here, or
       # toggles the per-repo posture_classifier_enabled flag.
       provider: "openrouter"
-      model: "google/gemma-4-31b-it"
+      model: "deepseek/deepseek-v4-flash:turbo"
       batch_size: 8       # sentences per LLM call
       max_concurrent: 4   # in-flight LLM calls per annotate_report job
-      max_tokens: 800     # output token cap per batch
+      # max_tokens caps the output. DeepSeek V4 Flash is a reasoning
+      # model that always reasons at "high" effort (the model only
+      # supports high/xhigh; "low" is ignored). The reasoning tokens
+      # count toward the output budget on OpenRouter, so 4000 gives
+      # room for ~2500 reasoning tokens + 1440 JSON tokens for a
+      # full 40-pair batch.
+      max_tokens: 4000
+      # Context window: how many sentences immediately before / after
+      # the candidate the classifier receives as disambiguation
+      # context. Default 2/2 — enough to resolve pronouns ("it",
+      # "this approach") and referenced entities ("the study") the
+      # bare candidate sentence would otherwise leave ambiguous. 0 on
+      # either side disables context for that side. The window is
+      # clamped to the available sentence range (no synthesized
+      # padding at report boundaries). Per-repo override via
+      # repository_report_settings.context_window_before /
+      # context_window_after (both in [0, 10]).
+      context_window_before: 2
+      context_window_after: 2
+    # Claim extractor: a chat model that reads each report sentence
+    # and emits the verifiable assertions it makes (numeric values,
+    # causal claims, comparisons, quotations, definitions). The
+    # annotate_report worker uses the extracted claims to drive an
+    # additional retrieval pass per claim — numeric claims route to
+    # the tsvector lexical search, prose claims route to the Qdrant
+    # embedding search on the claim term — so the posture classifier
+    # sees facts that match the sentence's SPECIFIC assertion, not
+    # just its broad topic. This is the gate that catches the
+    # "kidney-bean amino acids cited against UPF emulsifier" failure
+    # mode the embedding-only retrieval produces.
+    #
+    # Uses DeepSeek V4 Flash via OpenRouter's Nitro routing (:turbo)
+    # — the fastest provider for this model. The non-turbo (Balanced)
+    # routing was too slow (240s timeouts on dense batches). DeepSeek
+    # V4 Flash only supports reasoning_effort "high"/"xhigh"; "low"
+    # is silently ignored, so the model always reasons at high effort
+    # and the reasoning tokens count toward the output budget.
+    # When enabled is false (or the provider/model is not
+    # configured), the worker skips the claim-driven retrieval path
+    # and runs the legacy embedding-only retrieval. A per-repo
+    # repository_model_settings row for task_kind='claim_extraction'
+    # overrides Provider+Model per repo (resolved via ModelResolver).
+    claim_extractor:
+      enabled: true
+      provider: "openrouter"
+      model: "deepseek/deepseek-v4-flash:turbo"
+      batch_size: 8       # sentences per LLM call
+      max_concurrent: 6    # in-flight LLM calls per annotate_report job
+      # max_tokens caps the output. DeepSeek V4 Flash is a reasoning
+      # model that always reasons at "high" effort (the model only
+      # supports high/xhigh; "low" is ignored). The reasoning tokens
+      # count toward the output budget on OpenRouter, so 8000 gives
+      # room for ~5000 reasoning tokens + 3000 JSON tokens for a
+      # dense 8-sentence batch.
+      max_tokens: 8000
   # File storage backend for source assets (inline images, PDF page
   # renders, and full PDF source bodies). The backend is pluggable:
   # `backend` selects the implementation. Today only `filesystem`
@@ -618,6 +769,10 @@ providers:
     # model toward a concise (~400-500 word) summary; this is the
     # hard backstop. Default 600 (~450 words).
     max_tokens: 600
+    # llm_timeout is the per-call wall-clock timeout for a summary
+    # slice LLM call. Default 20m. See decomposition.concept_extraction
+    # .llm_timeout for the rationale.
+    llm_timeout: 20m
   # Concept refinement: a chat model that resolves unresolved concept
   # candidates — proposes the full formal canonical name, known
   # aliases to add, and aliases to prune. Runs once per unresolved
@@ -647,6 +802,10 @@ providers:
     # calls. The per-canonical advisory lock keeps two goroutines
     # from refining the same canonical at once.
     max_concurrency: 5
+    # llm_timeout is the per-call wall-clock timeout for a refinement
+    # LLM call. Default 20m. See decomposition.concept_extraction
+    # .llm_timeout for the rationale.
+    llm_timeout: 20m
   # Concept synthesis ("definition"): a chat model that folds ALL of a
   # canonical-name group's summary slices into ONE authoritative
   # definition per (repository_id, lower(canonical_name)). The
@@ -689,11 +848,44 @@ providers:
     # than N1 because each synthesis adds substantial prompt context.
     # Clamped to <= max_related_concepts at boot.
     max_related_syntheses: 3
+    # picker_timeout is the per-call wall-clock timeout for the
+    # image-picker LLM call. Default 20m.
+    picker_timeout: 20m
+    # llm_timeout is the per-call wall-clock timeout for the
+    # synthesis LLM call. Default 25m (synthesis produces longer
+    # output than the picker).
+    llm_timeout: 25m
+  # LLM retry budget shared by every AI-provider Chat/Embed call
+  # (decomposition, summarization, refinement, synthesis). The
+  # defaults let a single LLM call ride out a transient OpenRouter
+  # degradation: 4 attempts × 5m per-call timeout + 2s/4s/8s
+  # backoffs ≈ 20m total, which fits inside the workers' 20-25m LLM
+  # timeouts. The historical values (MaxAttempts=4, PerCallTO=180s)
+  # were reasonable per-call but were defeated by the workers' 120s
+  # outer ctx — the outer ctx fired before the first attempt's 180s
+  # per-call could complete, and every subsequent retry attempt
+  # inherited the already-dead ctx. Decoupling the worker timeout
+  # (now 20m) from the per-call timeout (now 5m) lets all 4 attempts
+  # actually run. PerCallTO must be <= the smallest worker LLM
+  # timeout; the worker timeout must exceed MaxAttempts × PerCallTO
+  # + backoffs.
+  llm_retry:
+    max_attempts: 4
+    base_delay: 2s
+    max_delay: 30s
+    per_call_timeout: 5m
   ai:
     ollama:
       base_url: ""
+      # http_timeout is the per-request timeout for the underlying
+      # http.Client. Default 10m — must not undercut the retry
+      # PerCallTO (5m) or worker LLM timeouts (20-25m). The
+      # historical hardcoded 120s killed requests before the per-
+      # call retry could finish.
+      http_timeout: 10m
     ollama_cloud:
       api_key: ""
+      http_timeout: 10m
     openrouter:
       api_key: ""
       # Max inputs per POST /v1/embeddings request. OpenRouter returns an
@@ -703,6 +895,33 @@ providers:
       # so this is a starting point rather than a hard limit. Default 32
       # when unset or <=0.
       embed_batch_size: 32
+      # http_timeout is the per-request timeout for the underlying
+      # http.Client. Default 10m — comfortably exceeds the retry
+      # PerCallTO (5m) so a slow stream isn't killed mid-decode by
+      # the HTTP client. The historical hardcoded 240s was shorter
+      # than the worker LLM timeout (20m) and could kill a streaming
+      # decode the worker would otherwise have tolerated.
+      http_timeout: 10m
+    # rate_limit_wait_timeout caps how long a Chat/Embed call blocks
+    # waiting for a per-model rate-limiter token before returning a
+    # transient error. The wait runs on a background context decoupled
+    # from the LLM-call timeout, so a long wait does NOT fire the
+    # LLM-call timeout and permanently skip the fact (the historical
+    # failure mode that severed 13,485 facts with the
+    # "rate: Wait(n=1) would exceed context deadline" signature).
+    # Default 1h: a task waiting up to an hour for capacity is
+    # preferable to permanently skipping 10 facts. 0 = wait forever.
+    # See ratelimit.go for the decorator.
+    #
+    # OpenRouter note: OpenRouter does NOT platform-rate-limit paid
+    # requests — only free-tier model variants (model IDs ending in
+    # ":free") get a 20 RPM / 50-1000 RPD platform cap. Paid requests
+    # go straight to the upstream provider, which may 429 (handled by
+    # the per-call retryWithBackoff). Set rate_limit_rpm per free
+    # model to 20 to match the real free-tier cap; paid models can
+    # stay at 500 (effectively unlimited — the client-side limiter
+    # won't throttle below what OpenRouter would actually accept).
+    rate_limit_wait_timeout: 1h
     # Model catalog. Each entry describes one model served by the
     # named provider. `rate_limit_rpm` caps the requests-per-minute
     # sent to that model (enforced per-model, not per-provider, via
@@ -763,6 +982,18 @@ providers:
         input_cost_per_1m: 0.12
         output_cost_per_1m: 0.4
         rate_limit_rpm: 500
+      - id: "deepseek/deepseek-v4-flash"
+        provider: "openrouter"
+        input_cost_per_1m: 0.09
+        output_cost_per_1m: 0.18
+        rate_limit_rpm: 500
+        thinking_level: "low"
+      - id: "deepseek/deepseek-v4-flash:turbo"
+        provider: "openrouter"
+        input_cost_per_1m: 0.55
+        output_cost_per_1m: 2.20
+        rate_limit_rpm: 500
+        thinking_level: "low"
       - id: "google/gemini-embedding-2"
         provider: "openrouter"
         input_cost_per_1m: 0.0
@@ -885,3 +1116,11 @@ repository_presets:
       Role: "A job role or responsibility within the organisation."
 
 default_repository_preset: general
+
+# Audit log retention. The daily audit_cleanup periodic job deletes
+# okt_system.permission_audit rows older than retention_days. The
+# default of 30 matches the common compliance window; raise it for
+# longer history, lower it to bound table growth. Env override:
+# OKT_AUDIT_RETENTION_DAYS.
+audit:
+  retention_days: 30

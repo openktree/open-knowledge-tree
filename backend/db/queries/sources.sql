@@ -6,6 +6,12 @@ RETURNING *;
 -- name: GetSourceByID :one
 SELECT * FROM okt_repository.sources WHERE id = $1;
 
+-- name: CountSourcesWithChunkFailuresByRepo :one
+-- Counts sources in a repo that have chunk_failures > 0 — the
+-- "in scope" count for the admin reprocess preview endpoint.
+SELECT COUNT(*)::bigint FROM okt_repository.sources
+WHERE repository_id = $1 AND chunk_failures > 0;
+
 -- name: ListSourcesByRepo :many
 -- Paginated, searchable repo-level source list. The optional
 -- `$2` (search) is run through websearch_to_tsquery so the UI
@@ -127,6 +133,103 @@ SET status     = 'failed',
     updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: UpdateSourceChunkFailures :one
+-- Records per-chunk failure state after source_decomposition's
+-- in-job retries have been exhausted. chunk_errors is a JSON
+-- array of {index, type, error, attempts} objects (one per
+-- failed chunk), chunk_failures is the count, and
+-- last_chunk_failure_at is when this was recorded. The source
+-- stays in its pre-decomposition status (typically 'fetched')
+-- so the UI can surface it as "partially decomposed" and an
+-- operator can re-trigger via the reprocess admin endpoint.
+-- Pass NULL for chunk_errors and 0 for chunk_failures to clear
+-- (used when a reprocess run succeeds).
+UPDATE okt_repository.sources
+SET chunk_failures        = $2,
+    chunk_errors          = $3,
+    last_chunk_failure_at = CASE WHEN $2 > 0 THEN now() ELSE NULL END,
+    updated_at            = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearSourceChunkFailures :one
+-- Resets chunk failure state to "no failures". Called by the
+-- reprocess admin path after a follow-up source_decomposition
+-- run succeeds on all previously-failed chunks, so the source
+-- can transition to 'processed' cleanly.
+UPDATE okt_repository.sources
+SET chunk_failures        = 0,
+    chunk_errors          = NULL,
+    last_chunk_failure_at = NULL,
+    updated_at            = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: IncrementSourceConceptSkipCount :exec
+-- Bumps the denormalized concept_skip_count for a source when
+-- extract_concepts records a soft-skip for one of the source's
+-- facts. Idempotent against negative values (the column is
+-- NOT NULL DEFAULT 0 with a CHECK >= 0 enforced at the app
+-- layer). Called once per skip; a fact with multiple sources
+-- (the N:M fact_sources relation) bumps every linked source
+-- so each source's UI row reflects the truth.
+UPDATE okt_repository.sources
+SET concept_skip_count = concept_skip_count + 1,
+    updated_at         = now()
+WHERE id = $1
+  AND concept_skip_count < 2147483647;
+
+-- name: DecrementSourceConceptSkipCount :exec
+-- Decrements the denormalized concept_skip_count for a source
+-- when the admin reextract endpoint clears a retryable skip
+-- for one of the source's facts. Bounded by the CHECK at the
+-- app layer so the count never goes negative.
+UPDATE okt_repository.sources
+SET concept_skip_count = concept_skip_count - 1,
+    updated_at         = now()
+WHERE id = $1
+  AND concept_skip_count > 0;
+
+-- name: DecrementSourceConceptSkipCountByFactID :execrows
+-- Decrements concept_skip_count for every source linked to a
+-- fact whose retryable skip was just cleared by the admin
+-- reextract endpoint. Used in a single call after
+-- ClearRetryableFactConceptSkipsByRepo deletes N skip rows —
+-- this computes the per-source decrement by joining the
+-- cleared-skip fact_ids back through fact_sources, so the
+-- UI count stays accurate without a separate query per fact.
+-- The @fact_ids array is the set of fact_ids the admin
+-- endpoint cleared; the caller computes it by listing the
+-- retryable skips for the repo before the DELETE.
+UPDATE okt_repository.sources s
+SET concept_skip_count = s.concept_skip_count - sub.cleared,
+    updated_at         = now()
+FROM (
+    SELECT fs.source_id, COUNT(*)::int AS cleared
+    FROM okt_repository.fact_sources fs
+    WHERE fs.fact_id = ANY(@fact_ids::uuid[])
+    GROUP BY fs.source_id
+) sub
+WHERE s.id = sub.source_id
+  AND s.concept_skip_count >= sub.cleared;
+
+-- name: CountRetryableConceptSkipsBySource :many
+-- Lists (source_id, count) for the admin endpoint's response
+-- envelope: how many retryable skip rows were cleared, broken
+-- down by source so DecrementSourceConceptSkipCountByFactID
+-- can keep the denormalized count accurate. Runs BEFORE the
+-- ClearRetryableFactConceptSkipsByRepo DELETE so it sees the
+-- rows that are about to be cleared.
+SELECT fs.source_id, COUNT(DISTINCT sk.fact_id)::int AS retryable_count
+FROM okt_repository.fact_concept_skips sk
+JOIN okt_repository.facts f ON f.id = sk.fact_id
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+WHERE s.repository_id = @repository_id
+  AND sk.attempts < @max_concept_attempts
+GROUP BY fs.source_id;
+
 
 -- name: DeleteSource :exec
 DELETE FROM okt_repository.sources WHERE id = $1;

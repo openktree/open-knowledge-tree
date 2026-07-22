@@ -225,13 +225,25 @@ const builtinConceptExtractionPrompt = `You are a concept extraction system. You
 
 A concept is a named entity or idea the fact refers to. Extract:
 - People (full names when available): "Donald Trump", "Albert Einstein"
-- Places: "Paris", "Silicon Valley"
-- Molecules / chemical compounds: "DNA", "graphene oxide"
-- Organizations: "MIT", "Electronic Frontier Foundation"
-- Ideas, theories, methods: "general relativity", "Sanger sequencing"
+- Places: "Paris", "Silicon Valley", "West Africa"
+- Molecules / chemical compounds: "DNA", "graphene oxide", "blood triglyceride"
+- Organizations, institutions, companies: "MIT", "Electronic Frontier Foundation", "WHO"
+- Ideas, theories, methods, techniques: "general relativity", "Sanger sequencing", "meta-analysis"
+- Events, studies, trials, programs: "PREDICT 1", "HPFS study", "Apollo program"
+- Measurements, metrics, biomarkers: "BMI", "HbA1c", "blood pressure"
+- Policies, laws, regulations: "GDPR", "Affordable Care Act"
+- Technologies, tools, instruments: "CRISPR", "electron microscope"
+- Diseases, conditions, symptoms: "diabetes", "hypertension"
+- Time periods, eras: "Renaissance", "Cold War"
 - Standalone names the fact is about
 
 Each concept must be one or two words. Full names and organization names may be longer. Prefer the most specific named form present in the fact.
+
+## Exhaustiveness
+
+You MUST extract EVERY concept the fact mentions — not just the primary subject. A single fact often references 3-8 concepts (e.g. a study name, a location, a biomarker, a method, an organization). Missing concepts wastes downstream processing, so be thorough.
+
+NEVER return an empty result for a fact unless the fact is truly devoid of any named entity, idea, measurement, method, place, person, organization, molecule, disease, event, policy, technology, or time period. Almost every fact will mention at least one. If a fact mentions a study by name, that study is a concept. If it mentions a city, that is a concept. If it mentions a measurement, that is a concept. When in doubt, extract it.
 
 ## Context assignment
 
@@ -261,7 +273,7 @@ Rules:
 - The context MUST be one of the labels in the list above, verbatim.
 - 0-3 seed aliases per concept. Only meaningful ones.
 - Skip concepts that are not named explicitly in the fact (no inference beyond the text).
-- If a fact mentions no extractable concepts, emit no objects for that fact_index.
+- A fact that mentions a named entity, study, place, measurement, method, organization, molecule, disease, event, policy, technology, or time period MUST have at least one concept extracted. Do NOT return an empty array for a fact that contains any of these.
 - Every output object MUST include the fact_index of the fact it came from.
 
 ## Facts (one per block, prefixed by [fact_index N])
@@ -591,7 +603,9 @@ Verifiability rules of thumb:
 - If the fact is a general background statement (e.g. a definition, a category description) and the sentence makes a specific empirical claim, the fact is "related" only if the reader would reasonably consult it to understand or assess the sentence — otherwise "irrelevant".
 - If the fact and the sentence are about the same broad topic but the fact addresses a different question than the sentence raises, mark "irrelevant" — topical adjacency without verifiability value is noise.
 
+Claims: when a sentence carries an extracted "claims" array, judge each candidate fact against the SPECIFIC assertion(s) the sentence makes, not just its broad topic. A fact that is topically related to the sentence but does not verify any of its specific claims is "irrelevant". A fact that verifies a specific claim — e.g. it states the same numeric value the sentence quotes, replicates the same causal finding the sentence asserts, or defines the same term the sentence introduces — is "supports" (or "contradicts" if the fact shows the claim is false). When a sentence has both numeric and causal claims and the fact verifies only the numeric claim, the fact "supports" the sentence (partial verification is still supports, not "related"). When a sentence has multiple claims and the fact verifies none of them specifically, mark "irrelevant" even if the fact is topically adjacent.
+
 You MUST output ONLY a JSON array of objects, one per input pair, with these fields:
   {"sentence_index": <int>, "fact_id": "<uuid string>", "posture": "<related|supports|contradicts|irrelevant>"}
 
-Do not output any prose, headings, or explanations — only the JSON array. Every input pair must appear exactly once in the output.`
+Output COMPACT JSON (no newlines, no indentation — emit ` + "`" + `[{"sentence_index":0,"fact_id":"...","posture":"supports"}]` + "`" + ` not pretty-printed). No prose, no headings, no explanations — only the JSON array. Every input pair must appear exactly once in the output.`

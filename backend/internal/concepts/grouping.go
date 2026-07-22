@@ -36,9 +36,18 @@ type ContextEntry struct {
 // of per-context entries. The list endpoint returns []Group; the
 // detail endpoint returns a single Group (with the contexts'
 // aliases populated).
+//
+// SearchRank is the relevance rank of the group with respect to the
+// caller's @q filter (0.0 when @q is empty). It is the MAX of the
+// per-context search ranks returned by the SQL query, so a hit on
+// any context ranks the whole group. BuildGroups sorts by
+// SearchRank DESC first (so name/alias hits rank above description-
+// only hits, since name/alias use tsv weight A and description uses
+// weight D), then by TotalFactCount DESC, CanonicalName ASC.
 type Group struct {
 	CanonicalName  string         `json:"canonical_name"`
 	TotalFactCount int64          `json:"total_fact_count"`
+	SearchRank     float32        `json:"search_rank"`
 	Contexts       []ContextEntry `json:"contexts"`
 }
 
@@ -47,8 +56,11 @@ type Group struct {
 // fact_count DESC, canonical_name ASC (the SQL query enforces this)
 // so the first row seen for a name is the highest-fact_count context
 // — it becomes the group's display CanonicalName and the first
-// ContextEntry. Groups are sorted by TotalFactCount DESC,
-// CanonicalName ASC to mirror the per-row ordering.
+// ContextEntry. Groups are sorted by SearchRank DESC, then
+// TotalFactCount DESC, CanonicalName ASC. The SearchRank tie-break
+// only matters when @q is non-empty (rows carry a non-zero
+// name_rank/alias_rank); with an empty @q every rank is 0.0 and the
+// sort degenerates to the pre-existing fact_count / name order.
 //
 // aliasesByID maps concept_id -> alias texts; it's used to populate
 // each ContextEntry.Aliases. Pass nil for the list endpoint (the
@@ -86,6 +98,12 @@ func BuildGroups(rows []groupRow, aliasesByID map[pgtype.UUID][]string) []Group 
 			entry.Aliases = aliasesByID[r.ID]
 		}
 		g.TotalFactCount += r.FactCount
+		// search_rank for the group is the MAX across contexts: a
+		// hit on any context's concept (name/description/alias)
+		// ranks the whole group at that hit's relevance.
+		if rank := r.searchRank(); rank > g.SearchRank {
+			g.SearchRank = rank
+		}
 		g.Contexts = append(g.Contexts, entry)
 	}
 
@@ -97,10 +115,15 @@ func BuildGroups(rows []groupRow, aliasesByID map[pgtype.UUID][]string) []Group 
 	return groups
 }
 
-// sortGroups sorts in place by TotalFactCount DESC, CanonicalName
-// ASC, mirroring the per-row ordering the SQL used before grouping.
+// sortGroups sorts in place by SearchRank DESC, then TotalFactCount
+// DESC, CanonicalName ASC. SearchRank is 0.0 for an unfiltered
+// listing, so the rank tie-break is a no-op there and the order
+// falls back to fact_count / name (the pre-existing behavior).
 func sortGroups(groups []Group) {
 	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].SearchRank != groups[j].SearchRank {
+			return groups[i].SearchRank > groups[j].SearchRank
+		}
 		if groups[i].TotalFactCount != groups[j].TotalFactCount {
 			return groups[i].TotalFactCount > groups[j].TotalFactCount
 		}
@@ -114,6 +137,12 @@ func sortGroups(groups []Group) {
 // adapter funcs below. It's exported as GroupRow so handler code can
 // build a slice of them and read the ID field for the alias-batch
 // query without depending on the concrete store row types.
+//
+// nameRank / aliasRank are only populated by the search query
+// (ListGroupedConceptsByRepo); the name-lookup and investigation
+// queries leave them zero. searchRank combines them as the MAX of
+// the two so a concept's own name/description hit and an alias hit
+// are interchangeable for ranking.
 type groupRow struct {
 	ID            pgtype.UUID
 	CanonicalName string
@@ -123,6 +152,18 @@ type groupRow struct {
 	EmbeddedModel *string
 	CreatedAt     pgtype.Timestamptz
 	FactCount     int64
+	NameRank      float32
+	AliasRank     float32
+}
+
+// searchRank returns the per-row relevance used by BuildGroups to
+// order groups: the higher of the concept's own name/description
+// rank and its best alias rank. Both are 0.0 for unfiltered rows.
+func (r groupRow) searchRank() float32 {
+	if r.NameRank > r.AliasRank {
+		return r.NameRank
+	}
+	return r.AliasRank
 }
 
 // GroupRow is the exported alias for groupRow so handler code can
@@ -131,7 +172,10 @@ type groupRow struct {
 type GroupRow = groupRow
 
 // FromListGroupedConceptsByRepoRow adapts the generated
-// repo-scoped list row to groupRow.
+// repo-scoped list row to groupRow. This is the only adapter that
+// carries search rank (name_rank + alias_rank from the weighted
+// websearch_to_tsquery in ListGroupedConceptsByRepo); the
+// name-lookup and investigation adapters leave rank zero.
 func FromListGroupedConceptsByRepoRow(r store.ListGroupedConceptsByRepoRow) groupRow {
 	return groupRow{
 		ID:            r.ID,
@@ -142,6 +186,8 @@ func FromListGroupedConceptsByRepoRow(r store.ListGroupedConceptsByRepoRow) grou
 		EmbeddedModel: r.EmbeddedModel,
 		CreatedAt:     r.CreatedAt,
 		FactCount:     r.FactCount,
+		NameRank:      r.NameRank,
+		AliasRank:     r.AliasRank,
 	}
 }
 

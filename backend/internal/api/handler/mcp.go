@@ -22,10 +22,14 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
 	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
+	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/search"
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
+	hybrid "github.com/openktree/open-knowledge-tree/backend/internal/search"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -98,6 +102,20 @@ type MCP struct {
 	// configured default is not in the live searchProviders map,
 	// the handler falls back to the first registered provider.
 	defaultSearchProvider string
+	// qdrant + embeddingProvider + embeddingCfg + searchHybrid
+	// power the hybrid search path (lexical tsvector fused with
+	// Qdrant cosine via RRF) used by the searchFacts and
+	// searchConcepts tools when the caller supplies a non-empty
+	// query and the master switch (cfg.Search.Hybrid.Enabled) is
+	// on. Nil qdrant / nil embeddingProvider disables hybrid mode
+	// (the tools fall back to the lexical-only path). Set via
+	// SetQdrant / SetEmbeddingProvider from the api.Handler
+	// accessors (cmd/app/api.go passes the same *qdrantstore.Store
+	// and ai.EmbeddingProvider the taskmanager uses).
+	qdrant            *qdrantstore.Store
+	embeddingProvider ai.EmbeddingProvider
+	embeddingCfg      config.EmbeddingConfig
+	searchHybrid      config.SearchHybridConfig
 }
 
 // NewMCP constructs the MCP handler bundle. It builds the
@@ -176,6 +194,25 @@ func (m *MCP) SetDefaultSearchProvider(id string) {
 	m.defaultSearchProvider = id
 }
 
+// SetQdrant wires the Qdrant vector store used by the searchFacts
+// and searchConcepts tools' hybrid path. Nil is valid: the tools
+// degrade to lexical-only. Idempotent.
+func (m *MCP) SetQdrant(q *qdrantstore.Store) {
+	m.qdrant = q
+}
+
+// SetEmbeddingProvider wires the bulk-embed client the hybrid path
+// uses to embed the caller's query string before querying Qdrant.
+// Also carries the embedding config (model name) and the hybrid
+// config (RRF k, over-fetch multiplier, master switch) so the
+// tool handlers can build the search.Deps bundle per call. Nil ep
+// disables hybrid mode. Idempotent.
+func (m *MCP) SetEmbeddingProvider(ep ai.EmbeddingProvider, embCfg config.EmbeddingConfig, hybridCfg config.SearchHybridConfig) {
+	m.embeddingProvider = ep
+	m.embeddingCfg = embCfg
+	m.searchHybrid = hybridCfg
+}
+
 // ServeHTTP is the chi-mounted entry point. The wiring layer wraps
 // it with OAuthBearer; here we just delegate to the streamable-HTTP
 // server which speaks the JSON-RPC protocol.
@@ -206,7 +243,7 @@ func (m *MCP) registerTools() {
 	// the same way the REST API's /{repoID} routes do.
 	m.mcpServer.AddTool(
 		mcp.NewTool("searchFacts",
-			mcp.WithDescription("Full-text search over the facts in a repository. Returns up to `limit` facts (default 10, max 200), each with its id, text, status, fact_kind, source_count, and created_at. Use the id with getFact to see the source URLs. The repository argument accepts a UUID or a slug (use getRepositories to list them). The optional `concept` filter (a concept UUID or canonical name) restricts to facts linked to that concept; `context` narrows a canonical-name concept filter to one context. Pass `concepts` (2 to 20 concept UUIDs or canonical names) to get the SHARED facts (intersection) across all of them — facts linked to at least one context of EVERY given concept. `concepts` and `concept` are mutually exclusive."),
+			mcp.WithDescription("Full-text search over the facts in a repository. Returns up to `limit` facts (default 10, max 200), each with its id, text, status, fact_kind, source_count, and created_at. Use the id with getFact to see the source URLs. The repository argument accepts a UUID or a slug (use getRepositories to list them). The optional `concept` filter (a concept UUID or canonical name) restricts to facts linked to that concept; `context` narrows a canonical-name concept filter to one context. Pass `concepts` (2 to 20 concept UUIDs or canonical names) to get the SHARED facts (intersection) across all of them — facts linked to at least one context of EVERY given concept. `concepts` and `concept` are mutually exclusive. This is the right tool for specific-claim verification: the MultiHop-RAG experiment scored facts 0.92 vs 0.52 for concept-first retrieval on targeted QA."),
 			mcp.WithString("repository",
 				mcp.Required(),
 				mcp.Description("Repository UUID or slug (from getRepositories)."),
@@ -257,13 +294,13 @@ func (m *MCP) registerTools() {
 	// searchConcepts: list concept groups in a repository.
 	m.mcpServer.AddTool(
 		mcp.NewTool("searchConcepts",
-			mcp.WithDescription("List the concept groups in a repository, optionally filtered by canonical-name substring. Each group carries its canonical name, total fact_count across contexts, and a contexts array (concept_id, context, fact_count, aliases). Use getConcept / getConceptSummaries / getRelatedConcepts with a concept_id or canonical name to drill in. The repository argument accepts a UUID or slug."),
+			mcp.WithDescription("List the concept groups in a repository, optionally filtered by full-text search. Each group carries its canonical name, total fact_count across contexts, a search_rank (relevance to the query, 0 when unfiltered), and a contexts array (concept_id, context, fact_count, aliases). Use getConcept / getConceptSummaries / getRelatedConcepts with a concept_id or canonical name to drill in. The repository argument accepts a UUID or slug. This is a discovery/exploration substrate, not a targeted-QA path: the MultiHop-RAG experiment scored concept-first retrieval 0.52 on specific questions vs 0.92 for facts. Use searchFacts for specific-claim verification."),
 			mcp.WithString("repository",
 				mcp.Required(),
 				mcp.Description("Repository UUID or slug (from getRepositories)."),
 			),
 			mcp.WithString("query",
-				mcp.Description("Optional canonical-name substring filter (case-insensitive). Empty returns all groups."),
+				mcp.Description("Optional full-text filter using Postgres websearch_to_tsquery syntax: space-separated words, quoted phrases, OR/AND, negation with -. Matches canonical_name (weight A), alias_text (weight A), and description (weight D), so name/alias hits rank above description-only hits. Empty returns all groups."),
 			),
 			mcp.WithNumber("limit",
 				mcp.Description("Maximum groups to return (1-200, default 50)."),
@@ -876,6 +913,36 @@ func (m *MCP) handleSearchFacts(ctx context.Context, req mcp.CallToolRequest) (*
 	}
 
 	if concept == "" {
+		// Hybrid search path: when the caller supplied a
+		// non-empty query and the qdrant store + embedding
+		// provider are wired, fuse lexical + semantic via RRF.
+		// Mirrors the REST ListRepoFacts hybrid branch. The
+		// concept/concepts intersection paths above stay lexical
+		// (Qdrant payload doesn't carry concept_id). Fail-open
+		// behavior is inside HybridFacts.
+		if query != "" && m.qdrant != nil && m.embeddingProvider != nil && m.searchHybrid.Enabled {
+			res, hErr := hybrid.HybridFacts(ctx, hybrid.Deps{
+				Queries:           queries,
+				Qdrant:            m.qdrant,
+				EmbeddingProvider: m.embeddingProvider,
+				EmbeddingCfg:      m.embeddingCfg,
+				Hybrid:            m.searchHybrid,
+			}, repoID, query, "stable", "created_at", limit, offset)
+			if hErr != nil {
+				return mcp.NewToolResultError("failed to search facts"), nil
+			}
+			out := make([]factOut, 0, len(res.Rows))
+			for _, f := range res.Rows {
+				out = append(out, toFactOut(f))
+			}
+			return structuredResult(map[string]any{
+				"facts":       out,
+				"total":       res.Total,
+				"limit":       limit,
+				"offset":      offset,
+				"search_mode": res.SearchMode,
+			})
+		}
 		facts, err := queries.ListFactsByRepoWithSourceCount(ctx, store.ListFactsByRepoWithSourceCountParams{
 			RepositoryID: repoID,
 			Column2:      "stable", // mirror the REST default
@@ -900,10 +967,11 @@ func (m *MCP) handleSearchFacts(ctx context.Context, req mcp.CallToolRequest) (*
 			out = append(out, toFactOut(f))
 		}
 		return structuredResult(map[string]any{
-			"facts":  out,
-			"total":  total,
-			"limit":  limit,
-			"offset": offset,
+			"facts":       out,
+			"total":       total,
+			"limit":       limit,
+			"offset":      offset,
+			"search_mode": "lexical",
 		})
 	}
 
@@ -1228,6 +1296,29 @@ func (m *MCP) handleSearchConcepts(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	queries := store.New(pool)
+	// Hybrid search path: when the caller supplied a non-empty
+	// query and the qdrant concept collection + embedding
+	// provider are wired, fuse lexical + semantic via RRF at the
+	// concept_id level, then group by lower(canonical_name).
+	if q != "" && m.qdrant != nil && m.embeddingProvider != nil && m.searchHybrid.Enabled {
+		res, hErr := hybrid.HybridConcepts(ctx, hybrid.Deps{
+			Queries:           queries,
+			Qdrant:            m.qdrant,
+			EmbeddingProvider: m.embeddingProvider,
+			EmbeddingCfg:      m.embeddingCfg,
+			Hybrid:            m.searchHybrid,
+		}, repoID, q, limit, offset)
+		if hErr != nil {
+			return mcp.NewToolResultError("failed to search concepts"), nil
+		}
+		return structuredResult(map[string]any{
+			"concepts":    res.Groups,
+			"total":       res.Total,
+			"limit":       limit,
+			"offset":      offset,
+			"search_mode": res.SearchMode,
+		})
+	}
 	rows, err := queries.ListGroupedConceptsByRepo(ctx, store.ListGroupedConceptsByRepoParams{
 		RepositoryID: repoID,
 		Q:            q,
@@ -1249,10 +1340,11 @@ func (m *MCP) handleSearchConcepts(ctx context.Context, req mcp.CallToolRequest)
 	groups := concepts.BuildGroups(groupRows, nil)
 	page := concepts.Paginate(groups, offset, limit)
 	return structuredResult(map[string]any{
-		"concepts": page,
-		"total":    total,
-		"limit":    limit,
-		"offset":    offset,
+		"concepts":    page,
+		"total":       total,
+		"limit":       limit,
+		"offset":      offset,
+		"search_mode": "lexical",
 	})
 }
 

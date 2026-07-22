@@ -70,6 +70,62 @@ func (q *Queries) AddSourceImage(ctx context.Context, arg AddSourceImageParams) 
 	return i, err
 }
 
+const clearSourceChunkFailures = `-- name: ClearSourceChunkFailures :one
+UPDATE okt_repository.sources
+SET chunk_failures        = 0,
+    chunk_errors          = NULL,
+    last_chunk_failure_at = NULL,
+    updated_at            = now()
+WHERE id = $1
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
+`
+
+// Resets chunk failure state to "no failures". Called by the
+// reprocess admin path after a follow-up source_decomposition
+// run succeeds on all previously-failed chunks, so the source
+// can transition to 'processed' cleanly.
+func (q *Queries) ClearSourceChunkFailures(ctx context.Context, id pgtype.UUID) (OktRepositorySource, error) {
+	row := q.db.QueryRow(ctx, clearSourceChunkFailures, id)
+	var i OktRepositorySource
+	err := row.Scan(
+		&i.ID,
+		&i.RepositoryID,
+		&i.Url,
+		&i.Kind,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Content,
+		&i.FetchedAt,
+		&i.Error,
+		&i.Doi,
+		&i.ParsedTitle,
+		&i.ParsedText,
+		&i.ParsedHtml,
+		&i.ParsedAuthor,
+		&i.ParsedSitename,
+		&i.ParsedLanguage,
+		&i.ParsedAt,
+		&i.ParseStatus,
+		&i.PublishedAt,
+		&i.ProcessedAt,
+		&i.SearchTsv,
+		&i.StorageKey,
+		&i.ContentType,
+		&i.LocalPath,
+		&i.StoredAt,
+		&i.FetchAttempts,
+		&i.OaStatus,
+		&i.ParsedMarkdown,
+		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
+	)
+	return i, err
+}
+
 const clearSourceImages = `-- name: ClearSourceImages :exec
 DELETE FROM okt_repository.source_images
 WHERE source_id = $1
@@ -82,6 +138,53 @@ WHERE source_id = $1
 func (q *Queries) ClearSourceImages(ctx context.Context, sourceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, clearSourceImages, sourceID)
 	return err
+}
+
+const countRetryableConceptSkipsBySource = `-- name: CountRetryableConceptSkipsBySource :many
+SELECT fs.source_id, COUNT(DISTINCT sk.fact_id)::int AS retryable_count
+FROM okt_repository.fact_concept_skips sk
+JOIN okt_repository.facts f ON f.id = sk.fact_id
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+WHERE s.repository_id = $1
+  AND sk.attempts < $2
+GROUP BY fs.source_id
+`
+
+type CountRetryableConceptSkipsBySourceParams struct {
+	RepositoryID       pgtype.UUID `json:"repository_id"`
+	MaxConceptAttempts int32       `json:"max_concept_attempts"`
+}
+
+type CountRetryableConceptSkipsBySourceRow struct {
+	SourceID       pgtype.UUID `json:"source_id"`
+	RetryableCount int32       `json:"retryable_count"`
+}
+
+// Lists (source_id, count) for the admin endpoint's response
+// envelope: how many retryable skip rows were cleared, broken
+// down by source so DecrementSourceConceptSkipCountByFactID
+// can keep the denormalized count accurate. Runs BEFORE the
+// ClearRetryableFactConceptSkipsByRepo DELETE so it sees the
+// rows that are about to be cleared.
+func (q *Queries) CountRetryableConceptSkipsBySource(ctx context.Context, arg CountRetryableConceptSkipsBySourceParams) ([]CountRetryableConceptSkipsBySourceRow, error) {
+	rows, err := q.db.Query(ctx, countRetryableConceptSkipsBySource, arg.RepositoryID, arg.MaxConceptAttempts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountRetryableConceptSkipsBySourceRow
+	for rows.Next() {
+		var i CountRetryableConceptSkipsBySourceRow
+		if err := rows.Scan(&i.SourceID, &i.RetryableCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const countSourcesByRepo = `-- name: CountSourcesByRepo :one
@@ -107,10 +210,24 @@ func (q *Queries) CountSourcesByRepo(ctx context.Context, arg CountSourcesByRepo
 	return count, err
 }
 
+const countSourcesWithChunkFailuresByRepo = `-- name: CountSourcesWithChunkFailuresByRepo :one
+SELECT COUNT(*)::bigint FROM okt_repository.sources
+WHERE repository_id = $1 AND chunk_failures > 0
+`
+
+// Counts sources in a repo that have chunk_failures > 0 — the
+// "in scope" count for the admin reprocess preview endpoint.
+func (q *Queries) CountSourcesWithChunkFailuresByRepo(ctx context.Context, repositoryID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSourcesWithChunkFailuresByRepo, repositoryID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createSource = `-- name: CreateSource :one
 INSERT INTO okt_repository.sources (id, repository_id, url, kind, status, doi)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type CreateSourceParams struct {
@@ -163,8 +280,61 @@ func (q *Queries) CreateSource(ctx context.Context, arg CreateSourceParams) (Okt
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
+}
+
+const decrementSourceConceptSkipCount = `-- name: DecrementSourceConceptSkipCount :exec
+UPDATE okt_repository.sources
+SET concept_skip_count = concept_skip_count - 1,
+    updated_at         = now()
+WHERE id = $1
+  AND concept_skip_count > 0
+`
+
+// Decrements the denormalized concept_skip_count for a source
+// when the admin reextract endpoint clears a retryable skip
+// for one of the source's facts. Bounded by the CHECK at the
+// app layer so the count never goes negative.
+func (q *Queries) DecrementSourceConceptSkipCount(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, decrementSourceConceptSkipCount, id)
+	return err
+}
+
+const decrementSourceConceptSkipCountByFactID = `-- name: DecrementSourceConceptSkipCountByFactID :execrows
+UPDATE okt_repository.sources s
+SET concept_skip_count = s.concept_skip_count - sub.cleared,
+    updated_at         = now()
+FROM (
+    SELECT fs.source_id, COUNT(*)::int AS cleared
+    FROM okt_repository.fact_sources fs
+    WHERE fs.fact_id = ANY($1::uuid[])
+    GROUP BY fs.source_id
+) sub
+WHERE s.id = sub.source_id
+  AND s.concept_skip_count >= sub.cleared
+`
+
+// Decrements concept_skip_count for every source linked to a
+// fact whose retryable skip was just cleared by the admin
+// reextract endpoint. Used in a single call after
+// ClearRetryableFactConceptSkipsByRepo deletes N skip rows —
+// this computes the per-source decrement by joining the
+// cleared-skip fact_ids back through fact_sources, so the
+// UI count stays accurate without a separate query per fact.
+// The @fact_ids array is the set of fact_ids the admin
+// endpoint cleared; the caller computes it by listing the
+// retryable skips for the repo before the DELETE.
+func (q *Queries) DecrementSourceConceptSkipCountByFactID(ctx context.Context, factIds []pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, decrementSourceConceptSkipCountByFactID, factIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteSource = `-- name: DeleteSource :exec
@@ -227,7 +397,7 @@ func (q *Queries) GetExistingSourceURLsAndDOIsByRepo(ctx context.Context, arg Ge
 }
 
 const getSourceByID = `-- name: GetSourceByID :one
-SELECT id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets FROM okt_repository.sources WHERE id = $1
+SELECT id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count FROM okt_repository.sources WHERE id = $1
 `
 
 func (q *Queries) GetSourceByID(ctx context.Context, id pgtype.UUID) (OktRepositorySource, error) {
@@ -264,12 +434,16 @@ func (q *Queries) GetSourceByID(ctx context.Context, id pgtype.UUID) (OktReposit
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
 
 const getSourceByRepoAndURL = `-- name: GetSourceByRepoAndURL :one
-SELECT id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets FROM okt_repository.sources
+SELECT id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count FROM okt_repository.sources
 WHERE repository_id = $1 AND url = $2
 `
 
@@ -317,6 +491,10 @@ func (q *Queries) GetSourceByRepoAndURL(ctx context.Context, arg GetSourceByRepo
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -350,6 +528,26 @@ func (q *Queries) GetSourceImageByID(ctx context.Context, id pgtype.UUID) (OktRe
 		&i.MirroredAt,
 	)
 	return i, err
+}
+
+const incrementSourceConceptSkipCount = `-- name: IncrementSourceConceptSkipCount :exec
+UPDATE okt_repository.sources
+SET concept_skip_count = concept_skip_count + 1,
+    updated_at         = now()
+WHERE id = $1
+  AND concept_skip_count < 2147483647
+`
+
+// Bumps the denormalized concept_skip_count for a source when
+// extract_concepts records a soft-skip for one of the source's
+// facts. Idempotent against negative values (the column is
+// NOT NULL DEFAULT 0 with a CHECK >= 0 enforced at the app
+// layer). Called once per skip; a fact with multiple sources
+// (the N:M fact_sources relation) bumps every linked source
+// so each source's UI row reflects the truth.
+func (q *Queries) IncrementSourceConceptSkipCount(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, incrementSourceConceptSkipCount, id)
+	return err
 }
 
 const listFlareSolverrHostCandidates = `-- name: ListFlareSolverrHostCandidates :many
@@ -581,7 +779,7 @@ func (q *Queries) ListSourceImages(ctx context.Context, sourceID pgtype.UUID) ([
 }
 
 const listSourcesByRepo = `-- name: ListSourcesByRepo :many
-SELECT id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets FROM okt_repository.sources
+SELECT id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count FROM okt_repository.sources
 WHERE repository_id = $1
   AND ($2::text = '' OR search_tsv @@ websearch_to_tsquery('english', $2))
 ORDER BY created_at DESC
@@ -647,6 +845,10 @@ func (q *Queries) ListSourcesByRepo(ctx context.Context, arg ListSourcesByRepoPa
 			&i.OaStatus,
 			&i.ParsedMarkdown,
 			&i.SentenceOffsets,
+			&i.ChunkFailures,
+			&i.ChunkErrors,
+			&i.LastChunkFailureAt,
+			&i.ConceptSkipCount,
 		); err != nil {
 			return nil, err
 		}
@@ -666,7 +868,7 @@ SET storage_key  = $2,
     stored_at    = now(),
     updated_at   = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type MarkSourceBodyStoredParams struct {
@@ -724,6 +926,10 @@ func (q *Queries) MarkSourceBodyStored(ctx context.Context, arg MarkSourceBodySt
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -735,7 +941,7 @@ SET status     = 'failed',
     fetched_at = now(),
     updated_at = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type MarkSourceFailedParams struct {
@@ -780,6 +986,10 @@ func (q *Queries) MarkSourceFailed(ctx context.Context, arg MarkSourceFailedPara
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -789,7 +999,7 @@ UPDATE okt_repository.sources
 SET fetch_attempts = $2,
     updated_at     = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type MarkSourceFetchAttemptsParams struct {
@@ -839,6 +1049,10 @@ func (q *Queries) MarkSourceFetchAttempts(ctx context.Context, arg MarkSourceFet
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -851,7 +1065,7 @@ SET status     = 'fetched',
     error      = NULL,
     updated_at = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type MarkSourceFetchedParams struct {
@@ -897,6 +1111,10 @@ func (q *Queries) MarkSourceFetched(ctx context.Context, arg MarkSourceFetchedPa
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -905,7 +1123,7 @@ const markSourceFetching = `-- name: MarkSourceFetching :one
 UPDATE okt_repository.sources
 SET status = 'fetching', updated_at = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 // Flips status to 'fetching' and refreshes updated_at. The
@@ -946,6 +1164,10 @@ func (q *Queries) MarkSourceFetching(ctx context.Context, id pgtype.UUID) (OktRe
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -1008,7 +1230,7 @@ UPDATE okt_repository.sources
 SET oa_status   = $2,
     updated_at  = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type MarkSourceOAStatusParams struct {
@@ -1056,6 +1278,10 @@ func (q *Queries) MarkSourceOAStatus(ctx context.Context, arg MarkSourceOAStatus
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -1074,7 +1300,7 @@ SET parsed_title    = $2,
     parse_status    = $9,
     updated_at      = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type MarkSourceParsedParams struct {
@@ -1151,6 +1377,10 @@ func (q *Queries) MarkSourceParsed(ctx context.Context, arg MarkSourceParsedPara
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -1162,7 +1392,7 @@ SET status       = 'pending',
     parse_status = NULL,
     updated_at   = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 // Flips a 'failed' source row back to 'pending' and clears
@@ -1206,6 +1436,78 @@ func (q *Queries) ResetSourceForRetry(ctx context.Context, id pgtype.UUID) (OktR
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
+	)
+	return i, err
+}
+
+const updateSourceChunkFailures = `-- name: UpdateSourceChunkFailures :one
+UPDATE okt_repository.sources
+SET chunk_failures        = $2,
+    chunk_errors          = $3,
+    last_chunk_failure_at = CASE WHEN $2 > 0 THEN now() ELSE NULL END,
+    updated_at            = now()
+WHERE id = $1
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
+`
+
+type UpdateSourceChunkFailuresParams struct {
+	ID            pgtype.UUID `json:"id"`
+	ChunkFailures int32       `json:"chunk_failures"`
+	ChunkErrors   []byte      `json:"chunk_errors"`
+}
+
+// Records per-chunk failure state after source_decomposition's
+// in-job retries have been exhausted. chunk_errors is a JSON
+// array of {index, type, error, attempts} objects (one per
+// failed chunk), chunk_failures is the count, and
+// last_chunk_failure_at is when this was recorded. The source
+// stays in its pre-decomposition status (typically 'fetched')
+// so the UI can surface it as "partially decomposed" and an
+// operator can re-trigger via the reprocess admin endpoint.
+// Pass NULL for chunk_errors and 0 for chunk_failures to clear
+// (used when a reprocess run succeeds).
+func (q *Queries) UpdateSourceChunkFailures(ctx context.Context, arg UpdateSourceChunkFailuresParams) (OktRepositorySource, error) {
+	row := q.db.QueryRow(ctx, updateSourceChunkFailures, arg.ID, arg.ChunkFailures, arg.ChunkErrors)
+	var i OktRepositorySource
+	err := row.Scan(
+		&i.ID,
+		&i.RepositoryID,
+		&i.Url,
+		&i.Kind,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Content,
+		&i.FetchedAt,
+		&i.Error,
+		&i.Doi,
+		&i.ParsedTitle,
+		&i.ParsedText,
+		&i.ParsedHtml,
+		&i.ParsedAuthor,
+		&i.ParsedSitename,
+		&i.ParsedLanguage,
+		&i.ParsedAt,
+		&i.ParseStatus,
+		&i.PublishedAt,
+		&i.ProcessedAt,
+		&i.SearchTsv,
+		&i.StorageKey,
+		&i.ContentType,
+		&i.LocalPath,
+		&i.StoredAt,
+		&i.FetchAttempts,
+		&i.OaStatus,
+		&i.ParsedMarkdown,
+		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -1214,7 +1516,7 @@ const updateSourceDoi = `-- name: UpdateSourceDoi :one
 UPDATE okt_repository.sources
 SET doi = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type UpdateSourceDoiParams struct {
@@ -1263,6 +1565,10 @@ func (q *Queries) UpdateSourceDoi(ctx context.Context, arg UpdateSourceDoiParams
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -1271,7 +1577,7 @@ const updateSourcePublishedAt = `-- name: UpdateSourcePublishedAt :one
 UPDATE okt_repository.sources
 SET published_at = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type UpdateSourcePublishedAtParams struct {
@@ -1324,6 +1630,10 @@ func (q *Queries) UpdateSourcePublishedAt(ctx context.Context, arg UpdateSourceP
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }
@@ -1332,7 +1642,7 @@ const updateSourceStatus = `-- name: UpdateSourceStatus :one
 UPDATE okt_repository.sources
 SET status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 type UpdateSourceStatusParams struct {
@@ -1374,6 +1684,10 @@ func (q *Queries) UpdateSourceStatus(ctx context.Context, arg UpdateSourceStatus
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }

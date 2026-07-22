@@ -179,7 +179,7 @@ func (q *Queries) GetRepositoryModelSetting(ctx context.Context, arg GetReposito
 }
 
 const getRepositoryReportSettings = `-- name: GetRepositoryReportSettings :one
-SELECT repository_id, similarity_threshold, posture_classifier_enabled, updated_at, max_facts_per_sentence, lexical_similarity_floor FROM okt_system.repository_report_settings
+SELECT repository_id, similarity_threshold, posture_classifier_enabled, updated_at, max_facts_per_sentence, lexical_similarity_floor, context_window_before, context_window_after FROM okt_system.repository_report_settings
 WHERE repository_id = $1
 `
 
@@ -198,6 +198,8 @@ func (q *Queries) GetRepositoryReportSettings(ctx context.Context, repositoryID 
 		&i.UpdatedAt,
 		&i.MaxFactsPerSentence,
 		&i.LexicalSimilarityFloor,
+		&i.ContextWindowBefore,
+		&i.ContextWindowAfter,
 	)
 	return i, err
 }
@@ -636,16 +638,18 @@ func (q *Queries) UpsertRepositoryModelSetting(ctx context.Context, arg UpsertRe
 
 const upsertRepositoryReportSettings = `-- name: UpsertRepositoryReportSettings :one
 INSERT INTO okt_system.repository_report_settings
-    (repository_id, similarity_threshold, posture_classifier_enabled, max_facts_per_sentence, lexical_similarity_floor)
-VALUES ($1, $2, $3, $4, $5)
+    (repository_id, similarity_threshold, posture_classifier_enabled, max_facts_per_sentence, lexical_similarity_floor, context_window_before, context_window_after)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (repository_id)
 DO UPDATE SET
     similarity_threshold        = EXCLUDED.similarity_threshold,
     posture_classifier_enabled = EXCLUDED.posture_classifier_enabled,
     max_facts_per_sentence      = EXCLUDED.max_facts_per_sentence,
     lexical_similarity_floor    = EXCLUDED.lexical_similarity_floor,
+    context_window_before       = EXCLUDED.context_window_before,
+    context_window_after        = EXCLUDED.context_window_after,
     updated_at = now()
-RETURNING repository_id, similarity_threshold, posture_classifier_enabled, updated_at, max_facts_per_sentence, lexical_similarity_floor
+RETURNING repository_id, similarity_threshold, posture_classifier_enabled, updated_at, max_facts_per_sentence, lexical_similarity_floor, context_window_before, context_window_after
 `
 
 type UpsertRepositoryReportSettingsParams struct {
@@ -654,6 +658,8 @@ type UpsertRepositoryReportSettingsParams struct {
 	PostureClassifierEnabled bool        `json:"posture_classifier_enabled"`
 	MaxFactsPerSentence      *int32      `json:"max_facts_per_sentence"`
 	LexicalSimilarityFloor   *float64    `json:"lexical_similarity_floor"`
+	ContextWindowBefore      *int32      `json:"context_window_before"`
+	ContextWindowAfter       *int32      `json:"context_window_after"`
 }
 
 // Insert or update the per-repo report annotation settings. Pass
@@ -664,7 +670,11 @@ type UpsertRepositoryReportSettingsParams struct {
 // max_facts_per_sentence (5), or a value in 1..50 to override; pass
 // lexical_similarity_floor NULL to inherit the global default (0.6),
 // or a value in 0..1 to override (the semantic-distance floor for the
-// hybrid lexical fallback).
+// hybrid lexical fallback); pass context_window_before /
+// context_window_after NULL to inherit the global defaults (2/2), or
+// a value in 0..10 to override (the number of surrounding sentences
+// the posture classifier receives before/after the candidate for
+// disambiguation context).
 func (q *Queries) UpsertRepositoryReportSettings(ctx context.Context, arg UpsertRepositoryReportSettingsParams) (OktSystemRepositoryReportSetting, error) {
 	row := q.db.QueryRow(ctx, upsertRepositoryReportSettings,
 		arg.RepositoryID,
@@ -672,6 +682,8 @@ func (q *Queries) UpsertRepositoryReportSettings(ctx context.Context, arg Upsert
 		arg.PostureClassifierEnabled,
 		arg.MaxFactsPerSentence,
 		arg.LexicalSimilarityFloor,
+		arg.ContextWindowBefore,
+		arg.ContextWindowAfter,
 	)
 	var i OktSystemRepositoryReportSetting
 	err := row.Scan(
@@ -681,6 +693,8 @@ func (q *Queries) UpsertRepositoryReportSettings(ctx context.Context, arg Upsert
 		&i.UpdatedAt,
 		&i.MaxFactsPerSentence,
 		&i.LexicalSimilarityFloor,
+		&i.ContextWindowBefore,
+		&i.ContextWindowAfter,
 	)
 	return i, err
 }

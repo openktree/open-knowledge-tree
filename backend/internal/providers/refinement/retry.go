@@ -10,6 +10,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/openktree/open-knowledge-tree/backend/internal/config"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 )
 
 // retryConfig governs the refiner's retry-with-backoff loop. The
@@ -28,7 +31,20 @@ var defaultRetryConfig = retryConfig{
 	MaxAttempts: 4,
 	BaseDelay:   2 * time.Second,
 	MaxDelay:    30 * time.Second,
-	PerCallTO:   180 * time.Second,
+	PerCallTO:   5 * time.Minute,
+}
+
+// SetRetryDefaults overrides the package's defaultRetryConfig from
+// the shared cfg.Providers.LLMRetry block. Called once at boot by
+// the wiring layer. See decomposition.SetRetryDefaults for the
+// rationale.
+func SetRetryDefaults(cfg config.LLMRetryConfig) {
+	defaultRetryConfig = retryConfig{
+		MaxAttempts: cfg.MaxAttemptsOr(0),
+		BaseDelay:   cfg.BaseDelayOr(0),
+		MaxDelay:    cfg.MaxDelayOr(0),
+		PerCallTO:   cfg.PerCallTimeoutOr(0),
+	}
 }
 
 // classifyError reports whether an AI provider error is worth
@@ -36,6 +52,10 @@ var defaultRetryConfig = retryConfig{
 func classifyError(err error) (retryable bool, reason string) {
 	if err == nil {
 		return false, ""
+	}
+	// Rate-limit-wait-timeout from the decorator is transient.
+	if errors.Is(err, ai.ErrRateLimitWaitTimeout) {
+		return true, "rate limit wait timeout"
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false, "context cancelled/deadline"

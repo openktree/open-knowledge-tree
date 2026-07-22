@@ -7,9 +7,12 @@ package handler
 import (
 	"context"
 
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ontology"
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -45,6 +48,13 @@ type Deps struct {
 	Registry            *dbpool.Registry
 	LazyEnsureRepository func(ctx context.Context, ownerID string) error
 
+	// Audit is the recorder for okt_system.permission_audit. Nil in
+	// tests that don't exercise the audit pipeline; handlers guard
+	// with a nil check before calling Audit.RecordAsync. Wired by
+	// the api.Handler.SetAudit path (cmd/app/api.go builds the
+	// PostgresRecorder from the system pool).
+	Audit audit.Recorder
+
 	// ProviderRegistry is the live provider catalog the
 	// CreateRepository seeding iterates and the gate intersects
 	// stored settings with. Wired by the api.Handler.SetSource
@@ -59,6 +69,24 @@ type Deps struct {
 	// repository_contexts with is_custom=FALSE rows. Always
 	// EmbeddedL3Source in production. Wired alongside ProviderRegistry.
 	OntologySource ontology.L3Source
+
+	// Qdrant is the vector store used by the hybrid search path
+	// (fact/concept search fuses lexical tsvector results with
+	// Qdrant cosine similarity via Reciprocal Rank Fusion). Nil
+	// when Qdrant is not configured at boot (the search endpoints
+	// degrade to lexical-only). Wired by the api.Handler.SetQdrant
+	// path (cmd/app/api.go passes the same *qdrantstore.Store it
+	// builds for the taskmanager).
+	Qdrant *qdrantstore.Store
+
+	// EmbeddingProvider is the bulk-embed client used by the
+	// hybrid search path to embed the caller's query string before
+	// querying Qdrant. Nil when no embedding provider is configured
+	// at boot (chat-only AI configs). Wired by the
+	// api.Handler.SetEmbeddingProvider path; in production it is
+	// the same provider instance passed to NewAI / the embed_facts
+	// worker.
+	EmbeddingProvider ai.EmbeddingProvider
 
 	// DefaultSettingsSeeder seeds the per-repository provider +
 	// context settings for a freshly-created repository using the

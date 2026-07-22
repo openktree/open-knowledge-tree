@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/auth"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -63,6 +65,24 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create user")
 		return
+	}
+
+	// Audit the registration. The actor is the new user themselves
+	// (registration is unauthenticated); the audit row records the
+	// self-registration so the audit log can answer "who created
+	// account X?". A nil recorder (tests) is a no-op.
+	if a.deps.Audit != nil {
+		var uid pgtype.UUID
+		if err := uid.Scan(string(user.ID)); err == nil {
+			a.deps.Audit.RecordAsync(audit.Event{
+				UserID:       uid,
+				Username:     user.Email,
+				Action:       rbac.AuditActionUserCreate,
+				Object:       rbac.Objects.Users,
+				Target:       string(user.ID),
+				Detail:       map[string]any{"email": user.Email, "display_name": user.DisplayName},
+			})
+		}
 	}
 
 	// First-user autopromotion: when the bootstrap flag is on and

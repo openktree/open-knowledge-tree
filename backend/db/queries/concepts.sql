@@ -125,12 +125,25 @@ ON CONFLICT (fact_id, concept_id) DO NOTHING
 RETURNING *;
 
 -- name: ListStableFactsForConceptExtraction :many
--- Stable facts not yet linked to any concept and not permanently
--- skipped. Batched by LIMIT so the worker can process a repo in
--- chunks without loading every fact into memory at once. Ordered
--- by created_at so the batch order is stable across runs (a
--- re-enqueue that races a previous pass picks up where the first
--- pass left off).
+-- Stable facts not yet linked to any concept and not exhausted
+-- their soft-skip retry budget. Batched by LIMIT so the worker
+-- can process a repo in chunks without loading every fact into
+-- memory at once. Ordered by created_at so the batch order is
+-- stable across runs (a re-enqueue that races a previous pass
+-- picks up where the first pass left off).
+--
+-- A fact is excluded from the candidate set when EITHER:
+--   - it already has a fact_concepts row (linked), OR
+--   - it has a fact_concept_skips row with attempts >=
+--     @max_concept_attempts (permanently given up after N
+--     consecutive permanent failures; an operator can clear the
+--     skip via POST /api/v1/admin/repos/{id}/concepts/reextract),
+--   - it has a fact_candidates row (pending refinement, when
+--     refinement is enabled; refine_concepts will route it).
+-- Transient LLM failures do NOT write a skip row at all, so the
+-- fact stays in the candidate set and is retried on the next
+-- pass (the in-job end-of-queue reprocess handles the common
+-- case; the admin endpoint handles quiet-repo recovery).
 --
 -- DISTINCT is critical: a fact may have many fact_sources rows
 -- (one per source it was extracted from), and the JOIN shape
@@ -148,20 +161,22 @@ JOIN okt_repository.sources s ON fs.source_id = s.id
 WHERE s.repository_id = @repository_id
   AND f.status = 'stable'
   AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concepts fc WHERE fc.fact_id = f.id)
-  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concept_skips sk WHERE sk.fact_id = f.id)
+  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concept_skips sk
+                  WHERE sk.fact_id = f.id AND sk.attempts >= @max_concept_attempts)
   AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_candidates fca WHERE fca.fact_id = f.id)
 ORDER BY f.created_at
 LIMIT @batch_size;
 
 -- name: ListStableFactsForConceptExtractionBySource :many
 -- Source-scoped variant of ListStableFactsForConceptExtraction.
--- Same filters (stable, not yet linked to a concept, not skipped)
--- but additionally constrained to facts linked to THIS source via
--- fact_sources. Used by the source-scoped extract_concepts pass so
--- each source's job only scans its own facts rather than re-scanning
--- the whole repo every time any source completes processing. The
--- fact_sources join is already present for the repo filter (facts
--- has no repository_id), so the source filter rides the same join;
+-- Same filters (stable, not yet linked to a concept, not exhausted
+-- the soft-skip budget) but additionally constrained to facts
+-- linked to THIS source via fact_sources. Used by the source-
+-- scoped extract_concepts pass so each source's job only scans
+-- its own facts rather than re-scanning the whole repo every time
+-- any source completes processing. The fact_sources join is
+-- already present for the repo filter (facts has no
+-- repository_id), so the source filter rides the same join;
 -- DISTINCT collapses any per-source duplication (a fact may have
 -- multiple fact_sources rows for the same source across chunks).
 SELECT DISTINCT f.id, f.text, f.created_at
@@ -172,22 +187,29 @@ WHERE s.repository_id = @repository_id
   AND fs.source_id = @source_id
   AND f.status = 'stable'
   AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concepts fc WHERE fc.fact_id = f.id)
-  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concept_skips sk WHERE sk.fact_id = f.id)
+  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concept_skips sk
+                  WHERE sk.fact_id = f.id AND sk.attempts >= @max_concept_attempts)
   AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_candidates fca WHERE fca.fact_id = f.id)
 ORDER BY f.created_at
 LIMIT @batch_size;
 
 -- name: RecordFactConceptSkip :one
--- Permanently marks a fact as skipped for concept extraction
--- (e.g. the LLM returned a transient error and we don't want to
--- retry it on every subsequent pass, since there is no periodic
--- re-driver). An operator must delete the row to retry. ON
--- CONFLICT DO UPDATE so re-skipping the same fact refreshes the
--- last_error and skipped_at.
-INSERT INTO okt_repository.fact_concept_skips (fact_id, last_error)
-VALUES ($1, $2)
+-- Soft-skip with retry budget. Increments `attempts` on each
+-- consecutive permanent failure (parse error, empty result, etc.)
+-- and refreshes last_error + last_attempt_at. The candidate-
+-- selection query excludes the fact only when attempts >=
+-- @max_concept_attempts (default 3), so the fact stays retryable
+-- until the budget is exhausted. Transient errors (timeout,
+-- rate-limit wait, network blip, 5xx, 429) do NOT call this —
+-- the fact stays in the candidate set and is retried on the next
+-- pass. ON CONFLICT DO UPDATE so re-skipping the same fact
+-- increments the counter instead of clobbering it.
+INSERT INTO okt_repository.fact_concept_skips (fact_id, last_error, attempts, last_attempt_at)
+VALUES ($1, $2, 1, now())
 ON CONFLICT (fact_id) DO UPDATE
 SET last_error = EXCLUDED.last_error,
+    attempts = fact_concept_skips.attempts + 1,
+    last_attempt_at = now(),
     skipped_at = now()
 RETURNING *;
 
@@ -200,13 +222,107 @@ SELECT * FROM okt_repository.fact_concept_skips WHERE fact_id = $1;
 -- scope via fact_sources/sources (same shape as
 -- ListStableFactsForConceptExtraction). DISTINCT in case a fact
 -- has multiple source rows.
-SELECT DISTINCT sk.fact_id, sk.last_error, sk.skipped_at
+SELECT DISTINCT sk.fact_id, sk.last_error, sk.skipped_at, sk.attempts, sk.last_attempt_at
 FROM okt_repository.fact_concept_skips sk
 JOIN okt_repository.facts f ON f.id = sk.fact_id
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 JOIN okt_repository.sources s ON fs.source_id = s.id
 WHERE s.repository_id = $1
 ORDER BY sk.skipped_at DESC;
+
+-- name: ClearRetryableFactConceptSkipsByRepo :execrows
+-- Clears soft-skip rows that are still within the retry budget
+-- (attempts < @max_concept_attempts) for one repo. Used by the
+-- admin endpoint POST /api/v1/admin/repos/{id}/concepts/reextract
+-- so the next extract_concepts pass re-attempts those facts.
+-- Skips with attempts >= @max_concept_attempts are kept (the
+-- budget is exhausted; an operator must DELETE them directly if
+-- they want to retry a permanently-skipped fact). The fact_id set
+-- is scoped via fact_sources/sources because facts has no
+-- repository_id.
+DELETE FROM okt_repository.fact_concept_skips sk
+WHERE sk.attempts < @max_concept_attempts
+  AND sk.fact_id IN (
+    SELECT f.id
+    FROM okt_repository.facts f
+    JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+    JOIN okt_repository.sources s ON fs.source_id = s.id
+    WHERE s.repository_id = @repository_id
+  );
+
+-- name: ClearUnresolvedFactCandidatesByRepo :execrows
+-- Clears fact_candidates rows that point at unresolved
+-- concept_candidates (resolved_concept_id IS NULL) for one repo.
+-- Used by the admin reextract endpoint to un-strand Mode 5 facts
+-- (stuck on a candidate that refine_concepts never routed). After
+-- the clear, extract_concepts re-visits the fact
+-- (ListStableFactsForConceptExtraction's NOT EXISTS fact_candidates
+-- no longer excludes it), re-emits a candidate, and refine_concepts
+-- gets a fresh chance to route it.
+DELETE FROM okt_repository.fact_candidates fca
+WHERE fca.candidate_id IN (
+    SELECT c.id FROM okt_repository.concept_candidates c
+    WHERE c.repository_id = @repository_id AND c.resolved_concept_id IS NULL
+  )
+  AND fca.fact_id IN (
+    SELECT f.id
+    FROM okt_repository.facts f
+    JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+    JOIN okt_repository.sources s ON fs.source_id = s.id
+    WHERE s.repository_id = @repository_id
+  );
+
+-- name: CountUnlinkedStableFactsByRepo :one
+-- Counts stable facts that have no fact_concepts row and no
+-- exhausted skip row (attempts < @max_concept_attempts). These
+-- are the facts the next extract_concepts pass will pick up —
+-- the "in scope" count for the admin reextract preview endpoint.
+SELECT COUNT(*)::bigint FROM okt_repository.facts f
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+WHERE s.repository_id = @repository_id
+  AND f.status = 'stable'
+  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concepts fc WHERE fc.fact_id = f.id)
+  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concept_skips sk
+                  WHERE sk.fact_id = f.id AND sk.attempts >= @max_concept_attempts);
+
+-- name: ListSourcesWithUnlinkedFactsByRepo :many
+-- Distinct source_ids in a repo that have at least one stable
+-- unlinked fact (no fact_concepts, no exhausted skip). The admin
+-- reextract endpoint enqueues one extract_concepts job per source
+-- (matching the normal deduplicate_facts → extract_concepts chain)
+-- so each source's facts are processed independently and the
+-- queue can parallelize across sources.
+SELECT DISTINCT s.id
+FROM okt_repository.facts f
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+WHERE s.repository_id = @repository_id
+  AND f.status = 'stable'
+  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concepts fc WHERE fc.fact_id = f.id)
+  AND NOT EXISTS (SELECT 1 FROM okt_repository.fact_concept_skips sk
+                  WHERE sk.fact_id = f.id AND sk.attempts >= @max_concept_attempts);
+
+-- name: CountRetryableSkipsByRepo :one
+-- Counts fact_concept_skips rows with attempts < @max_concept_attempts
+-- for the repo. These are the rows ClearRetryableFactConceptSkipsByRepo
+-- will DELETE. Scopes via fact_sources/sources (facts has no repository_id).
+SELECT COUNT(*)::bigint
+FROM okt_repository.fact_concept_skips sk
+JOIN okt_repository.facts f ON f.id = sk.fact_id
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+WHERE s.repository_id = @repository_id
+  AND sk.attempts < @max_concept_attempts;
+
+-- name: CountUnresolvedCandidatesByRepo :one
+-- Counts unresolved concept_candidates (resolved_concept_id IS NULL)
+-- for the repo. These are the candidates whose fact_candidates rows
+-- ClearUnresolvedFactCandidatesByRepo will DELETE.
+SELECT COUNT(*)::bigint
+FROM okt_repository.concept_candidates c
+WHERE c.repository_id = @repository_id
+  AND c.resolved_concept_id IS NULL;
 
 -- name: ListConceptsByRepo :many
 -- Paginated concept list with a computed fact_count so the UI can
@@ -234,12 +350,23 @@ SELECT COUNT(*) FROM okt_repository.concepts WHERE repository_id = $1;
 -- fact_count, intended to be grouped in Go by lower(canonical_name)
 -- so the API can present "one concept, many contexts". Returns the
 -- full set (no SQL-level pagination); the caller paginates the
--- resulting groups in Go. Optional @q filters by canonical_name
--- substring (case-insensitive). Ordered by fact_count DESC,
--- canonical_name ASC so the in-Go group representative pick (first
--- row seen for a name) is the highest-fact_count context — stable
--- across re-runs. Grouping is by lower(canonical_name) in Go; the
--- slug column was removed in migration 0030.
+-- resulting groups in Go. Optional @q runs a weighted full-text
+-- search (websearch_to_tsquery, 'english' config) over the
+-- concept's canonical_name (weight A) + description (weight D) and
+-- over all of its concept_aliases.alias_text (weight A), via the
+-- GIN expression indexes from migration 0058. An alias hit pulls in
+-- the parent concept's whole canonical-name group.
+--
+-- search_rank is the ts_rank_cd of the best-matching tsv across the
+-- concept's own weighted tsv and the MAX of its aliases' weighted
+-- tsvs (0.0 when @q is empty or no rows match). It is consumed by
+-- concepts.BuildGroups to order groups: search_rank DESC first (so
+-- name/alias hits rank above description-only hits, since A > D),
+-- then the pre-existing fact_count DESC, canonical_name ASC tie-
+-- break. The group's search_rank is the MAX search_rank across its
+-- contexts (a hit on any context ranks the whole group). Grouping
+-- is by lower(canonical_name) in Go; the slug column was removed in
+-- migration 0030.
 SELECT c.id,
        c.repository_id,
        c.canonical_name,
@@ -248,20 +375,87 @@ SELECT c.id,
        c.embedded_at,
        c.embedded_model,
        c.created_at,
-       (SELECT COUNT(*) FROM okt_repository.fact_concepts fc WHERE fc.concept_id = c.id) AS fact_count
+       (SELECT COUNT(*) FROM okt_repository.fact_concepts fc WHERE fc.concept_id = c.id) AS fact_count,
+       CASE WHEN @q::text = '' THEN 0.0::real
+            ELSE COALESCE(
+                ts_rank_cd(
+                    setweight(to_tsvector('english', coalesce(c.canonical_name, '')), 'A')
+                    || setweight(to_tsvector('english', coalesce(c.description, '')), 'D'),
+                    websearch_to_tsquery('english', @q::text)
+                ),
+                0.0::real
+            )
+       END::real AS name_rank,
+       (SELECT COALESCE(MAX(ts_rank_cd(
+                          setweight(to_tsvector('english', coalesce(a.alias_text, '')), 'A'),
+                          websearch_to_tsquery('english', @q::text)
+                      )), 0.0::real)::real
+          FROM okt_repository.concept_aliases a
+         WHERE a.concept_id = c.id) AS alias_rank
 FROM okt_repository.concepts c
 WHERE c.repository_id = @repository_id
-  AND (@q::text = '' OR lower(c.canonical_name) LIKE '%' || lower(@q::text) || '%')
+  AND (
+      @q::text = ''
+      OR (setweight(to_tsvector('english', coalesce(c.canonical_name, '')), 'A')
+          || setweight(to_tsvector('english', coalesce(c.description, '')), 'D'))
+          @@ websearch_to_tsquery('english', @q::text)
+      OR EXISTS (
+          SELECT 1 FROM okt_repository.concept_aliases a
+          WHERE a.concept_id = c.id
+            AND setweight(to_tsvector('english', coalesce(a.alias_text, '')), 'A')
+                @@ websearch_to_tsquery('english', @q::text)
+      )
+  )
 ORDER BY fact_count DESC, c.canonical_name ASC;
 
 -- name: CountGroupedConceptsByRepo :one
 -- Number of distinct canonical-name groups in a repo (one entry
--- per lower(canonical_name)). Optional @q filters by canonical_name
--- substring (case-insensitive), mirroring ListGroupedConceptsByRepo.
+-- per lower(canonical_name)). Optional @q runs the same weighted
+-- full-text search as ListGroupedConceptsByRepo over canonical_name
+-- (A) + description (D) and concept_aliases.alias_text (A).
 SELECT COUNT(DISTINCT lower(c.canonical_name))
 FROM okt_repository.concepts c
 WHERE c.repository_id = @repository_id
-  AND (@q::text = '' OR lower(c.canonical_name) LIKE '%' || lower(@q::text) || '%');
+  AND (
+      @q::text = ''
+      OR (setweight(to_tsvector('english', coalesce(c.canonical_name, '')), 'A')
+          || setweight(to_tsvector('english', coalesce(c.description, '')), 'D'))
+          @@ websearch_to_tsquery('english', @q::text)
+      OR EXISTS (
+          SELECT 1 FROM okt_repository.concept_aliases a
+          WHERE a.concept_id = c.id
+            AND setweight(to_tsvector('english', coalesce(a.alias_text, '')), 'A')
+                @@ websearch_to_tsquery('english', @q::text)
+      )
+  );
+
+-- name: GetConceptsByIDsForSearch :many
+-- Fetches the ListGroupedConceptsByRepo-shaped row (with the
+-- per-context fact_count) for an arbitrary set of concept ids in a
+-- single round-trip. Used by the hybrid search path: the lexical
+-- channel over-fetches its own rows, the semantic channel (Qdrant
+-- concept collection) returns only ids, and this query fills in
+-- the rows for any semantic-only ids the lexical batch didn't
+-- already return. Name/alias ranks are zero (this query is not a
+-- ranked search; the fused ranking is applied in Go via the
+-- caller-supplied score map). No ordering is applied here — the
+-- caller re-orders to match the fused ranking. Repository scoping
+-- is enforced so a cross-repo id in the input set is silently
+-- dropped.
+SELECT c.id,
+       c.repository_id,
+       c.canonical_name,
+       c.context,
+       c.description,
+       c.embedded_at,
+       c.embedded_model,
+       c.created_at,
+       (SELECT COUNT(*) FROM okt_repository.fact_concepts fc WHERE fc.concept_id = c.id) AS fact_count,
+       0.0::real AS name_rank,
+       0.0::real AS alias_rank
+FROM okt_repository.concepts c
+WHERE c.id = ANY(@ids::uuid[])
+  AND c.repository_id = @repository_id;
 
 -- name: ListConceptsByRepoName :many
 -- Group lookup by lower(canonical_name): the primary detail-endpoint
@@ -376,17 +570,59 @@ WHERE is_join.investigation_id = @investigation_id;
 -- name: ListFactsByConcept :many
 -- The "query DNA → 200 facts" view. Paginated; the caller passes
 -- the concept_id (resolved by the caller from the route param).
--- Ordered by first_seen_at so the oldest link is first (stable
--- across pages). The optional search ($2) runs through
--- websearch_to_tsquery against facts.search_tsv (covers facts.text);
--- empty string = no filter. LIMIT $3 / OFFSET $4 apply on top.
-SELECT f.*, fc.first_seen_at
+-- The optional search ($2) runs through websearch_to_tsquery against
+-- facts.search_tsv (covers facts.text); empty string = no filter.
+-- LIMIT $4 / OFFSET $5 apply on top of the ORDER BY.
+--
+-- The optional sort ($3) mirrors ListFactsByRepoWithSourceCount:
+--   - 'created_at': newest facts first (the prior behavior when this
+--     endpoint ordered by fc.first_seen_at — link-insertion order,
+--     which was essentially ingest order, not fact recency; the new
+--     'created_at' branch orders by the fact's own created_at, a
+--     more meaningful "newest fact" signal).
+--   - 'source_count' (default when $3 is empty or any other value):
+--     most-confirmed facts first. A fact that survived dedup from N
+--     independent sources is more load-bearing than a single-source
+--     paraphrase — the same signal the repo-wide /facts endpoint
+--     defaults to. This lifts multi-source answering facts (e.g. the
+--     SBF "facing seven counts..." fact with source_count=2) out of
+--     the middle of large concept fact pools where first_seen_at
+--     ordering had buried them.
+--
+-- ts_rank(f.search_tsv, $2) is added as a tiebreaker after
+-- source_count so that, among equally-confirmed facts, the ones
+-- whose text most closely matches the query rank first. The rank
+-- is 0 for all rows when $2 is empty, so the tiebreaker is a no-op
+-- in the unfiltered case. fc.first_seen_at is the final
+-- deterministic tiebreaker so pagination stays stable across pages.
+--
+-- The source_count is computed via a LEFT JOIN on a grouped
+-- fact_sources subquery (mirrors ListFactsByRepoWithSourceCount).
+SELECT f.*, fc.first_seen_at,
+       COALESCE(fs_count.source_count, 0) AS source_count
 FROM okt_repository.fact_concepts fc
 JOIN okt_repository.facts f ON f.id = fc.fact_id
+LEFT JOIN (
+    SELECT fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources
+    GROUP BY fact_id
+) fs_count ON fs_count.fact_id = f.id
 WHERE fc.concept_id = $1
   AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2))
-ORDER BY fc.first_seen_at
-LIMIT $3 OFFSET $4;
+ORDER BY
+    -- created_at branch: newest facts first.
+    CASE WHEN $3 = 'created_at' THEN f.created_at END DESC,
+    -- source_count branch (default): most-confirmed facts first.
+    CASE WHEN $3 != 'created_at' THEN COALESCE(fs_count.source_count, 0) END DESC,
+    -- ts_rank tiebreaker (only when q is non-empty and not in
+    -- created_at mode). 0 for all rows when q is empty, so it's a
+    -- no-op in the unfiltered case.
+    CASE WHEN $3 != 'created_at' AND $2::text != ''
+         THEN ts_rank(f.search_tsv, websearch_to_tsquery('english', $2))
+    END DESC,
+    -- Final deterministic tiebreaker so pagination stays stable.
+    fc.first_seen_at
+LIMIT $4 OFFSET $5;
 
 -- name: CountFactsByConcept :one
 -- Companion count for ListFactsByConcept. Same concept_id and

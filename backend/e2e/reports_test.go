@@ -507,8 +507,8 @@ func TestReportsPermissionDenied(t *testing.T) {
 	}
 
 	// Viewer CAN list → 200.
-	resp, _ = viewer.do("GET", "/api/v1/repositories/"+slug+"/reports", nil)
+	resp, listBody := viewer.do("GET", "/api/v1/repositories/"+slug+"/reports", nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("viewer list: expected 200, got %d", resp.StatusCode)
+		t.Fatalf("viewer list: expected 200, got %d (body=%s)", resp.StatusCode, string(listBody))
 	}
 }

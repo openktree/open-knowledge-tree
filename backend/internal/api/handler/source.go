@@ -22,11 +22,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
+	"github.com/openktree/open-knowledge-tree/backend/internal/config"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/search"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
+	hybrid "github.com/openktree/open-knowledge-tree/backend/internal/search"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -97,13 +103,27 @@ type TaskEnqueuer interface {
 	EnqueueRetrieveSourceFromHTTP(ctx context.Context, args RetrieveSourceArgs) (string, error)
 	EnqueueSourceDecompositionFromHTTP(ctx context.Context, args SourceDecompositionArgs) (string, error)
 	EnqueueAnnotateReportFromHTTP(ctx context.Context, args AnnotateReportArgs) (string, error)
+	EnqueueExtractConceptsFromHTTP(ctx context.Context, args ExtractConceptsArgs) (string, error)
+}
+
+// ExtractConceptsArgs is the wire shape for the admin re-extract
+// endpoint (POST /api/v1/admin/repos/{repoID}/concepts/reextract).
+// Mirrors tasks.ExtractConceptsArgs; SourceID empty means a repo-
+// wide pass (the reextract endpoint always enqueues repo-wide).
+type ExtractConceptsArgs struct {
+	RepositoryID string `json:"repository_id"`
+	SourceID     string `json:"source_id,omitempty"`
 }
 
 // SourceDecompositionArgs is the wire shape for POST
-// /{slug}/sources/{sourceID}/process.
+// /{slug}/sources/{sourceID}/process and the admin reprocess
+// endpoint. RetryChunkIndices, when set, narrows the job to only
+// the listed chunk indices (reprocess mode — see
+// tasks.SourceDecompositionArgs.RetryChunkIndices).
 type SourceDecompositionArgs struct {
-	SourceID     string `json:"source_id"`
-	RepositoryID string `json:"repository_id"`
+	SourceID          string  `json:"source_id"`
+	RepositoryID      string  `json:"repository_id"`
+	RetryChunkIndices []int32 `json:"retry_chunk_indices,omitempty"`
 }
 
 // AnnotateReportArgs is the wire shape for the report-annotation
@@ -167,6 +187,30 @@ type Source struct {
 	// nil means the content-type gate is a no-op (legacy behavior),
 	// so existing tests that don't wire it still pass.
 	systemStore *store.Queries
+	// audit records ingestion-start events to
+	// okt_system.permission_audit. Set via SetAuditRecorder; nil in
+	// tests that don't exercise the audit pipeline. When nil, the
+	// CreateSource / UploadSource / EnqueueRetrieveSource handlers
+	// skip the audit write (best-effort, never blocks the request).
+	audit audit.Recorder
+	// auditUserLookup resolves the actor's email for audit rows.
+	// Set alongside audit via SetAuditRecorder; nil falls back to
+	// an empty username (the audit row still records the
+	// actor_user_id from the request context).
+	auditUserLookup func(ctx context.Context, uid pgtype.UUID) string
+	// qdrant + embeddingProvider power the hybrid search path
+	// (lexical tsvector fused with Qdrant cosine via RRF) used by
+	// ListRepoFacts when the caller supplies a non-empty `q` and
+	// the master switch (cfg.Search.Hybrid.Enabled) is on. Nil
+	// (the deployment without Qdrant / a chat-only AI config)
+	// makes ListRepoFacts fall back to the lexical-only path.
+	// Set via SetQdrant / SetEmbeddingProvider on the api.Handler,
+	// which propagates to this struct. The EmbeddingCfg carries
+	// the model name used to embed the caller's query.
+	qdrant            *qdrantstore.Store
+	embeddingProvider ai.EmbeddingProvider
+	embeddingCfg      config.EmbeddingConfig
+	searchHybrid      config.SearchHybridConfig
 }
 
 // NewSource constructs a Source handler bundle. `storage` is the
@@ -252,6 +296,64 @@ func (s *Source) SetProviderRegistry(r *ProviderRegistry) {
 // api.Handler.SetSource in cmd/app/api.go.
 func (s *Source) SetSystemStore(q *store.Queries) {
 	s.systemStore = q
+}
+
+// SetAuditRecorder wires the audit recorder + actor-email resolver
+// the ingestion handlers (CreateSource, UploadSource,
+// EnqueueRetrieveSource) use to emit ingestion_start events. Both
+// arguments are optional: nil recorder disables the audit write;
+// nil lookup falls back to an empty username (the audit row still
+// records the actor_user_id from the request context). Wired by
+// api.Handler.SetSource after the recorder is built.
+func (s *Source) SetAuditRecorder(r audit.Recorder, lookup func(ctx context.Context, uid pgtype.UUID) string) {
+	s.audit = r
+	s.auditUserLookup = lookup
+}
+
+// SetSearchHybrid wires the Qdrant vector store, embedding provider,
+// embedding config, and hybrid-search config used by ListRepoFacts
+// to fuse lexical and semantic search via Reciprocal Rank Fusion.
+// Any nil argument disables hybrid mode for this handler (the list
+// endpoint falls back to the lexical-only path). Wired by
+// api.Handler.SetQdrant / SetEmbeddingProvider.
+func (s *Source) SetSearchHybrid(q *qdrantstore.Store, ep ai.EmbeddingProvider, embCfg config.EmbeddingConfig, hybridCfg config.SearchHybridConfig) {
+	s.qdrant = q
+	s.embeddingProvider = ep
+	s.embeddingCfg = embCfg
+	s.searchHybrid = hybridCfg
+}
+
+// recordIngestionAudit emits an ingestion_start audit event for the
+// given request. Best-effort: a nil recorder is a no-op, and the
+// write happens on a background goroutine (RecordAsync) so it never
+// blocks the request. The repo UUID is read from the URL context.
+func (s *Source) recordIngestionAudit(r *http.Request, sourceURL, kind, sourceID string, detail map[string]any) {
+	if s.audit == nil {
+		return
+	}
+	uid := httputil.RequestUserID(r.Context())
+	username := ""
+	if s.auditUserLookup != nil && uid.Valid {
+		username = s.auditUserLookup(r.Context(), uid)
+	}
+	repoID, _ := appmw.RepoIDFromContext(r.Context())
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["kind"] = kind
+	if sourceID != "" {
+		detail["source_id"] = sourceID
+	}
+	s.audit.RecordAsync(audit.Event{
+		UserID:       uid,
+		Username:     username,
+		Action:       rbac.AuditActionIngestionStart,
+		Object:       rbac.Objects.Sources,
+		RepositoryID: repoID,
+		Target:       sourceURL,
+		Detail:       detail,
+		SourceURL:    sourceURL,
+	})
 }
 
 // contentTypesAllowedForRepo reports whether a given content kind
@@ -1004,6 +1106,35 @@ func (s *Source) EnqueueRetrieveSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Audit ingestion start. The actor is on the request context
+	// (EnqueueRetrieveSource is authed); the repo comes from the
+	// body since this is the system-scope /sources/retrieve route.
+	if s.audit != nil {
+		uid := httputil.RequestUserID(r.Context())
+		username := ""
+		if s.auditUserLookup != nil && uid.Valid {
+			username = s.auditUserLookup(r.Context(), uid)
+		}
+		var repoID pgtype.UUID
+		if body.RepositoryID != "" {
+			_ = repoID.Scan(body.RepositoryID)
+		}
+		s.audit.RecordAsync(audit.Event{
+			UserID:       uid,
+			Username:     username,
+			Action:       rbac.AuditActionIngestionStart,
+			Object:       rbac.Objects.Sources,
+			RepositoryID: repoID,
+			Target:       body.URL,
+			Detail: map[string]any{
+				"job_id":        jobID,
+				"doi":           body.DOI,
+				"classified_as": resource.Type,
+			},
+			SourceURL: body.URL,
+		})
+	}
+
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id":        jobID,
 		"classified_as": resource.Type,
@@ -1096,11 +1227,18 @@ func parseIntDefault(r *http.Request, name string, def int) int {
 // LIMIT/OFFSET) so the UI can render "page X of Y"; `limit` and
 // `offset` echo the paging that was applied so the caller can
 // confirm the server honored their request (or clamped it).
+//
+// `search_mode` is populated only by the fact/concept search
+// endpoints that run the hybrid path: "hybrid" when the lexical
+// and semantic channels were fused, "lexical" when hybrid was
+// unavailable or failed open. Omitted (empty) by every other
+// endpoint so the JSON shape stays backward-compatible.
 type pageEnvelope struct {
-	Data   interface{} `json:"data"`
-	Total  int64       `json:"total"`
-	Limit  int         `json:"limit"`
-	Offset int         `json:"offset"`
+	Data       interface{} `json:"data"`
+	Total      int64       `json:"total"`
+	Limit      int         `json:"limit"`
+	Offset     int         `json:"offset"`
+	SearchMode string      `json:"search_mode,omitempty"`
 }
 
 // ListSources handles GET /{slug}/sources.
@@ -1235,6 +1373,9 @@ func (s *Source) CreateSource(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create source")
 		return
 	}
+	s.recordIngestionAudit(r, body.URL, kind0, created.ID.String(), map[string]any{
+		"source_kind": kind0,
+	})
 	httputil.WriteJSON(w, http.StatusCreated, created)
 }
 
@@ -1520,6 +1661,10 @@ func (s *Source) UploadSource(w http.ResponseWriter, r *http.Request) {
 		SourceID:            srcIDStr,
 		Status:              "queued",
 		InvestigationLinked: investigationLinked,
+	})
+	s.recordIngestionAudit(r, syntheticURL, "upload", srcIDStr, map[string]any{
+		"job_id":              jobID,
+		"investigation_linked": investigationLinked,
 	})
 }
 
@@ -2270,10 +2415,44 @@ func (s *Source) ListRepoFacts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
-			Data:   facts,
-			Total:  total,
-			Limit:  limit,
-			Offset: offset,
+			Data:       facts,
+			Total:      total,
+			Limit:      limit,
+			Offset:     offset,
+			SearchMode: "lexical",
+		})
+		return
+	}
+
+	// Hybrid search path: when the caller supplied a non-empty
+	// query, the concept-intersection filter is not in play, and
+	// the qdrant store + embedding provider are wired, fuse the
+	// lexical (Postgres tsvector) and semantic (Qdrant cosine)
+	// channels via Reciprocal Rank Fusion. The hybrid service
+	// over-fetches both channels, fuses, and slices the final
+	// page in Go; `total` is the lexical match count (the same
+	// value the lexical-only path would return) so the page
+	// envelope stays meaningful. Any qdrant/embedding error is
+	// logged and the call degrades to lexical-only (fail-open),
+	// so a side-channel outage never breaks the search.
+	if search != "" && s.searchHybrid.Enabled && s.qdrant != nil && s.embeddingProvider != nil {
+		res, hErr := hybrid.HybridFacts(r.Context(), hybrid.Deps{
+			Queries:           queries,
+			Qdrant:            s.qdrant,
+			EmbeddingProvider: s.embeddingProvider,
+			EmbeddingCfg:      s.embeddingCfg,
+			Hybrid:            s.searchHybrid,
+		}, repoID, search, statusFilter, sortParam, limit, offset)
+		if hErr != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to search facts")
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
+			Data:       res.Rows,
+			Total:      res.Total,
+			Limit:      limit,
+			Offset:     offset,
+			SearchMode: res.SearchMode,
 		})
 		return
 	}
@@ -2302,10 +2481,11 @@ func (s *Source) ListRepoFacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
-		Data:   facts,
-		Total:  total,
-		Limit:  limit,
-		Offset: offset,
+		Data:       facts,
+		Total:      total,
+		Limit:      limit,
+		Offset:     offset,
+		SearchMode: "lexical",
 	})
 }
 

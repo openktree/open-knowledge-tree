@@ -127,9 +127,11 @@ type OktRepositoryFactConcept struct {
 }
 
 type OktRepositoryFactConceptSkip struct {
-	FactID    pgtype.UUID        `json:"fact_id"`
-	LastError string             `json:"last_error"`
-	SkippedAt pgtype.Timestamptz `json:"skipped_at"`
+	FactID        pgtype.UUID        `json:"fact_id"`
+	LastError     string             `json:"last_error"`
+	SkippedAt     pgtype.Timestamptz `json:"skipped_at"`
+	Attempts      int32              `json:"attempts"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
 }
 
 type OktRepositoryFactReference struct {
@@ -191,36 +193,40 @@ type OktRepositoryReportAnnotation struct {
 }
 
 type OktRepositorySource struct {
-	ID              pgtype.UUID        `json:"id"`
-	RepositoryID    pgtype.UUID        `json:"repository_id"`
-	Url             string             `json:"url"`
-	Kind            string             `json:"kind"`
-	Status          string             `json:"status"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-	Content         []byte             `json:"content"`
-	FetchedAt       pgtype.Timestamptz `json:"fetched_at"`
-	Error           *string            `json:"error"`
-	Doi             *string            `json:"doi"`
-	ParsedTitle     *string            `json:"parsed_title"`
-	ParsedText      *string            `json:"parsed_text"`
-	ParsedHtml      *string            `json:"parsed_html"`
-	ParsedAuthor    *string            `json:"parsed_author"`
-	ParsedSitename  *string            `json:"parsed_sitename"`
-	ParsedLanguage  *string            `json:"parsed_language"`
-	ParsedAt        pgtype.Timestamptz `json:"parsed_at"`
-	ParseStatus     *string            `json:"parse_status"`
-	PublishedAt     pgtype.Date        `json:"published_at"`
-	ProcessedAt     pgtype.Timestamptz `json:"processed_at"`
-	SearchTsv       interface{}        `json:"search_tsv"`
-	StorageKey      *string            `json:"storage_key"`
-	ContentType     *string            `json:"content_type"`
-	LocalPath       *string            `json:"local_path"`
-	StoredAt        pgtype.Timestamptz `json:"stored_at"`
-	FetchAttempts   []byte             `json:"fetch_attempts"`
-	OaStatus        *string            `json:"oa_status"`
-	ParsedMarkdown  *string            `json:"parsed_markdown"`
-	SentenceOffsets []int32            `json:"sentence_offsets"`
+	ID                 pgtype.UUID        `json:"id"`
+	RepositoryID       pgtype.UUID        `json:"repository_id"`
+	Url                string             `json:"url"`
+	Kind               string             `json:"kind"`
+	Status             string             `json:"status"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	Content            []byte             `json:"content"`
+	FetchedAt          pgtype.Timestamptz `json:"fetched_at"`
+	Error              *string            `json:"error"`
+	Doi                *string            `json:"doi"`
+	ParsedTitle        *string            `json:"parsed_title"`
+	ParsedText         *string            `json:"parsed_text"`
+	ParsedHtml         *string            `json:"parsed_html"`
+	ParsedAuthor       *string            `json:"parsed_author"`
+	ParsedSitename     *string            `json:"parsed_sitename"`
+	ParsedLanguage     *string            `json:"parsed_language"`
+	ParsedAt           pgtype.Timestamptz `json:"parsed_at"`
+	ParseStatus        *string            `json:"parse_status"`
+	PublishedAt        pgtype.Date        `json:"published_at"`
+	ProcessedAt        pgtype.Timestamptz `json:"processed_at"`
+	SearchTsv          interface{}        `json:"search_tsv"`
+	StorageKey         *string            `json:"storage_key"`
+	ContentType        *string            `json:"content_type"`
+	LocalPath          *string            `json:"local_path"`
+	StoredAt           pgtype.Timestamptz `json:"stored_at"`
+	FetchAttempts      []byte             `json:"fetch_attempts"`
+	OaStatus           *string            `json:"oa_status"`
+	ParsedMarkdown     *string            `json:"parsed_markdown"`
+	SentenceOffsets    []int32            `json:"sentence_offsets"`
+	ChunkFailures      int32              `json:"chunk_failures"`
+	ChunkErrors        []byte             `json:"chunk_errors"`
+	LastChunkFailureAt pgtype.Timestamptz `json:"last_chunk_failure_at"`
+	ConceptSkipCount   int32              `json:"concept_skip_count"`
 }
 
 type OktRepositorySourceImage struct {
@@ -253,6 +259,20 @@ type OktSystemAiUsage struct {
 	RepositoryID     pgtype.UUID        `json:"repository_id"`
 	SourceID         pgtype.UUID        `json:"source_id"`
 	Operation        string             `json:"operation"`
+}
+
+type OktSystemApiKey struct {
+	ID           pgtype.UUID        `json:"id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	Name         string             `json:"name"`
+	TokenHash    string             `json:"token_hash"`
+	Prefix       string             `json:"prefix"`
+	RepositoryID pgtype.UUID        `json:"repository_id"`
+	Permissions  []string           `json:"permissions"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	LastUsedAt   pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
 type OktSystemOauthAuthorizationCode struct {
@@ -298,6 +318,19 @@ type OktSystemOktWorkerHeartbeat struct {
 	Hostname      string             `json:"hostname"`
 	StartedAt     pgtype.Timestamptz `json:"started_at"`
 	LastHeartbeat pgtype.Timestamptz `json:"last_heartbeat"`
+}
+
+type OktSystemPermissionAudit struct {
+	ID            int64              `json:"id"`
+	OccurredAt    pgtype.Timestamptz `json:"occurred_at"`
+	ActorUserID   pgtype.UUID        `json:"actor_user_id"`
+	ActorUsername string             `json:"actor_username"`
+	Action        string             `json:"action"`
+	Object        string             `json:"object"`
+	RepositoryID  pgtype.UUID        `json:"repository_id"`
+	Target        *string            `json:"target"`
+	Detail        []byte             `json:"detail"`
+	SourceUrl     *string            `json:"source_url"`
 }
 
 type OktSystemPromptset struct {
@@ -355,6 +388,8 @@ type OktSystemRepositoryReportSetting struct {
 	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
 	MaxFactsPerSentence      *int32             `json:"max_facts_per_sentence"`
 	LexicalSimilarityFloor   *float64           `json:"lexical_similarity_floor"`
+	ContextWindowBefore      *int32             `json:"context_window_before"`
+	ContextWindowAfter       *int32             `json:"context_window_after"`
 }
 
 type Repository struct {

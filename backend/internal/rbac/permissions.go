@@ -109,6 +109,30 @@ const (
 	AuditActionGroupCreate = "group_create"
 	AuditActionGroupAssign = "group_assign"
 	AuditActionGroupRemove = "group_remove"
+
+	// Admin / CRUD actions on system objects.
+	AuditActionUserCreate    = "user_create"
+	AuditActionUserUpdate    = "user_update"
+	AuditActionRepoCreate    = "repo_create"
+	AuditActionRepoUpdate    = "repo_update"
+	AuditActionRepoDelete    = "repo_delete"
+	AuditActionOAuthRegister = "oauth_register"
+	AuditActionOAuthRevoke   = "oauth_revoke"
+	AuditActionProviderSet   = "provider_set"
+
+	// Per-repo ingestion start (the actions that cost money or
+	// grant access). Recorded at the HTTP handler entry point so
+	// the actor is captured from the request context, not from
+	// the async River job (which runs detached from the request).
+	AuditActionIngestionStart = "ingestion_start"
+
+	// API key lifecycle. Create records the key name + scope at
+	// issuance; revoke records the key id at revocation. The
+	// actor is always the key's owner (keys are self-managed via
+	// /users/me/api-keys; a session is required to manage keys,
+	// never another key).
+	AuditActionAPIKeyCreate = "api_key_create"
+	AuditActionAPIKeyRevoke = "api_key_revoke"
 )
 
 // RepoObject returns the repo-scoped form of a bare resource

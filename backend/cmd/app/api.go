@@ -13,6 +13,7 @@ import (
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/api"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/bootstrap"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
@@ -29,6 +30,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/summarization"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/synthesis"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
@@ -322,7 +324,12 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 		ollamaBaseURL = os.Getenv("OLLAMA_BASE_URL")
 	}
 	if ollamaBaseURL != "" {
-		aiProviders["ollama"] = ai.NewOllamaProvider(ollamaBaseURL, ollamaModels)
+		// Apply the env-var override on a config copy so
+		// NewOllamaProviderFromConfig picks up both the resolved
+		// base_url and the configured http_timeout.
+		ollamaCfg := cfg.Providers.AI.Ollama
+		ollamaCfg.BaseURL = ollamaBaseURL
+		aiProviders["ollama"] = ai.NewOllamaProviderFromConfig(ollamaCfg, ollamaModels)
 	}
 
 	ollamaCloudModels := ai.ModelsForProvider(cfg, "ollama_cloud")
@@ -331,7 +338,9 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 		ollamaCloudKey = os.Getenv("OLLAMA_API_KEY")
 	}
 	if ollamaCloudKey != "" {
-		aiProviders["ollama_cloud"] = ai.NewOllamaCloudProvider(ollamaCloudKey, ollamaCloudModels)
+		ocCfg := cfg.Providers.AI.OllamaCloud
+		ocCfg.APIKey = ollamaCloudKey
+		aiProviders["ollama_cloud"] = ai.NewOllamaCloudProviderFromConfig(ocCfg, ollamaCloudModels)
 	}
 
 	openrouterModels := ai.ModelsForProvider(cfg, "openrouter")
@@ -358,6 +367,24 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	for id, p := range aiProviders {
 		aiProviders[id] = ai.MaybeWrapRateLimited(p, id, cfg)
 	}
+
+	// Apply the shared LLM retry config (cfg.Providers.LLMRetry) to
+	// the four phase-provider packages' defaultRetryConfig vars.
+	// Each package's SetRetryDefaults overrides its package var so
+	// every retryWithBackoff call (fact_extraction, concept_extraction,
+	// image_fact_extraction, summarization, refinement, synthesis)
+	// picks up the operator's MaxAttempts/BaseDelay/MaxDelay/PerCallTO
+	// without each provider needing a constructor change. Defaults:
+	// 4 attempts, 2s base, 30s cap, 5m per-call — chosen so the
+	// worker LLM timeouts (20-25m) comfortably exceed the retry
+	// budget (4 × 5m + backoffs ≈ 20m) and the retry loop can
+	// actually complete its 4 attempts instead of being killed by
+	// the worker's outer ctx (the historical 120s value that
+	// severed 95,627 facts).
+	decomposition.SetRetryDefaults(cfg.Providers.LLMRetry)
+	summarization.SetRetryDefaults(cfg.Providers.LLMRetry)
+	refinement.SetRetryDefaults(cfg.Providers.LLMRetry)
+	synthesis.SetRetryDefaults(cfg.Providers.LLMRetry)
 
 	chunkingProviders := map[string]decomposition.ChunkingProvider{
 		"simple": decomposition.NewSimpleChunkingProvider(
@@ -528,6 +555,35 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 		log.Printf("posture_classifier: not enabled; annotate_report falls back to keep-all (posture = NULL)")
 	}
 
+	// Claim extractor: a chat model that reads each report sentence
+	// and emits the verifiable assertions it makes (numeric values,
+	// causal claims, comparisons, quotations, definitions). The
+	// annotate_report worker uses the extracted claims to drive an
+	// additional retrieval pass per claim so the posture classifier
+	// sees facts that match the sentence's SPECIFIC assertion, not
+	// just its broad topic. Uses the same DeepSeek V4 Flash model as
+	// the posture classifier (claim extraction is a tight instruction-
+	// following JSON-emission task where DeepSeek's instruction-tuned
+	// head is the stronger choice). When the provider/model is not
+	// configured (or Enabled is false) the extractor stays nil and
+	// the worker falls back to embedding-only retrieval. A per-repo
+	// repository_model_settings row for task_kind='claim_extraction'
+	// can override the model id at runtime via ModelResolver.
+	var claimExtractor claims.Extractor
+	if ceCfg := cfg.Providers.Reports.ClaimExtractor; ceCfg.Enabled {
+		if ceCfg.Provider != "" {
+			if aiProv, ok := aiProviders[ceCfg.Provider]; ok && aiProv != nil {
+				claimExtractor = claims.NewAIClaimExtractor(aiProv, ceCfg.Model)
+			} else {
+				log.Printf("claim_extractor: provider %q not registered; claim-driven retrieval disabled", ceCfg.Provider)
+			}
+		} else {
+			log.Printf("claim_extractor: no provider set; claim-driven retrieval disabled")
+		}
+	} else {
+		log.Printf("claim_extractor: not enabled; claim-driven retrieval disabled")
+	}
+
 	// Ontology source: the curated context vocabulary the concept-
 	// extraction prompt offers the model as the allowed context
 	// labels. The server uses the embedded contexts.json snapshot
@@ -614,12 +670,12 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	// deployment that hasn't wired the system pool still gets the
 	// built-in promptset via the BuiltinProvider.
 	promptsetResolver := promptset.NewResolver(promptset.NewDBProvider(queries))
-	tm, err := taskmanager.New(ctx, cfg, taskPool, queries, registry, searchProviders, fetchStrategy, chunkingProviders, factExtractors, imageExtractors, conceptExtractor, refiner, embeddingProvider, qdrantStore, storageBackend, summarizer, synthesizer, postureClassifier, modelResolver, promptsetResolver)
+	tm, err := taskmanager.New(ctx, cfg, taskPool, queries, registry, searchProviders, fetchStrategy, chunkingProviders, factExtractors, imageExtractors, conceptExtractor, refiner, embeddingProvider, qdrantStore, storageBackend, summarizer, synthesizer, postureClassifier, claimExtractor, modelResolver, promptsetResolver)
 	if err != nil {
 		log.Fatalf("setting up task manager: %v", err)
 	}
 
-	h := api.NewHandler(queries, cfg, rbacSvc, systemPool.Pool, registry)
+	h := api.NewHandler(queries, cfg, rbacSvc, systemPool.Pool, registry, audit.NewPostgresRecorder(systemPool.Pool))
 	h.SetSource(handler.NewSource(searchProviders, fetchStrategy, chunkingProviders, factExtractors, imageExtractors, storageBackend, parsers))
 	// Wire the live provider registry (built from the same maps
 	// passed to NewSource) so the per-repository settings feature
@@ -648,6 +704,16 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	h.SetMigrateEnqueuer(tm.MigrateEnqueuer())
 	h.SetRegistrySyncEnqueuer(tm.RegistrySyncEnqueuer())
 	h.SetAI(handler.NewAI(aiProviders, embeddingProvider, cfg.Providers.Embedding, queries))
+	// Wire the qdrant vector store + embedding provider into the
+	// handler deps so the fact/concept search endpoints can run
+	// the hybrid (lexical + semantic via RRF) path. Both are
+	// nil-safe: when Qdrant or the embedding provider is not
+	// configured at boot, the search endpoints degrade to
+	// lexical-only. The same qdrantStore + embeddingProvider
+	// instances are reused by the taskmanager (embed_facts /
+	// dedup workers) so there is one connection per process.
+	h.SetQdrant(qdrantStore)
+	h.SetEmbeddingProvider(embeddingProvider)
 	// Wire the tasks handler bundle so /api/v1/tasks/* serves
 	// job-list and job-get responses. The bundle is split out
 	// from the rest of NewHandler (which has no River client)

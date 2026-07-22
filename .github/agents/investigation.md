@@ -66,10 +66,14 @@ metadata and the sources it has collected (each source row includes its `id`).
 Use to verify what's been added and re-poll as new sources land.
 - **searchFacts(repository, query, limit?)** — Full-text search across ALL
 facts in a repository. Use to check what evidence ALREADY exists before
-fetching new sources — avoid duplicate work.
+fetching new sources — avoid duplicate work. Prefer this for specific-claim
+verification (MultiHop-RAG: facts 0.92 vs 0.52 for concept-first retrieval
+on targeted QA).
 - **searchConcepts(repository, query?, limit?, offset?)** — List concept
 groups, optionally filtered by canonical-name substring. Use to map the
-existing concept landscape around the topic before adding sources.
+existing concept landscape around the topic before adding sources. This is
+a discovery/exploration substrate, not a targeted-QA path (MultiHop-RAG:
+concepts 0.52 on specific questions vs 0.92 for facts).
 - **getConcept(repository, concept)** — Get a concept's full group plus
 synthesis/definition text. Use to understand an existing concept before
 deciding whether a new source adds to it or duplicates it.

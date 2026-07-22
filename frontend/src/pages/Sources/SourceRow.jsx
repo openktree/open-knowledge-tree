@@ -1,12 +1,27 @@
 import { A } from "@solidjs/router";
-import { Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
 import { formatTimestamp, oaStatusCopy, oaStatusVariant, statusVariant } from "./constants";
+import ReprocessDangerBox from "./ReprocessDangerBox";
 
 export default function SourceRow(props) {
   const source = () => props.source;
   const detailHref = () => `/${props.slug}/sources/${source().id}`;
+  const [showReprocess, setShowReprocess] = createSignal(false);
+  const chunkErrors = () => {
+    const raw = source().chunk_errors;
+    if (!raw) return [];
+    try {
+      return typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch {
+      return [];
+    }
+  };
+  const chunkErrorsTooltip = () =>
+    chunkErrors()
+      .map((e) => `chunk ${e.index}: ${e.error ? e.error.slice(0, 120) : "unknown"}`)
+      .join("\n");
   return (
     <div class="border rounded dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 transition">
       <div class="flex items-center justify-between p-3 gap-3">
@@ -55,8 +70,32 @@ export default function SourceRow(props) {
                 {source().error.length > 80 ? source().error.slice(0, 80) + "..." : source().error}
               </span>
             </Show>
+            <Show when={source().chunk_failures > 0}>
+              <Badge variant="red" title={chunkErrorsTooltip()}>
+                {source().chunk_failures} chunk failure{source().chunk_failures > 1 ? "s" : ""}
+              </Badge>
+            </Show>
+            <Show when={source().concept_skip_count > 0}>
+              <Badge
+                variant="yellow"
+                title="Facts skipped for concept extraction; click Re-extract concepts to retry"
+              >
+                {source().concept_skip_count} concept skip
+                {source().concept_skip_count > 1 ? "s" : ""}
+              </Badge>
+            </Show>
           </div>
         </A>
+        <Show when={props.canReprocess && source().chunk_failures > 0}>
+          <Button
+            variant="danger"
+            onClick={() => setShowReprocess((v) => !v)}
+            class="text-xs px-2 py-1"
+            title="Re-run only the failed chunks (no duplicate facts)"
+          >
+            Reprocess
+          </Button>
+        </Show>
         <Show when={props.canProcess}>
           <Button
             variant={props.processDisabled ? "secondary" : "primary"}
@@ -92,6 +131,17 @@ export default function SourceRow(props) {
           </Button>
         </Show>
       </div>
+      <Show when={showReprocess()}>
+        <div class="px-3 pb-3">
+          <ReprocessDangerBox
+            repoID={props.repoID}
+            source={source()}
+            reprocessing={props.reprocessing}
+            onConfirm={props.onReprocess}
+            onCancel={() => setShowReprocess(false)}
+          />
+        </div>
+      </Show>
     </div>
   );
 }

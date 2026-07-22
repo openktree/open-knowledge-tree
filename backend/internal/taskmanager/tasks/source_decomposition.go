@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -26,6 +27,16 @@ const QueueSourceDecomposition = "source_decomposition"
 type SourceDecompositionArgs struct {
 	SourceID     string `json:"source_id"`
 	RepositoryID string `json:"repository_id"`
+	// RetryChunkIndices, when non-empty, narrows the decomposition
+	// to ONLY the listed chunk indices (the chunks that failed in a
+	// prior run and have a chunk_errors JSONB entry on the source
+	// row). Used by the reprocess admin endpoint to re-run only the
+	// failed chunks without duplicating the facts from successful
+	// chunks (CreateFact has no ON CONFLICT; only AddFactSource is
+	// idempotent — deduplicate_facts would eventually clean up but
+	// doubles LLM cost). Empty means a full decomposition (the
+	// normal path from retrieve_source / upload / process).
+	RetryChunkIndices []int32 `json:"retry_chunk_indices,omitempty"`
 }
 
 func (SourceDecompositionArgs) Kind() string { return "source_decomposition" }
@@ -33,15 +44,16 @@ func (SourceDecompositionArgs) Kind() string { return "source_decomposition" }
 func (SourceDecompositionArgs) InsertOpts() river.InsertOpts { return river.InsertOpts{} }
 
 type SourceDecompositionResult struct {
-	SourceID      string       `json:"source_id"`
-	Chunks        int          `json:"chunks"`
-	Facts         int          `json:"facts"`
-	Images        int          `json:"images"`
-	ChunkFailures int          `json:"chunk_failures"`
-	ImageFailures int          `json:"image_failures"`
-	ChunkTraces   []ChunkTrace `json:"chunk_traces,omitempty"`
-	ImageTraces   []ImageTrace `json:"image_traces,omitempty"`
-	Processed     bool         `json:"processed"`
+	SourceID          string       `json:"source_id"`
+	Chunks            int          `json:"chunks"`
+	Facts             int          `json:"facts"`
+	Images            int          `json:"images"`
+	ChunkFailures     int          `json:"chunk_failures"`
+	ImageFailures     int          `json:"image_failures"`
+	ChunkTraces       []ChunkTrace `json:"chunk_traces,omitempty"`
+	ImageTraces       []ImageTrace `json:"image_traces,omitempty"`
+	Processed         bool         `json:"processed"`
+	ChunksStillFailed int          `json:"chunks_still_failed"`
 }
 
 // ChunkTrace is one text chunk's per-chunk troubleshooting record,
@@ -279,6 +291,29 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 			args.SourceID, len(chunks), len(sentences))
 	}
 
+	// Narrow to the retry set when the caller passed RetryChunkIndices
+	// (the reprocess admin endpoint). The chunk indices reference the
+	// original chunking (the same chunker + source text produces a
+	// stable ordering), so a chunk that failed run N is at the same
+	// index in run N+1. Filtering here keeps the rest of the worker
+	// unchanged: phase 1 + phase 2 + in-job retries operate only on
+	// the listed chunks. Successful chunks from the prior run are
+	// not re-LLM'd, so no duplicate fact rows are created.
+	if len(args.RetryChunkIndices) > 0 {
+		retrySet := make(map[int32]bool, len(args.RetryChunkIndices))
+		for _, idx := range args.RetryChunkIndices {
+			retrySet[idx] = true
+		}
+		filtered := chunks[:0]
+		for _, c := range chunks {
+			if retrySet[int32(c.Index)] {
+				filtered = append(filtered, c)
+			}
+		}
+		chunks = filtered
+		log.Printf("source_decomposition: reprocess mode for source %s — narrowed to %d failed chunk(s)", args.SourceID, len(chunks))
+	}
+
 	totalFacts := 0
 	chunkFailures := 0
 	chunkTraces := make([]ChunkTrace, 0, len(chunks))
@@ -294,21 +329,84 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 		facts []decomposition.ExtractedFact
 	}
 	concurrency := w.factCfg.ConcurrencyOr(4)
-	chunkResults, chunkErrs := decomposition.ExtractParallel(ctx, concurrency, chunks, func(callCtx context.Context, chunk decomposition.Chunk) (chunkExtract, error) {
-		chunkPromptText := chunk.Text
-		if len(sentences) > 0 {
-			chunkPromptText = buildLabeledChunkText(sentences, sourceText, chunk.StartRune, chunk.EndRune)
+
+	// runChunkWave fans the given chunk indices out via ExtractParallel
+	// and returns the per-chunk results + errors. Used by both the
+	// main wave and the in-job end-of-queue retry rounds.
+	runChunkWave := func(ctx context.Context, indices []int) ([]chunkExtract, []error) {
+		waveChunks := make([]decomposition.Chunk, 0, len(indices))
+		for _, idx := range indices {
+			waveChunks = append(waveChunks, chunks[idx])
 		}
-		facts, err := factExtractor.ExtractFacts(callCtx, pool.Pool, chunkPromptText, decomposition.FactExtractionAttribution{
-			RepositoryID: args.RepositoryID,
-			SourceID:     args.SourceID,
-			TaskID:       strconv.FormatInt(job.ID, 10),
+		results, errs := decomposition.ExtractParallel(ctx, concurrency, waveChunks, func(callCtx context.Context, chunk decomposition.Chunk) (chunkExtract, error) {
+			chunkPromptText := chunk.Text
+			if len(sentences) > 0 {
+				chunkPromptText = buildLabeledChunkText(sentences, sourceText, chunk.StartRune, chunk.EndRune)
+			}
+			facts, err := factExtractor.ExtractFacts(callCtx, pool.Pool, chunkPromptText, decomposition.FactExtractionAttribution{
+				RepositoryID: args.RepositoryID,
+				SourceID:     args.SourceID,
+				TaskID:       strconv.FormatInt(job.ID, 10),
+			})
+			if err != nil {
+				return chunkExtract{}, err
+			}
+			return chunkExtract{facts: facts}, nil
 		})
-		if err != nil {
-			return chunkExtract{}, err
+		return results, errs
+	}
+
+	// Main wave: run all chunks.
+	allIndices := make([]int, len(chunks))
+	for i := range chunks {
+		allIndices[i] = i
+	}
+	chunkResults, chunkErrs := runChunkWave(ctx, allIndices)
+
+	// ---- In-job end-of-queue reprocess of failed chunks ----
+	// After the main wave, collect the chunk indices that failed
+	// (chunkErrs[i] != nil) and re-run them up to inJobRetries times
+	// (default 2) with backoff. Only the failed chunks are re-LLM'd;
+	// successful chunks are not re-run, so no duplicate fact rows are
+	// created (CreateFact has no ON CONFLICT; only AddFactSource is
+	// idempotent — deduplicate_facts would eventually clean up but
+	// doubles LLM cost). Each retry round rebuilds the failed-index
+	// set so a chunk that succeeds on retry 1 is not re-run on retry 2.
+	inJobRetries := w.factCfg.InJobRetriesOr(2)
+	chunkRetryAttempts := make([]int, len(chunks)) // how many retry rounds each chunk needed (0 = succeeded on main wave)
+	for retryRound := 1; retryRound <= inJobRetries; retryRound++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("source_decomposition: ctx cancelled during retry round %d: %w", retryRound, err)
 		}
-		return chunkExtract{facts: facts}, nil
-	})
+		var failedIndices []int
+		for i := range chunks {
+			if chunkErrs[i] != nil {
+				failedIndices = append(failedIndices, i)
+			}
+		}
+		if len(failedIndices) == 0 {
+			break // all chunks succeeded
+		}
+		log.Printf("source_decomposition: retry round %d/%d: re-running %d failed chunk(s) for source %s",
+			retryRound, inJobRetries, len(failedIndices), args.SourceID)
+		// Backoff before the retry round: 5s, then 10s. Short
+		// enough to stay inside the worker's JobTimeout, long
+		// enough to ride out a brief OpenRouter 429 storm.
+		backoff := time.Duration(5*(1<<uint(retryRound-1))) * time.Second
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return fmt.Errorf("source_decomposition: ctx cancelled during retry backoff: %w", ctx.Err())
+		}
+		retryResults, retryErrs := runChunkWave(ctx, failedIndices)
+		for waveIdx, origIdx := range failedIndices {
+			chunkResults[origIdx] = retryResults[waveIdx]
+			chunkErrs[origIdx] = retryErrs[waveIdx]
+			if retryErrs[waveIdx] == nil {
+				chunkRetryAttempts[origIdx] = retryRound
+			}
+		}
+	}
 
 	// ---- Phase 2: serial persistence (single goroutine) ----
 	// Iterate the ordered results and persist exactly as the old inline
@@ -400,8 +498,72 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 		log.Printf("source_decomposition: image extraction enabled but provider not configured; skipping images for source %s", args.SourceID)
 	}
 
-	if _, err := queries.MarkSourceProcessed(context.Background(), sourceID); err != nil {
-		return fmt.Errorf("source_decomposition: marking source processed: %w", err)
+	// Count chunks still failing after all retry rounds. These
+	// determine whether the source is marked processed: any chunk
+	// still failing means the source stays un-processed (status
+	// unchanged, processed_at NULL) so the UI surfaces the failure
+	// and an operator can re-trigger via the reprocess admin
+	// endpoint. The chunk_errors JSONB column records the per-chunk
+	// failure traces for the UI tooltip.
+	chunksStillFailed := 0
+	type chunkErrorEntry struct {
+		Index    int    `json:"index"`
+		Type     string `json:"type"`
+		Error    string `json:"error"`
+		Attempts int    `json:"attempts"` // retry rounds this chunk was re-LLM'd
+	}
+	var chunkErrorEntries []chunkErrorEntry
+	for i, chunk := range chunks {
+		if chunkErrs[i] == nil {
+			continue
+		}
+		chunksStillFailed++
+		// Find the trace for this chunk (if any) to get the error
+		// string; chunkErrs[i] is the source of truth after retries.
+		errStr := chunkErrs[i].Error()
+		for _, t := range chunkTraces {
+			if t.Index == chunk.Index && t.Type == "text" && t.Error != "" {
+				errStr = t.Error
+				break
+			}
+		}
+		chunkErrorEntries = append(chunkErrorEntries, chunkErrorEntry{
+			Index:    chunk.Index,
+			Type:     "text",
+			Error:    truncateForLog(errStr, 500),
+			Attempts: chunkRetryAttempts[i],
+		})
+	}
+
+	processed := chunksStillFailed == 0
+	if processed {
+		if _, err := queries.MarkSourceProcessed(context.Background(), sourceID); err != nil {
+			return fmt.Errorf("source_decomposition: marking source processed: %w", err)
+		}
+		// Clear any prior chunk_failures / chunk_errors now that
+		// the source is fully decomposed (a reprocess run that
+		// succeeds should clean up the failure state from the
+		// prior run).
+		if _, err := queries.ClearSourceChunkFailures(context.Background(), sourceID); err != nil {
+			log.Printf("source_decomposition: clearing chunk failures for source %s: %v", args.SourceID, err)
+		}
+	} else if len(chunkErrorEntries) > 0 {
+		// Record chunk failures on the source row so the UI can
+		// surface them and the operator can re-trigger via the
+		// reprocess admin endpoint. The source stays in its pre-
+		// decomposition status (typically 'fetched').
+		errJSON, err := json.Marshal(chunkErrorEntries)
+		if err == nil {
+			if _, err := queries.UpdateSourceChunkFailures(context.Background(), store.UpdateSourceChunkFailuresParams{
+				ID:             sourceID,
+				ChunkFailures:  int32(len(chunkErrorEntries)),
+				ChunkErrors:    errJSON,
+			}); err != nil {
+				log.Printf("source_decomposition: recording chunk failures for source %s: %v", args.SourceID, err)
+			}
+		} else {
+			log.Printf("source_decomposition: marshaling chunk_errors for source %s: %v", args.SourceID, err)
+		}
 	}
 
 	// Chain to embed_facts via river.ClientFromContext so the
@@ -445,15 +607,16 @@ func (w *SourceDecompositionWorker) Work(ctx context.Context, job *river.Job[Sou
 	}
 
 	result := &SourceDecompositionResult{
-		SourceID:      args.SourceID,
-		Chunks:        len(chunks),
-		Facts:         totalFacts,
-		Images:        imageCount,
-		ChunkFailures: chunkFailures,
-		ImageFailures: imageFailures,
-		ChunkTraces:   chunkTraces,
-		ImageTraces:   imageTraces,
-		Processed:     true,
+		SourceID:          args.SourceID,
+		Chunks:            len(chunks),
+		Facts:             totalFacts,
+		Images:            imageCount,
+		ChunkFailures:     chunkFailures,
+		ImageFailures:     imageFailures,
+		ChunkTraces:       chunkTraces,
+		ImageTraces:       imageTraces,
+		Processed:         processed,
+		ChunksStillFailed: chunksStillFailed,
 	}
 	if err := river.RecordOutput(ctx, result); err != nil {
 		return err

@@ -162,11 +162,17 @@ WHERE s.repository_id = $1
   AND f.status = 'to_delete';
 
 -- name: ListFactSources :many
--- Full source rows linked to a fact, joined with the source's url
--- and parsed_title for the detail endpoint. Ordered by first_seen_at
--- so the UI shows the oldest confirmation first.
+-- Full source rows linked to a fact, joined with the source's url,
+-- parsed_title, parsed_sitename (publication name), parsed_author,
+-- and published_at so the fact detail endpoint surfaces enough
+-- source metadata for downstream consumers (the UI, the MCP getFact
+-- tool, and LLM synthesis prompts) to attribute facts to their
+-- publications and answer publication- and time-bound questions
+-- (e.g. MultiHop-RAG comparison and temporal queries). Ordered by
+-- first_seen_at so the UI shows the oldest confirmation first.
 SELECT fs.fact_id, fs.source_id, fs.chunk_index, fs.first_seen_at,
-       s.url, s.parsed_title
+       s.url, s.parsed_title, s.parsed_sitename, s.parsed_author,
+       s.published_at
 FROM okt_repository.fact_sources fs
 JOIN okt_repository.sources s ON fs.source_id = s.id
 WHERE fs.fact_id = $1
@@ -232,6 +238,35 @@ JOIN okt_repository.sources s ON fs.source_id = s.id
 WHERE s.repository_id = $1
   AND ($2::text = '' OR f.status = $2)
   AND ($3::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $3));
+
+-- name: GetFactsByIDsForSearch :many
+-- Fetches the full ListFactsByRepoWithSourceCount-shaped row for an
+-- arbitrary set of fact ids in a single round-trip. Used by the
+-- hybrid search path: the lexical channel over-fetches its own
+-- rows, the semantic channel (Qdrant) returns only ids, and this
+-- query fills in the rows for any semantic-only ids the lexical
+-- batch didn't already return. No ordering is applied here — the
+-- caller re-orders the combined row set in Go to match the fused
+-- ranking (sqlc can't express array_position(...) cleanly and the
+-- result set is small: at most the over-fetch cap per channel).
+-- Repository scoping is enforced so a cross-repo id in the input
+-- set is silently dropped (defense in depth alongside Qdrant's
+-- repository payload filter).
+SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at,
+       f.fact_kind, f.image_url,
+       COALESCE(fs_count.source_count, 0) AS source_count,
+       MIN(fs.source_id::text)::uuid AS source_id
+FROM okt_repository.facts f
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+LEFT JOIN (
+    SELECT fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources
+    GROUP BY fact_id
+) fs_count ON fs_count.fact_id = f.id
+WHERE f.id = ANY(@ids::uuid[])
+  AND s.repository_id = @repository_id
+GROUP BY f.id, fs_count.source_count;
 
 -- name: ListFactsBySource :many
 -- Facts linked to a specific source, via the junction. Paginated

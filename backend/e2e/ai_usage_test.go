@@ -313,3 +313,155 @@ func TestAIUsagePermission_IsValidObject(t *testing.T) {
 		t.Fatalf("expected read to be a valid rbac action")
 	}
 }
+// TestAIUsageSummary_RepoScoped verifies the repo-scoped summary
+// endpoint (GET /api/v1/repositories/{slug}/ai/usage/summary)
+// returns only rows attributed to that repository, ignoring any
+// client-supplied repository_id query param (the URL-derived UUID
+// wins). A repoadmin of the repo gets 200; a repoadmin of a
+// different repo gets 403 via RequireRepoPermission.
+func TestAIUsageSummary_RepoScoped(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "ai-repo-admin@example.com")
+	resp, body, repoA := createRepository(t, admin, "AI Repo A", "ai-repo-a", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo A: %d %s", resp.StatusCode, body)
+	}
+	resp, body, repoB := createRepository(t, admin, "AI Repo B", "ai-repo-b", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo B: %d %s", resp.StatusCode, body)
+	}
+
+	// Three rows: one unattributed, one for repo A, one for repo B.
+	insertAIUsageRow(t, env, "gpt-4o-mini", "openrouter", "chat", 100, 50, 150, nil, nil)
+	insertAIUsageRow(t, env, "gpt-4o-mini", "openrouter", "chat", 200, 60, 260, &repoA, nil)
+	insertAIUsageRow(t, env, "llama3.2", "ollama", "chat", 90, 0, 90, &repoB, nil)
+
+	// Hit repo A's scoped endpoint. The handler must force the
+	// repository_id filter from the URL context, ignoring any
+	// client-supplied query param (we pass repoB's UUID to
+	// confirm it's overridden).
+	resp, body = admin.do("GET", "/api/v1/repositories/ai-repo-a/ai/usage/summary?repository_id="+repoB, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var out struct {
+		Rows []struct {
+			Model        string `json:"model"`
+			TotalTokens  int64  `json:"total_tokens"`
+		} `json:"rows"`
+		TotalTokens int64 `json:"total_tokens"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if len(out.Rows) != 1 {
+		t.Fatalf("expected 1 row for repo A, got %d", len(out.Rows))
+	}
+	if out.Rows[0].Model != "gpt-4o-mini" {
+		t.Fatalf("expected gpt-4o-mini, got %s", out.Rows[0].Model)
+	}
+	if out.TotalTokens != 260 {
+		t.Fatalf("expected total_tokens=260, got %d", out.TotalTokens)
+	}
+}
+
+// TestAIUsageSummary_RepoScoped_RepoAdmin verifies a repoadmin
+// (not sysadmin) can read their own repo's AI usage, and that a
+// repoadmin of a different repo gets 403 on the cross-repo call.
+func TestAIUsageSummary_RepoScoped_RepoAdmin(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "ai-repoadmin-setup@example.com")
+	resp, body, repoA := createRepository(t, admin, "AI RepoAdmin A", "ai-repo-a", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo A: %d %s", resp.StatusCode, body)
+	}
+	resp, body, repoB := createRepository(t, admin, "AI RepoAdmin B", "ai-repo-b", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo B: %d %s", resp.StatusCode, body)
+	}
+
+	// Register a regular user and grant them repoadmin on repo A only.
+	regular := newAuthClient(env.BaseURL)
+	if r, _ := regular.register("ai-repoadmin@example.com", "passw0rd!", "RepoAdmin"); r.StatusCode != http.StatusCreated {
+		t.Fatalf("register: %d", r.StatusCode)
+	}
+	regular.token = loginUser(regular, "ai-repoadmin@example.com", "passw0rd!")
+	regularUUID := getMeUUID(regular)
+	testutil.GrantUserRole(t, env, regularUUID, rbac.RoleRepoAdmin, repoA)
+	// Re-login so the JWT picks up the new role.
+	regular.token = loginUser(regular, "ai-repoadmin@example.com", "passw0rd!")
+
+	insertAIUsageRow(t, env, "gpt-4o-mini", "openrouter", "chat", 200, 60, 260, &repoA, nil)
+	insertAIUsageRow(t, env, "llama3.2", "ollama", "chat", 90, 0, 90, &repoB, nil)
+
+	// Own repo: 200 with one row.
+	resp, body = regular.do("GET", "/api/v1/repositories/ai-repo-a/ai/usage/summary", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("repoadmin own repo: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var out struct {
+		Rows []struct {
+			Model string `json:"model"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Rows) != 1 || out.Rows[0].Model != "gpt-4o-mini" {
+		t.Fatalf("expected 1 gpt-4o-mini row, got %v", out.Rows)
+	}
+
+	// Cross-repo: 403 (RequireRepoPermission enforces scope).
+	resp, _ = regular.do("GET", "/api/v1/repositories/ai-repo-b/ai/usage/summary", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("repoadmin cross-repo: expected 403, got %d", resp.StatusCode)
+	}
+
+	// System route: repoadmin without system-scope ai_usage.read
+	// gets 403 (only sysadmin has it at the system scope).
+	resp, _ = regular.do("GET", "/api/v1/ai/usage/summary", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("repoadmin system route: expected 403, got %d", resp.StatusCode)
+	}
+}
+
+// TestAIUsageByDay_RepoScoped verifies the repo-scoped by-day
+// endpoint forces the repository_id filter from the URL context.
+func TestAIUsageByDay_RepoScoped(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "ai-repoday-admin@example.com")
+	resp, body, repoA := createRepository(t, admin, "AI RepoDay A", "ai-repoday-a", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo A: %d %s", resp.StatusCode, body)
+	}
+	resp, body, repoB := createRepository(t, admin, "AI RepoDay B", "ai-repoday-b", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo B: %d %s", resp.StatusCode, body)
+	}
+
+	insertAIUsageRow(t, env, "gpt-4o-mini", "openrouter", "chat", 200, 60, 260, &repoA, nil)
+	insertAIUsageRow(t, env, "llama3.2", "ollama", "chat", 90, 0, 90, &repoB, nil)
+
+	resp, body = admin.do("GET", "/api/v1/repositories/ai-repoday-a/ai/usage/by-day", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var out struct {
+		Rows []struct {
+			Model       string `json:"model"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode by-day: %v", err)
+	}
+	if len(out.Rows) != 1 || out.Rows[0].Model != "gpt-4o-mini" {
+		t.Fatalf("expected 1 gpt-4o-mini row for repo A, got %v", out.Rows)
+	}
+}

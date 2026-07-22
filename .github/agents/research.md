@@ -19,7 +19,10 @@ Every call requires a `repository` argument (UUID or slug).
 - **getRepositories()** — Resolve the repository slug/UUID first.
 - **searchConcepts(repository, query?, limit?, offset?)** — Discover concept
 groups. Use 4-6 query terms (synonyms, related ideas, contested framings) to
-map the landscape.
+map the landscape. This is a discovery/exploration substrate — MultiHop-RAG
+scored concept-first retrieval 0.52 on specific questions vs 0.92 for facts,
+so do NOT use it to answer targeted factual questions, only to map the
+landscape.
 - **getConcept(repository, concept)** — Read a concept's definition/synthesis.
 Use on top candidates to understand what each concept actually covers.
 - **getRelatedConcepts(repository, concept, limit?)** — STRUCTURAL NEIGHBORS
@@ -27,7 +30,9 @@ ranked by shared_fact_count. Your primary graph tool. Walk it outward from
 each seed concept to find bridges, clusters, and under-connected nodes.
 - **searchFacts(repository, query, limit?)** — Cross-cutting evidence search.
 Use to find hub facts (linked to many concepts) and to gauge evidential
-thickness of a candidate scope.
+thickness of a candidate scope. This is the right tool for specific-claim
+verification (MultiHop-RAG: facts 0.92 vs 0.52 for concept-first retrieval
+on targeted QA).
 - **getFact(repository, factId)** — Provenance for a hub fact. Use sparingly.
 - **createInvestigation(repository, title, topic?)** — Create a new
 investigation to collect sources for a scope. Returns the investigation id.

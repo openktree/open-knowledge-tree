@@ -28,6 +28,13 @@ import (
 type AIClassifier struct {
 	aiProvider ai.AIProvider
 	model      string
+	// thinkingLevel is the reasoning_effort to pass to the model
+	// ("low", "medium", "high"). Empty = omit from the request
+	// (the model uses its default). Threaded into ChatRequest's
+	// ThinkingLevel field, which the OpenRouter provider maps to
+	// the `reasoning_effort` request parameter. Set to "low" by
+	// the worker from PostureClassifierConfig.ThinkingLevel.
+	thinkingLevel string
 	// promptset is the prompt set this classifier uses for the
 	// posture phase. Defaults to promptset.Default; a worker swaps
 	// in the per-repo philosophy via WithPromptset.
@@ -38,9 +45,20 @@ type AIClassifier struct {
 // (Configured() returns false); model may be empty (Configured()
 // returns false). The worker checks Configured() before calling
 // Classify so a deployment without a chat provider falls back to the
-// keep-all path without a panic.
+// keep-all path without a panic. thinkingLevel may be empty (omit
+// from the request); the worker passes the configured
+// PostureClassifierConfig.ThinkingLevel (default "low").
 func NewAIClassifier(aiProvider ai.AIProvider, model string) *AIClassifier {
 	return &AIClassifier{aiProvider: aiProvider, model: model, promptset: promptset.Default}
+}
+
+// WithThinkingLevel returns a copy of the classifier that passes the
+// given reasoning_effort to the model on every Chat call. Empty
+// string = omit from the request (use the model's default).
+func (c *AIClassifier) WithThinkingLevel(level string) *AIClassifier {
+	clone := *c
+	clone.thinkingLevel = level
+	return &clone
 }
 
 // WithPromptset returns a copy of the classifier that uses the given
@@ -123,6 +141,10 @@ func (c *AIClassifier) Classify(ctx context.Context, db store.DBTX, req Classify
 			Operation:    "report_annotation",
 		},
 	}
+	if c.thinkingLevel != "" {
+		tl := c.thinkingLevel
+		chatReq.ThinkingLevel = &tl
+	}
 	if req.MaxTokens > 0 {
 		mt := req.MaxTokens
 		chatReq.MaxTokens = &mt
@@ -156,18 +178,33 @@ func (c *AIClassifier) Classify(ctx context.Context, db store.DBTX, req Classify
 
 
 // buildUserMessage renders the batch as a compact JSON array of
-// {sentence_index, sentence, candidates:[{fact_id, fact_text}]} so
-// the model has all the context in one block and can emit a matching
-// JSON array back.
+// {sentence_index, sentence, context_before, context_after,
+//  claims:[{type, term, context}], candidates:[{fact_id, fact_text}]}
+// so the model has all the context in one block and can emit a
+// matching JSON array back. ContextBefore / ContextAfter are the
+// surrounding sentences the worker threads in for disambiguation;
+// either may be empty (for report-boundary sentences or when the
+// configured window for that side is 0). Claims are the verifiable
+// assertions the claim extractor pulled out of the sentence; empty
+// when the extractor is not configured or the sentence had no
+// extractable claims.
 func buildUserMessage(sentences []SentenceFacts) string {
 	type cand struct {
 		FactID   string `json:"fact_id"`
 		FactText string `json:"fact_text"`
 	}
+	type claim struct {
+		Type    string `json:"type"`
+		Term    string `json:"term"`
+		Context string `json:"context,omitempty"`
+	}
 	type sent struct {
-		SentenceIndex int    `json:"sentence_index"`
-		Sentence      string `json:"sentence"`
-		Candidates    []cand `json:"candidates"`
+		SentenceIndex int      `json:"sentence_index"`
+		Sentence      string   `json:"sentence"`
+		ContextBefore []string `json:"context_before,omitempty"`
+		ContextAfter  []string `json:"context_after,omitempty"`
+		Claims        []claim  `json:"claims,omitempty"`
+		Candidates    []cand   `json:"candidates"`
 	}
 	out := make([]sent, 0, len(sentences))
 	for _, s := range sentences {
@@ -175,9 +212,34 @@ func buildUserMessage(sentences []SentenceFacts) string {
 		for _, f := range s.Facts {
 			cs = append(cs, cand{FactID: f.ID.String(), FactText: f.Text})
 		}
+		// Defensive copies so a nil slice round-trips as an empty
+		// array in JSON (omitempty below drops the field entirely
+		// when the slice is empty, which is what we want for
+		// boundary sentences and disabled-side windows).
+		var before, after []string
+		if len(s.ContextBefore) > 0 {
+			before = append(before, s.ContextBefore...)
+		}
+		if len(s.ContextAfter) > 0 {
+			after = append(after, s.ContextAfter...)
+		}
+		var cls []claim
+		if len(s.Claims) > 0 {
+			cls = make([]claim, 0, len(s.Claims))
+			for _, c := range s.Claims {
+				cls = append(cls, claim{
+					Type:    string(c.Type),
+					Term:    c.Term,
+					Context: c.Context,
+				})
+			}
+		}
 		out = append(out, sent{
 			SentenceIndex: s.SentenceIndex,
 			Sentence:      s.SentenceText,
+			ContextBefore: before,
+			ContextAfter:  after,
+			Claims:        cls,
 			Candidates:    cs,
 		})
 	}
@@ -195,13 +257,72 @@ func buildUserMessage(sentences []SentenceFacts) string {
 // function returns no error for a syntactically valid but empty
 // array — the caller treats that as "all irrelevant".
 func parseClassifications(content string, input []SentenceFacts) ([]Classification, error) {
-	// Tolerate a single trailing comma before the closing bracket.
-	content = strings.TrimRight(strings.TrimSpace(content), ",")
+	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil, nil
 	}
-	if !strings.HasPrefix(content, "[") {
-		return nil, fmt.Errorf("response is not a JSON array: %q", truncate(content, 80))
+	// Find the first '[' and the matching closing ']' (counting
+	// bracket nesting, respecting strings). This isolates the JSON
+	// array from any trailing junk the model may have appended,
+	// and handles truncation (no matching close → try recovery).
+	start := strings.IndexByte(content, '[')
+	if start < 0 {
+		return nil, fmt.Errorf("response has no JSON array: %q", truncate(content, 80))
+	}
+	depth := 0
+	end := -1
+	inStr := false
+	escape := false
+	for i := start; i < len(content); i++ {
+		c := content[i]
+		if inStr {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			continue
+		}
+		if c == '[' {
+			depth++
+		} else if c == ']' {
+			depth--
+			if depth == 0 {
+				end = i
+				break
+			}
+		}
+	}
+	if end < 0 {
+		// No matching close — the JSON was truncated mid-emission
+		// (the model hit the max_tokens cap). Try to recover by
+		// cutting at the last complete top-level object and
+		// closing the array.
+		content = closeTruncatedClassifications(content)
+	} else {
+		content = content[start : end+1]
+	}
+	// Tolerate a single trailing comma INSIDE the array (just
+	// before the closing ]).
+	content = strings.TrimSpace(content)
+	if strings.HasSuffix(content, ",]") {
+		content = strings.TrimSuffix(content, ",]")
+		content += "]"
+	}
+	// Tolerate a single trailing comma AFTER the closing ].
+	content = strings.TrimRight(strings.TrimSpace(content), ",")
+	if content == "" {
+		return nil, nil
 	}
 
 	var rows []struct {
@@ -297,6 +418,63 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
+// closeTruncatedClassifications attempts to repair a JSON array
+// that was truncated mid-emission (the model hit the max_tokens cap
+// before finishing the response). It finds the last complete
+// top-level object in the array (the last `}` at array-depth 1) and
+// truncates there, then closes the array. Returns the original
+// string unchanged when the input appears balanced (no repair
+// needed) or when no complete object was found. Mirrors the
+// closeTruncatedJSON helper in the claims package.
+func closeTruncatedClassifications(s string) string {
+	depthArr, depthObj := 0, 0
+	inStr := false
+	escape := false
+	lastCompleteObjEnd := -1
+	for i, c := range s {
+		if inStr {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			continue
+		}
+		if c == '[' {
+			depthArr++
+		} else if c == ']' {
+			depthArr--
+		} else if c == '{' {
+			depthObj++
+		} else if c == '}' {
+			depthObj--
+			if depthArr == 1 && depthObj == 0 {
+				lastCompleteObjEnd = i
+			}
+		}
+	}
+	if depthArr == 0 && depthObj == 0 && !inStr {
+		return s
+	}
+	s = strings.TrimRight(strings.TrimSpace(s), ",")
+	if lastCompleteObjEnd >= 0 {
+		cut := s[:lastCompleteObjEnd+1]
+		cut = strings.TrimRight(strings.TrimSpace(cut), ",")
+		return cut + "]"
+	}
+	return s
+}
+
 // retryConfig + retryWithBackoff mirror the summarization provider
 // so the classifier rides out the same transient failures (429,
 // 5xx, network) the other AI-backed providers do. Duplicated here
@@ -313,7 +491,11 @@ var defaultRetryConfig = retryConfig{
 	MaxAttempts: 4,
 	BaseDelay:   2 * time.Second,
 	MaxDelay:    30 * time.Second,
-	PerCallTO:   180 * time.Second,
+	// PerCallTO is 240s to give the non-turbo DeepSeek V4 Flash
+	// model room to finish dense posture-classification batches.
+	// See the same comment in claims/ai_extractor.go for the
+	// rationale.
+	PerCallTO: 240 * time.Second,
 }
 
 func retryWithBackoff[T any](
@@ -386,8 +568,19 @@ func classifyError(err error) (retryable bool, reason string) {
 	if err == nil {
 		return false, ""
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false, "context cancelled/deadline"
+	// context.Canceled is permanent — the caller deliberately
+	// cancelled the work. See the same comment in
+	// claims/ai_extractor.go for the full rationale.
+	if errors.Is(err, context.Canceled) {
+		return false, "context cancelled"
+	}
+	// context.DeadlineExceeded is treated as transient. See the
+	// same comment in claims/ai_extractor.go — the retry loop
+	// checks ctx.Err() at the top of each attempt, so retrying a
+	// dead outer context is safe (the next attempt returns
+	// immediately without calling the LLM).
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true, "context deadline (transient — retry loop checks outer ctx)"
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {

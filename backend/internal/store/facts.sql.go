@@ -417,6 +417,85 @@ func (q *Queries) GetFactsByIDs(ctx context.Context, dollar_1 []pgtype.UUID) ([]
 	return items, nil
 }
 
+const getFactsByIDsForSearch = `-- name: GetFactsByIDsForSearch :many
+SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at,
+       f.fact_kind, f.image_url,
+       COALESCE(fs_count.source_count, 0) AS source_count,
+       MIN(fs.source_id::text)::uuid AS source_id
+FROM okt_repository.facts f
+JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
+JOIN okt_repository.sources s ON fs.source_id = s.id
+LEFT JOIN (
+    SELECT fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources
+    GROUP BY fact_id
+) fs_count ON fs_count.fact_id = f.id
+WHERE f.id = ANY($1::uuid[])
+  AND s.repository_id = $2
+GROUP BY f.id, fs_count.source_count
+`
+
+type GetFactsByIDsForSearchParams struct {
+	Ids          []pgtype.UUID `json:"ids"`
+	RepositoryID pgtype.UUID   `json:"repository_id"`
+}
+
+type GetFactsByIDsForSearchRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	Text          string             `json:"text"`
+	Status        string             `json:"status"`
+	EmbeddedAt    pgtype.Timestamptz `json:"embedded_at"`
+	EmbeddedModel *string            `json:"embedded_model"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	FactKind      string             `json:"fact_kind"`
+	ImageUrl      *string            `json:"image_url"`
+	SourceCount   int64              `json:"source_count"`
+	SourceID      pgtype.UUID        `json:"source_id"`
+}
+
+// Fetches the full ListFactsByRepoWithSourceCount-shaped row for an
+// arbitrary set of fact ids in a single round-trip. Used by the
+// hybrid search path: the lexical channel over-fetches its own
+// rows, the semantic channel (Qdrant) returns only ids, and this
+// query fills in the rows for any semantic-only ids the lexical
+// batch didn't already return. No ordering is applied here — the
+// caller re-orders the combined row set in Go to match the fused
+// ranking (sqlc can't express array_position(...) cleanly and the
+// result set is small: at most the over-fetch cap per channel).
+// Repository scoping is enforced so a cross-repo id in the input
+// set is silently dropped (defense in depth alongside Qdrant's
+// repository payload filter).
+func (q *Queries) GetFactsByIDsForSearch(ctx context.Context, arg GetFactsByIDsForSearchParams) ([]GetFactsByIDsForSearchRow, error) {
+	rows, err := q.db.Query(ctx, getFactsByIDsForSearch, arg.Ids, arg.RepositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetFactsByIDsForSearchRow
+	for rows.Next() {
+		var i GetFactsByIDsForSearchRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Text,
+			&i.Status,
+			&i.EmbeddedAt,
+			&i.EmbeddedModel,
+			&i.CreatedAt,
+			&i.FactKind,
+			&i.ImageUrl,
+			&i.SourceCount,
+			&i.SourceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFactReferencesByFact = `-- name: ListFactReferencesByFact :many
 SELECT fact_id, source_id, sentence_index, chunk_index, first_seen_at, promptset_hash FROM okt_repository.fact_references WHERE fact_id = $1
 `
@@ -509,7 +588,8 @@ func (q *Queries) ListFactReferencesBySource(ctx context.Context, sourceID pgtyp
 
 const listFactSources = `-- name: ListFactSources :many
 SELECT fs.fact_id, fs.source_id, fs.chunk_index, fs.first_seen_at,
-       s.url, s.parsed_title
+       s.url, s.parsed_title, s.parsed_sitename, s.parsed_author,
+       s.published_at
 FROM okt_repository.fact_sources fs
 JOIN okt_repository.sources s ON fs.source_id = s.id
 WHERE fs.fact_id = $1
@@ -517,17 +597,25 @@ ORDER BY fs.first_seen_at
 `
 
 type ListFactSourcesRow struct {
-	FactID      pgtype.UUID        `json:"fact_id"`
-	SourceID    pgtype.UUID        `json:"source_id"`
-	ChunkIndex  int32              `json:"chunk_index"`
-	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
-	Url         string             `json:"url"`
-	ParsedTitle *string            `json:"parsed_title"`
+	FactID         pgtype.UUID        `json:"fact_id"`
+	SourceID       pgtype.UUID        `json:"source_id"`
+	ChunkIndex     int32              `json:"chunk_index"`
+	FirstSeenAt    pgtype.Timestamptz `json:"first_seen_at"`
+	Url            string             `json:"url"`
+	ParsedTitle    *string            `json:"parsed_title"`
+	ParsedSitename *string            `json:"parsed_sitename"`
+	ParsedAuthor   *string            `json:"parsed_author"`
+	PublishedAt    pgtype.Date        `json:"published_at"`
 }
 
-// Full source rows linked to a fact, joined with the source's url
-// and parsed_title for the detail endpoint. Ordered by first_seen_at
-// so the UI shows the oldest confirmation first.
+// Full source rows linked to a fact, joined with the source's url,
+// parsed_title, parsed_sitename (publication name), parsed_author,
+// and published_at so the fact detail endpoint surfaces enough
+// source metadata for downstream consumers (the UI, the MCP getFact
+// tool, and LLM synthesis prompts) to attribute facts to their
+// publications and answer publication- and time-bound questions
+// (e.g. MultiHop-RAG comparison and temporal queries). Ordered by
+// first_seen_at so the UI shows the oldest confirmation first.
 func (q *Queries) ListFactSources(ctx context.Context, factID pgtype.UUID) ([]ListFactSourcesRow, error) {
 	rows, err := q.db.Query(ctx, listFactSources, factID)
 	if err != nil {
@@ -544,6 +632,9 @@ func (q *Queries) ListFactSources(ctx context.Context, factID pgtype.UUID) ([]Li
 			&i.FirstSeenAt,
 			&i.Url,
 			&i.ParsedTitle,
+			&i.ParsedSitename,
+			&i.ParsedAuthor,
+			&i.PublishedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1242,7 +1333,7 @@ SET status = 'processed',
     processed_at = now(),
     updated_at = now()
 WHERE id = $1
-RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets
+RETURNING id, repository_id, url, kind, status, created_at, updated_at, content, fetched_at, error, doi, parsed_title, parsed_text, parsed_html, parsed_author, parsed_sitename, parsed_language, parsed_at, parse_status, published_at, processed_at, search_tsv, storage_key, content_type, local_path, stored_at, fetch_attempts, oa_status, parsed_markdown, sentence_offsets, chunk_failures, chunk_errors, last_chunk_failure_at, concept_skip_count
 `
 
 func (q *Queries) MarkSourceProcessed(ctx context.Context, id pgtype.UUID) (OktRepositorySource, error) {
@@ -1279,6 +1370,10 @@ func (q *Queries) MarkSourceProcessed(ctx context.Context, id pgtype.UUID) (OktR
 		&i.OaStatus,
 		&i.ParsedMarkdown,
 		&i.SentenceOffsets,
+		&i.ChunkFailures,
+		&i.ChunkErrors,
+		&i.LastChunkFailureAt,
+		&i.ConceptSkipCount,
 	)
 	return i, err
 }

@@ -13,9 +13,20 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
-// AuthRequired enforces a valid session token on the request. The user ID
-// resolved from the session is stored on the request context and can be
-// retrieved with httputil.RequestUserID.
+// AuthRequired enforces a valid authentication on the request. It
+// dispatches on the bearer token's prefix:
+//
+//   - tokens starting with "okt_" are personal API keys → APIKeyAuth
+//     (sha256-hex lookup in api_keys, attaches the key on context so
+//     RequirePermission/RequireRepoPermission enforce the key's scope);
+//   - everything else is a session opaque token → the original session
+//     lookup (sha256-hex lookup in sessions).
+//
+// Both paths set the same context slot (httputil.WithUserID) so the
+// downstream permission middlewares work unchanged. The API-key path
+// additionally attaches the key via httputil.WithAPIKey, which the
+// permission middlewares read to decide whether to enforce the key's
+// per-(object, action) scope on top of the user's RBAC roles.
 func AuthRequired(queries *store.Queries, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tokenStr := r.Header.Get("Authorization")
@@ -24,7 +35,13 @@ func AuthRequired(queries *store.Queries, next http.HandlerFunc) http.HandlerFun
 			return
 		}
 
-		tokenHash := auth.HashToken(tokenStr[7:])
+		raw := tokenStr[7:]
+		if IsAPIKeyToken(raw) {
+			APIKeyAuth(queries, next, raw).ServeHTTP(w, r)
+			return
+		}
+
+		tokenHash := auth.HashToken(raw)
 		session, err := queries.GetSessionByTokenHash(r.Context(), tokenHash)
 		if err != nil {
 			httputil.WriteError(w, http.StatusUnauthorized, "invalid or expired session")

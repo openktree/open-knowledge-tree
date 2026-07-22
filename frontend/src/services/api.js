@@ -103,6 +103,31 @@ export const api = {
     return request("/permissions");
   },
 
+  // Profile (current user). GET /users/me returns the user; the
+  // profile page edits display_name via PUT /users/{id}.
+  getProfile(userID) {
+    return request(`/users/${userID}`);
+  },
+
+  updateProfile(userID, body) {
+    return request(`/users/${userID}`, { method: "PUT", body: JSON.stringify(body) });
+  },
+
+  // Personal API keys (personal access tokens). Self-managed via
+  // /users/me/api-keys. The raw token is returned exactly once on
+  // create; list returns only the recognizable prefix.
+  listApiKeys() {
+    return request("/users/me/api-keys");
+  },
+
+  createApiKey(body) {
+    return request("/users/me/api-keys", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  revokeApiKey(keyID) {
+    return request(`/users/me/api-keys/${keyID}`, { method: "DELETE" });
+  },
+
   listProviders() {
     return request("/sources/providers");
   },
@@ -436,6 +461,51 @@ export const api = {
     return request(`/repositories/${slug}/sources/${sourceID}/process`, { method: "POST" });
   },
 
+  // reextractRepoConcepts clears retryable fact_concept_skips +
+  // unresolved fact_candidates for a repo and enqueues a repo-wide
+  // extract_concepts job. On-demand recovery from the historical
+  // permanent-skip bug (facts severed from their concepts by
+  // transient OpenRouter failures). Gated on repositories.*.manage.
+  // Returns { repository_id, cleared_skips, cleared_candidates,
+  // enqueued_job_id }.
+  reextractRepoConcepts(repoID, maxAttempts) {
+    const qs = new URLSearchParams();
+    if (maxAttempts) qs.set("max_attempts", String(maxAttempts));
+    const query = qs.toString();
+    return request(`/admin/repos/${repoID}/concepts/reextract${query ? "?" + query : ""}`, {
+      method: "POST",
+    });
+  },
+
+  // previewReextractRepoConcepts fetches the counts of facts and
+  // candidates that WOULD be affected by the POST endpoint, without
+  // actually clearing or enqueuing anything. The UI uses this to
+  // render the danger box with live counts before the user confirms.
+  previewReextractRepoConcepts(repoID, maxAttempts) {
+    const qs = new URLSearchParams();
+    if (maxAttempts) qs.set("max_attempts", String(maxAttempts));
+    const query = qs.toString();
+    return request(`/admin/repos/${repoID}/concepts/reextract${query ? "?" + query : ""}`, {
+      method: "GET",
+    });
+  },
+
+  // reprocessSource re-runs source_decomposition for the FAILED
+  // chunks of a source only (via RetryChunkIndices), so successful
+  // chunks are not re-LLM'd and no duplicate fact rows are created.
+  // Gated on repositories.*.manage. Returns { repository_id,
+  // source_id, enqueued_job_id, retry_chunk_count }.
+  reprocessSource(repoID, sourceID) {
+    return request(`/admin/repos/${repoID}/sources/${sourceID}/reprocess`, { method: "POST" });
+  },
+
+  // previewReprocessSource fetches the chunk failure counts for a
+  // source without enqueuing anything. The UI uses this to render
+  // the danger box with live counts before the user confirms.
+  previewReprocessSource(repoID, sourceID) {
+    return request(`/admin/repos/${repoID}/sources/${sourceID}/reprocess`, { method: "GET" });
+  },
+
   // retrySource re-queues the retrieve_source pipeline for a row
   // whose fetch failed. The backend resets the row to 'pending'
   // and enqueues a fresh retrieve_source job (preserving the
@@ -705,6 +775,14 @@ export const api = {
     return request(`/repositories/${slug}/tasks?${qs.toString()}`);
   },
 
+  // getRepoTaskStats fetches the per-repo queue/state aggregation
+  // (the backlog card on the RepoTasks page). Same response shape
+  // as the system-wide getTaskStats, restricted by the repo_id
+  // metadata tag the backend enqueuer writes on every job.
+  getRepoTaskStats(slug) {
+    return request(`/repositories/${slug}/tasks/stats`);
+  },
+
   // AI usage dashboard. Each method accepts an optional params
   // object with from / to (RFC3339 timestamps) and repository_id
   // (UUID string); empty values are omitted from the query string.
@@ -776,6 +854,27 @@ export const api = {
 
   getAIUsageBySource(params = {}) {
     return request(`/ai/usage/by-source${usageQS(params)}`);
+  },
+
+  // Per-repo scoped AI Usage dashboard. The backend forces the
+  // repository_id filter from the URL context (set by the
+  // WithRepoQueries middleware on /{repoID} routes), so the
+  // repository_id param is NOT sent here — sending it would be
+  // ignored server-side. from / to / bucket are honored.
+  getRepoAIUsageSummary(slug, params = {}) {
+    return request(`/repositories/${slug}/ai/usage/summary${usageQS(params)}`);
+  },
+  getRepoAIUsageByDay(slug, params = {}) {
+    return request(`/repositories/${slug}/ai/usage/by-day${usageQS(params)}`);
+  },
+  getRepoAIUsageByOperation(slug, params = {}) {
+    return request(`/repositories/${slug}/ai/usage/by-operation${usageQS(params)}`);
+  },
+  getRepoAIUsageByRepository(slug, params = {}) {
+    return request(`/repositories/${slug}/ai/usage/by-repository${usageQS(params)}`);
+  },
+  getRepoAIUsageBySource(slug, params = {}) {
+    return request(`/repositories/${slug}/ai/usage/by-source${usageQS(params)}`);
   },
 
   // ── Promptsets ──────────────────────────────────────────────
@@ -857,6 +956,17 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
+
+  // ── Audit log ──────────────────────────────────────────────────
+  // System view (sysadmin only): returns every audit row, optionally
+  // filtered by action / object / actor / date range. Repo view is
+  // scoped server-side to the repo in the URL.
+  listSystemAudit(params = {}) {
+    return request(`/admin/audit${auditQS(params)}`);
+  },
+  listRepoAudit(slug, params = {}) {
+    return request(`/repositories/${slug}/audit${auditQS(params)}`);
+  },
 };
 
 // usageQS builds the query string shared by the AI usage endpoints.
@@ -867,6 +977,23 @@ function usageQS(params) {
   if (params.to) qs.set("to", params.to);
   if (params.repository_id) qs.set("repository_id", params.repository_id);
   if (params.bucket) qs.set("bucket", params.bucket);
+  const s = qs.toString();
+  return s ? "?" + s : "";
+}
+
+// auditQS builds the query string shared by the audit endpoints.
+// from / to are RFC3339 timestamps; action / object / actor_user_id
+// are optional exact-match filters; limit (default 100, max 200)
+// and offset (default 0) paginate.
+function auditQS(params) {
+  const qs = new URLSearchParams();
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  if (params.action) qs.set("action", params.action);
+  if (params.object) qs.set("object", params.object);
+  if (params.actor_user_id) qs.set("actor_user_id", params.actor_user_id);
+  if (params.limit) qs.set("limit", params.limit);
+  if (params.offset) qs.set("offset", params.offset);
   const s = qs.toString();
   return s ? "?" + s : "";
 }

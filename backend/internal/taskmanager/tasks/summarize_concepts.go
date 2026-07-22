@@ -74,6 +74,11 @@ type SummarizeConceptsWorker struct {
 	modelResolver      *ModelResolver
 	promptsetResolver  *PromptsetResolver
 	synthesizerEnabled bool
+	// llmTimeout is the per-call wall-clock timeout for a summary
+	// slice LLM call. Default 20m; set via SetLLMTimeout from
+	// cfg.Providers.Summarization.LLMTimeout. See
+	// ExtractConceptsWorker.llmTimeout for the rationale.
+	llmTimeout time.Duration
 }
 
 func NewSummarizeConceptsWorker(
@@ -93,6 +98,15 @@ func NewSummarizeConceptsWorker(
 		synthesizerEnabled: synthesizerEnabled,
 		modelResolver:      modelResolver,
 		promptsetResolver:  promptsetResolver,
+		llmTimeout:         20 * time.Minute, // default; overridden via SetLLMTimeout
+	}
+}
+
+// SetLLMTimeout sets the per-call wall-clock timeout for a summary
+// slice LLM call. Default 20m when unset.
+func (w *SummarizeConceptsWorker) SetLLMTimeout(d time.Duration) {
+	if d > 0 {
+		w.llmTimeout = d
 	}
 }
 
@@ -389,7 +403,7 @@ func (w *SummarizeConceptsWorker) summarizeOneConcept(
 		if modelOverride != "" {
 			summarizationModel = modelOverride
 		}
-		llmCtx, llmCancel := context.WithTimeout(context.Background(), 120*time.Second)
+		llmCtx, llmCancel := context.WithTimeout(context.Background(), w.llmTimeout)
 		content, err := summarizer.Summarize(llmCtx, pool, summarization.SummarizationRequest{
 			ConceptCanonicalName: concept.CanonicalName,
 			Context:              concept.Context,

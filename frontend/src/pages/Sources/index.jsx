@@ -21,6 +21,9 @@ export default function Sources() {
   const canCreateSources = createMemo(() => rbac.hasPermission("source", "write"));
   const canDeleteSources = createMemo(() => rbac.hasPermission("source", "delete"));
   const canUpdateSources = createMemo(() => rbac.hasPermission("source", "update"));
+  // Reprocess + reextract are admin-only (repositories.*.manage)
+  // because they re-spend LLM quota and clear skip state.
+  const canReprocess = createMemo(() => rbac.hasPermission("repositories", "manage"));
 
   const [alert, setAlert] = createSignal(null);
   const [addURL, setAddURL] = createSignal("");
@@ -28,6 +31,7 @@ export default function Sources() {
   const [creating, setCreating] = createSignal(false);
   const [deletingID, setDeletingID] = createSignal("");
   const [processingID, setProcessingID] = createSignal("");
+  const [reprocessingID, setReprocessingID] = createSignal("");
   const [retryingID, setRetryingID] = createSignal("");
   const [search, setSearch] = createSignal("");
   const [offset, setOffset] = createSignal(0);
@@ -130,6 +134,42 @@ export default function Sources() {
     }
   };
 
+  // handleReprocess re-runs source_decomposition for the FAILED
+  // chunks of a source only (via RetryChunkIndices on the backend).
+  // Successful chunks are not re-LLM'd, so no duplicate fact rows
+  // are created. Gated on repositories.*.manage (admin-only).
+  const handleReprocess = async (source) => {
+    const repoID = repo.currentRepo()?.id;
+    if (!repoID) return;
+    setReprocessingID(source.id);
+    setAlert(null);
+    try {
+      const res = await api.reprocessSource(repoID, source.id);
+      setAlert({
+        variant: "success",
+        message: `Re-queued ${res.retry_chunk_count} failed chunk(s) for re-extraction (job ${res.enqueued_job_id}).`,
+      });
+      // Optimistically clear the chunk_failures badge; the worker
+      // will re-record it if the reprocess still fails.
+      mutate((current) =>
+        current
+          ? {
+              ...current,
+              data: current.data.map((s) =>
+                s.id === source.id
+                  ? { ...s, chunk_failures: 0, chunk_errors: null, last_chunk_failure_at: null }
+                  : s,
+              ),
+            }
+          : current,
+      );
+    } catch (err) {
+      setAlert({ variant: "error", message: err.message });
+    } finally {
+      setReprocessingID("");
+    }
+  };
+
   const handleAdd = async (e) => {
     e.preventDefault();
     const url = addURL().trim();
@@ -215,11 +255,15 @@ export default function Sources() {
           <SourcesList
             hasRepo={() => !!repo.currentRepo()}
             slug={() => repo.currentRepo()?.slug}
+            repoID={() => repo.currentRepo()?.id}
             sources={sources}
             loading={() => sources.loading}
             canProcess={canUpdateSources}
             processingID={processingID}
             onProcess={handleProcess}
+            canReprocess={canReprocess}
+            reprocessingID={reprocessingID}
+            onReprocess={handleReprocess}
             canRetry={canUpdateSources}
             retryingID={retryingID}
             onRetry={handleRetry}

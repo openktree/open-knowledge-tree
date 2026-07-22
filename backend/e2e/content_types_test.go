@@ -54,8 +54,15 @@ func TestContentTypes_Gate(t *testing.T) {
 		t.Errorf("UploadSource in doi-only repo: expected 403, got %d", resp.StatusCode)
 	}
 
-	// EnqueueRetrieveSource with a URL should be 403.
-	retBody, _ := json.Marshal(map[string]string{"url": "https://example.com/another"})
+	// EnqueueRetrieveSource with a URL should be 403. The system-scope
+	// /sources/retrieve route reads the repo from the body's
+	// repository_id field (or the X-Repository-ID header); pass it
+	// explicitly so the content-type gate runs against the doi-only
+	// repo we just configured.
+	retBody, _ := json.Marshal(map[string]string{
+		"url":           "https://example.com/another",
+		"repository_id": repoID,
+	})
 	resp, _ = admin.do("POST", "/api/v1/sources/retrieve", retBody)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("EnqueueRetrieveSource with URL in doi-only repo: expected 403, got %d", resp.StatusCode)

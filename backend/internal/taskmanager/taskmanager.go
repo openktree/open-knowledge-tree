@@ -32,6 +32,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/summarization"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/synthesis"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
@@ -77,6 +78,13 @@ func (a *enqueuerAdapter) EnqueueSourceDecompositionFromHTTP(ctx context.Context
 
 func (a *enqueuerAdapter) EnqueueAnnotateReportFromHTTP(ctx context.Context, args handler.AnnotateReportArgs) (string, error) {
 	return a.m.EnqueueAnnotateReport(ctx, tasks.AnnotateReportArgs(args))
+}
+
+func (a *enqueuerAdapter) EnqueueExtractConceptsFromHTTP(ctx context.Context, args handler.ExtractConceptsArgs) (string, error) {
+	return a.m.EnqueueExtractConcepts(ctx, tasks.ExtractConceptsArgs{
+		RepositoryID: args.RepositoryID,
+		SourceID:     args.SourceID,
+	})
 }
 
 // Manager owns the River client and a *pgxpool.Pool used to talk to
@@ -151,6 +159,7 @@ func New(
 	summarizer summarization.SummarizationProvider,
 	synthesizer synthesis.SynthesisProvider,
 	postureClassifier posture.Classifier,
+	claimExtractor claims.Extractor,
 	modelResolver *tasks.ModelResolver,
 	promptsetResolver *promptset.Resolver,
 ) (*Manager, error) {
@@ -249,8 +258,25 @@ func New(
 	// enabled, extract never routes (refine does), so these are
 	// unused on that path; nil-safe when Qdrant/embeddings are off.
 	extractWorker.SetEmbeddingDeps(embeddingProvider, cfg.Providers.Embedding, qdrantStore)
+	// Apply per-phase LLM timeout + soft-skip budget + in-job retry
+	// count from cfg.Providers.Decomposition.ConceptExtraction. The
+	// LLM timeout (default 20m) comfortably exceeds the retry budget
+	// (4 attempts × 5m PerCallTO + backoffs) so retryWithBackoff can
+	// ride out an OpenRouter streaming-decode slowdown instead of
+	// being killed by the historical 120s worker ctx. MaxAttempts
+	// (default 3) caps how many PERMANENT failures a fact can
+	// accumulate on fact_concept_skips before being excluded from
+	// the candidate set; transient failures never write a skip row.
+	// InJobRetries (default 2) is how many times failed chunks are
+	// re-run at the end of the main wave before giving up.
+	extractWorker.SetLLMTimeout(cfg.Providers.Decomposition.ConceptExtraction.LLMTimeoutOr(0))
+	extractWorker.SetMaxConceptAttempts(cfg.Providers.Decomposition.ConceptExtraction.MaxAttemptsOr(0))
+	extractWorker.SetInJobRetries(cfg.Providers.Decomposition.ConceptExtraction.InJobRetriesOr(0))
 	river.AddWorker(workers, extractWorker)
-	river.AddWorker(workers, tasks.NewRefineConceptsWorker(refiner, cfg.Providers.Refinement, registry, systemQueries, summarizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver, psResolver, embeddingProvider, cfg.Providers.Embedding, qdrantStore))
+
+	refineWorker := tasks.NewRefineConceptsWorker(refiner, cfg.Providers.Refinement, registry, systemQueries, summarizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver, psResolver, embeddingProvider, cfg.Providers.Embedding, qdrantStore)
+	refineWorker.SetLLMTimeout(cfg.Providers.Refinement.LLMTimeoutOr(0))
+	river.AddWorker(workers, refineWorker)
 	river.AddWorker(workers, tasks.NewEmbedConceptsWorker(embeddingProvider, cfg.Providers.Embedding, qdrantStore, registry, systemQueries))
 	river.AddWorker(workers, tasks.NewCleanupFactsWorker(qdrantStore, registry, systemQueries))
 	// Contribute_source is chained from cleanup_facts (source-scoped
@@ -280,11 +306,21 @@ func New(
 	// policy.
 	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup, psResolver))
 	river.AddWorker(workers, tasks.NewFactCatchupWorker(cfg.Providers.Dedup, qdrantStore, registry, systemQueries))
+	// Audit log retention. Daily sweep that deletes
+	// okt_system.permission_audit rows older than
+	// cfg.Audit.RetentionDays (default 30). Wired here so the
+	// worker has access to the system-pool queries (the audit
+	// table lives on the system database). The periodic-job
+	// constructor is registered further down alongside
+	// fact_catchup.
+	river.AddWorker(workers, tasks.NewAuditCleanupWorker(systemQueries, cfg.Audit))
 	// Concept summarization is a sibling of embed_concepts (both
 	// fan out from extract_concepts). It is a no-op when summarizer
 	// is nil or summarization.enabled is false, so a deployment that
 	// hasn't wired a summarization model still boots.
-	river.AddWorker(workers, tasks.NewSummarizeConceptsWorker(summarizer, cfg.Providers.Summarization, registry, systemQueries, synthesizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver, psResolver))
+	summarizeWorker := tasks.NewSummarizeConceptsWorker(summarizer, cfg.Providers.Summarization, registry, systemQueries, synthesizer != nil && cfg.Providers.Synthesis.Enabled, modelResolver, psResolver)
+	summarizeWorker.SetLLMTimeout(cfg.Providers.Summarization.LLMTimeoutOr(0))
+	river.AddWorker(workers, summarizeWorker)
 
 	// Concept synthesis is chained from summarize_concepts: every
 	// time a slice is written/updated, summarize_concepts enqueues one
@@ -294,7 +330,10 @@ func New(
 	// and upserts concept_syntheses. It is a no-op when synthesizer is
 	// nil or synthesis.enabled is false, so a deployment that hasn't
 	// wired a synthesis model still boots.
-	river.AddWorker(workers, tasks.NewSynthesizeConceptsWorker(synthesizer, cfg.Providers.Synthesis, registry, systemQueries, modelResolver, psResolver))
+	synthesizeWorker := tasks.NewSynthesizeConceptsWorker(synthesizer, cfg.Providers.Synthesis, registry, systemQueries, modelResolver, psResolver)
+	synthesizeWorker.SetPickerTimeout(cfg.Providers.Synthesis.PickerTimeoutOr(0))
+	synthesizeWorker.SetLLMTimeout(cfg.Providers.Synthesis.LLMTimeoutOr(0))
+	river.AddWorker(workers, synthesizeWorker)
 	// Concept-relations matview refresh. Sibling of
 	// embed_concepts/summarize_concepts (also fanned out from
 	// extract_concepts). Refreshes the okt_repository.concept_relations
@@ -317,7 +356,7 @@ func New(
 	// provider / qdrant is nil or reports.enabled is false, so a
 	// deployment that hasn't wired the embedding pipeline still
 	// boots — reports stay in `pending` until annotation is enabled.
-	river.AddWorker(workers, tasks.NewAnnotateReportWorker(embeddingProvider, cfg.Providers.Embedding, cfg.Providers.Reports, postureClassifier, qdrantStore, registry, systemQueries, modelResolver, psResolver))
+	river.AddWorker(workers, tasks.NewAnnotateReportWorker(embeddingProvider, cfg.Providers.Embedding, cfg.Providers.Reports, postureClassifier, claimExtractor, qdrantStore, registry, systemQueries, modelResolver, psResolver))
 
 	queueConfigs := buildQueueConfigs(cfg)
 
@@ -382,6 +421,20 @@ func New(
 				river.PeriodicInterval(24*time.Hour),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return tasks.FactCatchupArgs{}, &river.InsertOpts{Queue: tasks.QueueFactCatchup}
+				},
+				&river.PeriodicJobOpts{RunOnStart: false},
+			),
+			// Audit log retention. Daily sweep that deletes
+			// okt_system.permission_audit rows older than
+			// cfg.Audit.RetentionDays (default 30). RunOnStart is
+			// false so a boot doesn't trigger an immediate sweep;
+			// the first run is 24h after the client starts. The
+			// cutoff is recomputed at work time so a config reload
+			// takes effect on the next run without a restart.
+			river.NewPeriodicJob(
+				river.PeriodicInterval(24*time.Hour),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return tasks.AuditCleanupArgs{}, &river.InsertOpts{Queue: tasks.QueueAuditCleanup}
 				},
 				&river.PeriodicJobOpts{RunOnStart: false},
 			),
@@ -750,6 +803,28 @@ func (m *Manager) EnqueueSourceDecomposition(ctx context.Context, args tasks.Sou
 // the result to handler.Source.SetTaskEnqueuer.
 func (m *Manager) Enqueuer() handler.TaskEnqueuer {
 	return &enqueuerAdapter{m: m}
+}
+
+// EnqueueExtractConcepts inserts an ExtractConceptsArgs job onto the
+// "extract_concepts" queue. Used by the admin reextract endpoint
+// (POST /api/v1/admin/repos/{repoID}/concepts/reextract) to re-run
+// concept extraction for a repo after clearing retryable skips.
+// SourceID empty means a repo-wide pass; non-empty narrows to that
+// source's stable facts.
+func (m *Manager) EnqueueExtractConcepts(ctx context.Context, args tasks.ExtractConceptsArgs) (string, error) {
+	opts := &river.InsertOpts{
+		Queue:       tasks.QueueExtractConcepts,
+		ScheduledAt: time.Now(),
+		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{
+			RepositoryID: args.RepositoryID,
+			SourceID:     args.SourceID,
+		}),
+	}
+	res, err := m.client.Insert(ctx, args, opts)
+	if err != nil {
+		return "", fmt.Errorf("enqueueing extract_concepts job: %w", err)
+	}
+	return fmt.Sprintf("%d", res.Job.ID), nil
 }
 
 // EnqueueAnnotateReport inserts an AnnotateReportArgs job onto the

@@ -83,6 +83,7 @@ export default function SourcesList(props) {
                     <SourceRow
                       source={source}
                       slug={props.slug()}
+                      repoID={props.repoID()}
                       canProcess={
                         props.canProcess() &&
                         source.status === "fetched" &&
@@ -92,6 +93,9 @@ export default function SourcesList(props) {
                       processDisabled={source.status === "processed"}
                       processing={props.processingID() === source.id}
                       onProcess={() => props.onProcess(source)}
+                      canReprocess={props.canReprocess()}
+                      reprocessing={props.reprocessingID() === source.id}
+                      onReprocess={() => props.onReprocess(source)}
                       canRetry={props.canRetry() && source.status === "failed"}
                       retrying={props.retryingID() === source.id}
                       onRetry={() => props.onRetry(source)}

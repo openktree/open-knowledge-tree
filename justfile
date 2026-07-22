@@ -245,3 +245,25 @@ fl: frontend-logs
 #   just bootstrap-admin carlosgomezsoza@gmail.com
 bootstrap-admin email:
 	backend/scripts/bootstrap-admin.sh {{email}}
+# Regenerate the AI client plugin files (Claude Code, VS Code Copilot, Codex
+# CLI, opencode) from the single source of truth at .opencode/agent/*.md.
+# The generated files in ai-plugins/agents/ and ai-plugins/opencode/agents/
+# are checked in so non-Node users can read them. Run this after editing any
+# source agent and commit the result.
+sync-agents:
+	node ai-plugins/scripts/sync-agents.mjs
+
+# CI gate: drift detection + manifest validation + generator unit tests +
+# opencode plugin typecheck. Run before pushing any change to
+# .opencode/agent/*.md or ai-plugins/.
+check-plugins:
+	node ai-plugins/scripts/sync-agents.mjs --check
+	node --test ai-plugins/scripts/sync-agents.test.mjs ai-plugins/scripts/validate-manifests.test.mjs
+	cd ai-plugins && bunx tsc -p tsconfig.json
+
+# Full ai-plugins test suite: unit tests + manifest validation + opencode
+# plugin runtime tests (bun test with an isolated HOME) + typecheck.
+test-plugins:
+	node --test ai-plugins/scripts/sync-agents.test.mjs ai-plugins/scripts/validate-manifests.test.mjs
+	cd ai-plugins && bun test opencode/index.test.ts
+	cd ai-plugins && bunx tsc -p tsconfig.json

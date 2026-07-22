@@ -13,6 +13,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
 	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
+	hybrid "github.com/openktree/open-knowledge-tree/backend/internal/search"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -138,6 +139,36 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	limit, offset := parsePaging(r)
 
+	// Hybrid search path: when the caller supplied a non-empty
+	// `q`, the qdrant store + embedding provider are wired, and
+	// the master switch is on, fuse the lexical (Postgres
+	// tsvector over canonical_name/description/aliases) and
+	// semantic (Qdrant concept collection cosine) channels via
+	// Reciprocal Rank Fusion at the concept_id level, then group
+	// by lower(canonical_name) as in the lexical path. Any
+	// qdrant/embedding error logs and degrades to lexical-only.
+	if q != "" && c.deps.Qdrant != nil && c.deps.EmbeddingProvider != nil && c.deps.Config.Search.Hybrid.Enabled {
+		res, hErr := hybrid.HybridConcepts(r.Context(), hybrid.Deps{
+			Queries:           queries,
+			Qdrant:            c.deps.Qdrant,
+			EmbeddingProvider: c.deps.EmbeddingProvider,
+			EmbeddingCfg:      c.deps.Config.Providers.Embedding,
+			Hybrid:            c.deps.Config.Search.Hybrid,
+		}, repoID, q, limit, offset)
+		if hErr != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to search concepts")
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
+			Data:       res.Groups,
+			Total:      res.Total,
+			Limit:      limit,
+			Offset:     offset,
+			SearchMode: res.SearchMode,
+		})
+		return
+	}
+
 	rows, err := queries.ListGroupedConceptsByRepo(r.Context(), store.ListGroupedConceptsByRepoParams{
 		RepositoryID: repoID,
 		Q:            q,
@@ -167,10 +198,11 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 	page := concepts.Paginate(groups, offset, limit)
 
 	httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
-		Data:   page,
-		Total:  total,
-		Limit:  limit,
-		Offset: offset,
+		Data:       page,
+		Total:      total,
+		Limit:      limit,
+		Offset:     offset,
+		SearchMode: "lexical",
 	})
 }
 
@@ -272,13 +304,25 @@ func buildGroupWithAliases[T any](
 // The "query DNA → 200 facts" view, scoped to a single context's
 // concept_id. Facts stay compartmentalized per context: this
 // endpoint does NOT union facts across the concept's sibling
-// contexts. Paginated; ordered by first_seen_at so the oldest link
-// is first (stable across pages). A cross-repo conceptID is a 404.
+// contexts. Paginated. A cross-repo conceptID is a 404.
 //
 // Searchable via the optional `q` query param (websearch_to_tsquery
 // against facts.search_tsv, which covers facts.text); empty/absent
 // q = no filter. Useful for large concepts whose facts span many
-// pages. The response is a pageEnvelope: {data, total, limit, offset}.
+// pages.
+//
+// Sortable via the optional `sort` query param, mirroring the
+// repo-wide /facts endpoint:
+//   - 'source_count' (default): most-confirmed facts first. A fact
+//     that survived dedup from N independent sources is more
+//     load-bearing than a single-source paraphrase.
+//   - 'created_at': newest facts first (by the fact's created_at,
+//     not the link's first_seen_at).
+// Empty/absent sort = 'source_count'. The response also carries a
+// per-fact `source_count` column so callers can render the
+// confirmation signal.
+//
+// The response is a pageEnvelope: {data, total, limit, offset}.
 func (c *Concepts) ListConceptFacts(w http.ResponseWriter, r *http.Request) {
 	pool := appmw.PoolFromContext(r.Context())
 	if pool == nil {
@@ -317,10 +361,12 @@ func (c *Concepts) ListConceptFacts(w http.ResponseWriter, r *http.Request) {
 
 	limit, offset := parsePaging(r)
 	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	sortParam := r.URL.Query().Get("sort")
 
 	facts, err := queries.ListFactsByConcept(r.Context(), store.ListFactsByConceptParams{
 		ConceptID: conceptID,
 		Column2:   search,
+		Column3:   sortParam,
 		Limit:     int32(limit),
 		Offset:    int32(offset),
 	})

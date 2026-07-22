@@ -1,4 +1,4 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { api } from "../services/api";
 import Alert from "./Alert";
 import Button from "./Button";
@@ -18,18 +18,20 @@ import Card from "./Card";
 //               usually refetches its list)
 export default function UploadSourcePanel(props) {
   const [mode, setMode] = createSignal("file");
-  const [file, setFile] = createSignal(null);
+  const [files, setFiles] = createSignal([]);
   const [text, setText] = createSignal("");
   const [title, setTitle] = createSignal("");
   const [kind, setKind] = createSignal("uploaded");
   const [busy, setBusy] = createSignal(false);
+  const [progress, setProgress] = createSignal(null);
   const [alert, setAlert] = createSignal(null);
 
   const reset = () => {
-    setFile(null);
+    setFiles([]);
     setText("");
     setTitle("");
     setKind("uploaded");
+    setProgress(null);
   };
 
   const handleSubmit = async (e) => {
@@ -37,32 +39,78 @@ export default function UploadSourcePanel(props) {
     if (!props.slug) return;
     setBusy(true);
     setAlert(null);
+    setProgress(null);
     try {
-      let res;
       if (mode() === "file") {
-        const f = file();
-        if (!f) {
-          setAlert({ variant: "error", message: "Choose a file first." });
+        const list = files();
+        if (!list.length) {
+          setAlert({ variant: "error", message: "Choose at least one file." });
           setBusy(false);
           return;
         }
-        res = await api.uploadSourceFile(props.slug, f, kind(), props.invID || "");
+        const ok = [];
+        const failed = [];
+        for (let i = 0; i < list.length; i++) {
+          const f = list[i];
+          setProgress({ index: i + 1, total: list.length, name: f.name });
+          try {
+            await api.uploadSourceFile(props.slug, f, kind(), props.invID || "");
+            ok.push(f.name);
+          } catch (err) {
+            failed.push({ name: f.name, message: err.message });
+          }
+        }
+        const linkedNote = props.invID ? " and linked to investigation" : "";
+        if (failed.length === 0) {
+          const cnt = ok.length;
+          setAlert({
+            variant: "success",
+            message:
+              cnt === 1
+                ? `Source uploaded${linkedNote}. Decomposition queued.`
+                : `${cnt} sources uploaded${linkedNote}. Decomposition queued.`,
+          });
+          reset();
+          props.onDone?.();
+        } else if (ok.length === 0) {
+          setAlert({
+            variant: "error",
+            message: `All ${failed.length} upload(s) failed: ${failed.map((x) => x.name + " (" + x.message + ")").join(", ")}`,
+          });
+        } else {
+          setAlert({
+            variant: "error",
+            message: `${ok.length} succeeded, ${failed.length} failed: ${failed.map((x) => x.name + " (" + x.message + ")").join(", ")}`,
+          });
+          reset();
+          props.onDone?.();
+        }
       } else {
         if (!text().trim()) {
           setAlert({ variant: "error", message: "Text cannot be empty." });
           setBusy(false);
           return;
         }
-        res = await api.uploadSourceText(props.slug, text(), title(), kind(), props.invID || "");
+        const res = await api.uploadSourceText(
+          props.slug,
+          text(),
+          title(),
+          kind(),
+          props.invID || "",
+        );
+        const linked = res.investigation_linked ? " and linked to investigation" : "";
+        setAlert({
+          variant: "success",
+          message: `Source uploaded${linked}. Decomposition queued.`,
+        });
+        reset();
+        props.onDone?.();
       }
-      const linked = res.investigation_linked ? " and linked to investigation" : "";
-      setAlert({ variant: "success", message: `Source uploaded${linked}. Decomposition queued.` });
-      reset();
-      props.onDone?.();
     } catch (err) {
       setAlert({ variant: "error", message: err.message });
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
@@ -103,10 +151,24 @@ export default function UploadSourcePanel(props) {
         <Show when={mode() === "file"}>
           <input
             type="file"
+            multiple
             accept=".pdf,.html,.htm,.md,.markdown,.txt"
-            onChange={(e) => setFile(e.currentTarget.files?.[0] || null)}
+            onChange={(e) => {
+              const picked = Array.from(e.currentTarget.files || []);
+              setFiles(picked);
+            }}
             class="block w-full text-sm text-text-base"
           />
+          <Show when={files().length > 0}>
+            <ul class="mt-2 text-sm text-text-muted space-y-1">
+              <For each={files()}>{(f) => <li class="truncate">· {f.name}</li>}</For>
+            </ul>
+          </Show>
+          <Show when={progress()}>
+            <p class="mt-2 text-sm text-text-muted">
+              Uploading {progress().index} / {progress().total}: {progress().name}
+            </p>
+          </Show>
         </Show>
         <Show when={mode() === "text"}>
           <input
@@ -138,7 +200,13 @@ export default function UploadSourcePanel(props) {
             <option value="code">code</option>
             <option value="other">other</option>
           </select>
-          <Button type="submit" loading={busy()} loadingText="Uploading...">
+          <Button
+            type="submit"
+            loading={busy()}
+            loadingText={
+              progress() ? `Uploading ${progress().index}/${progress().total}...` : "Uploading..."
+            }
+          >
             Upload
           </Button>
           <Button type="button" variant="secondary" onClick={() => props.onCancel?.()}>
@@ -156,8 +224,8 @@ export default function UploadSourcePanel(props) {
         <Card class="mb-6">
           <h2 class="text-lg font-semibold mb-1 text-text-base">Upload a source</h2>
           <p class="text-sm text-text-muted mb-4">
-            Upload a file (PDF, HTML, Markdown, TXT) or paste raw text. The content is parsed and
-            decomposed into facts automatically.
+            Upload one or more files (PDF, HTML, Markdown, TXT) or paste raw text. Each file becomes
+            its own source; content is parsed and decomposed into facts automatically.
           </p>
           {body()}
         </Card>

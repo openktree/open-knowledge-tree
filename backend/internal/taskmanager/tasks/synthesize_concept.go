@@ -69,6 +69,15 @@ type SynthesizeConceptsWorker struct {
 	systemQueries   *store.Queries
 	modelResolver   *ModelResolver
 	promptsetResolver *PromptsetResolver
+	// pickerTimeout is the per-call wall-clock timeout for the
+	// image-picker LLM call. Default 20m; set via SetPickerTimeout
+	// from cfg.Providers.Synthesis.PickerTimeout.
+	pickerTimeout time.Duration
+	// llmTimeout is the per-call wall-clock timeout for the
+	// synthesis LLM call. Default 25m (synthesis produces longer
+	// output than the picker); set via SetLLMTimeout from
+	// cfg.Providers.Synthesis.LLMTimeout.
+	llmTimeout time.Duration
 }
 
 func NewSynthesizeConceptsWorker(
@@ -86,6 +95,24 @@ func NewSynthesizeConceptsWorker(
 		systemQueries:     systemQueries,
 		modelResolver:     modelResolver,
 		promptsetResolver: promptsetResolver,
+		pickerTimeout:     20 * time.Minute, // default; overridden via SetPickerTimeout
+		llmTimeout:        25 * time.Minute, // default; overridden via SetLLMTimeout
+	}
+}
+
+// SetPickerTimeout sets the per-call wall-clock timeout for the
+// image-picker LLM call. Default 20m when unset.
+func (w *SynthesizeConceptsWorker) SetPickerTimeout(d time.Duration) {
+	if d > 0 {
+		w.pickerTimeout = d
+	}
+}
+
+// SetLLMTimeout sets the per-call wall-clock timeout for the
+// synthesis LLM call. Default 25m when unset.
+func (w *SynthesizeConceptsWorker) SetLLMTimeout(d time.Duration) {
+	if d > 0 {
+		w.llmTimeout = d
 	}
 }
 
@@ -338,7 +365,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 		if len(candidateImages) <= maxImages {
 			chosenImages = candidateImages
 		} else {
-			pickCtx, pickCancel := context.WithTimeout(context.Background(), 120*time.Second)
+			pickCtx, pickCancel := context.WithTimeout(context.Background(), w.pickerTimeout)
 			picked, perr := synthesizer.PickImages(pickCtx, pool, synthesis.ImagePickRequest{
 				CanonicalName: concept.CanonicalName,
 				Context:       concept.Context,
@@ -365,7 +392,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	result.ImagesPicked = len(chosenImages)
 
 	// 7. Synthesis LLM call (outside any transaction, 180s background ctx).
-	synthCtx, synthCancel := context.WithTimeout(context.Background(), 180*time.Second)
+	synthCtx, synthCancel := context.WithTimeout(context.Background(), w.llmTimeout)
 	content, err := synthesizer.Synthesize(synthCtx, pool, synthesis.SynthesisRequest{
 		CanonicalName:   concept.CanonicalName,
 		Context:         concept.Context,

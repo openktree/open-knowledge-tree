@@ -104,5 +104,8 @@ func (u *User) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	recordAudit(u.deps, r, rbac.AuditActionUserUpdate, rbac.Objects.Users, userID, map[string]any{
+		"display_name": body.DisplayName,
+	})
 	httputil.WriteJSON(w, http.StatusOK, user)
 }

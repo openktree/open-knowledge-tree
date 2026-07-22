@@ -22,6 +22,7 @@ const (
 	TaskKindSummarization      = "summarization"
 	TaskKindSynthesis          = "synthesis"
 	TaskKindReportAnnotation  = "report_annotation"
+	TaskKindClaimExtraction    = "claim_extraction"
 )
 
 // ModelResolver resolves a per-repo model override for a task kind

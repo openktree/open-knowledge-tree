@@ -156,12 +156,55 @@ func (p *AIFactExtractionProvider) ExtractFacts(ctx context.Context, db store.DB
 	return facts, nil
 }
 
+// cleanJSONArray extracts the first valid JSON array from a raw
+// model response. The model occasionally wraps the JSON in markdown
+// fences (```json ... ```), prefixes it with chain-of-thought
+// commentary, appends trailing junk, or emits multiple fenced
+// blocks when it "reconsiders" mid-response. The historical
+// implementation (first '[' to last ']') failed on the
+// multi-block case because it spanned the prose between blocks.
+//
+// The new behavior: for each '[' position in the raw string, try
+// to parse the substring from that '[' to each subsequent ']' as
+// JSON. The first pair that parses cleanly wins. This handles:
+//   - markdown fences (```json\n[...]\n```): the fence chars are
+//     skipped because we start at the JSON's '[';
+//   - preambles ("//C ..."): leading text before '[' is skipped;
+//   - trailing junk (commentary after the array): text after ']'
+//     is excluded;
+//   - multiple blocks ("Wait, let me reconsider... ```json
+//     [...]```"): the FIRST valid array is returned, ignoring
+//     later blocks.
+//
+// Returns "" when no valid JSON array can be extracted — the caller
+// then treats the response as a permanent parse failure (the
+// soft-skip path handles it).
 func cleanJSONArray(raw string) string {
 	raw = strings.TrimSpace(raw)
-	start := strings.Index(raw, "[")
-	end := strings.LastIndex(raw, "]")
-	if start == -1 || end == -1 || end <= start {
-		return ""
+	// Fast path: the whole response is already a clean array.
+	if len(raw) > 0 && raw[0] == '[' {
+		var probe []json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &probe); err == nil {
+			return raw
+		}
 	}
-	return raw[start : end+1]
+	// Slow path: scan every '[' and try to parse from there to
+	// every later ']'. O(n^2) over the positions, but the response
+	// is bounded (typically a few KB) so this is cheap enough.
+	for start := 0; start < len(raw); start++ {
+		if raw[start] != '[' {
+			continue
+		}
+		for end := len(raw) - 1; end > start; end-- {
+			if raw[end] != ']' {
+				continue
+			}
+			candidate := raw[start : end+1]
+			var probe []json.RawMessage
+			if err := json.Unmarshal([]byte(candidate), &probe); err == nil {
+				return candidate
+			}
+		}
+	}
+	return ""
 }

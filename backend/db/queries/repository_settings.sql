@@ -190,16 +190,22 @@ WHERE repository_id = $1;
 -- max_facts_per_sentence (5), or a value in 1..50 to override; pass
 -- lexical_similarity_floor NULL to inherit the global default (0.6),
 -- or a value in 0..1 to override (the semantic-distance floor for the
--- hybrid lexical fallback).
+-- hybrid lexical fallback); pass context_window_before /
+-- context_window_after NULL to inherit the global defaults (2/2), or
+-- a value in 0..10 to override (the number of surrounding sentences
+-- the posture classifier receives before/after the candidate for
+-- disambiguation context).
 INSERT INTO okt_system.repository_report_settings
-    (repository_id, similarity_threshold, posture_classifier_enabled, max_facts_per_sentence, lexical_similarity_floor)
-VALUES ($1, $2, $3, $4, $5)
+    (repository_id, similarity_threshold, posture_classifier_enabled, max_facts_per_sentence, lexical_similarity_floor, context_window_before, context_window_after)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (repository_id)
 DO UPDATE SET
     similarity_threshold        = EXCLUDED.similarity_threshold,
     posture_classifier_enabled = EXCLUDED.posture_classifier_enabled,
     max_facts_per_sentence      = EXCLUDED.max_facts_per_sentence,
     lexical_similarity_floor    = EXCLUDED.lexical_similarity_floor,
+    context_window_before       = EXCLUDED.context_window_before,
+    context_window_after        = EXCLUDED.context_window_after,
     updated_at = now()
 RETURNING *;
 

@@ -15,6 +15,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -52,10 +53,33 @@ type FactCandidate struct {
 
 // SentenceFacts is a single sentence plus the candidate facts
 // Qdrant returned for it. One or more of these forms a batch.
+//
+// ContextBefore / ContextAfter carry up to N sentences immediately
+// before / after SentenceIndex in the report's sentence array, so
+// the classifier can disambiguate pronouns and referenced entities
+// ("it", "this approach", "the study") against the surrounding
+// prose. The worker clamps the window to the available range (no
+// synthesized padding at report boundaries), so the first/last
+// sentences naturally yield fewer than N context entries. Either
+// slice is empty when the candidate is at the boundary or the
+// configured context window for that side is 0.
+//
+// Claims carries the verifiable assertions the claim extractor
+// pulled out of SentenceText (numeric values, causal claims,
+// comparisons, quotations, definitions). The classifier uses them
+// to judge each candidate fact against the SPECIFIC assertion it
+// could verify, not just the sentence's broad topic — a fact that is
+// topically related to the sentence but does not verify any of its
+// specific claims is irrelevant. Empty when the claim extractor is
+// not configured or the sentence had no extractable claims (the
+// classifier falls back to the legacy sentence-vs-fact judgment).
 type SentenceFacts struct {
-	SentenceIndex int
-	SentenceText  string
-	Facts         []FactCandidate
+	SentenceIndex  int
+	SentenceText   string
+	ContextBefore  []string
+	ContextAfter   []string
+	Claims         []claims.Claim
+	Facts          []FactCandidate
 }
 
 // Classification is the per-pair label the classifier returns.

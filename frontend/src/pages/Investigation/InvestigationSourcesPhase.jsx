@@ -64,7 +64,7 @@ export default function InvestigationSourcesPhase(props) {
       />
       <CollapsibleSection
         title="Upload a source"
-        subtitle="Upload a file (PDF, HTML, Markdown, TXT) or paste raw text. Parsed and decomposed into facts automatically."
+        subtitle="Upload one or more files (PDF, HTML, Markdown, TXT) or paste raw text. Parsed and decomposed into facts automatically."
         defaultOpen={false}
       >
         <UploadSourcePanel

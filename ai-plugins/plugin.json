@@ -1,0 +1,12 @@
+{
+  "name": "okt-agents",
+  "description": "Five OKT research agents (orchestrator, research, investigation, synthesizer, super-synthesizer) for research and synthesis workflows against an Open Knowledge Tree repository.",
+  "version": "0.1.0",
+  "author": { "name": "Open Knowledge Tree" },
+  "homepage": "https://github.com/anomalyco/open-knowledge-tree-go",
+  "repository": "https://github.com/anomalyco/open-knowledge-tree-go",
+  "license": "MIT",
+  "keywords": ["okt", "research", "synthesis", "knowledge", "agents"],
+  "skills": "./skills",
+  "agents": "./agents"
+}

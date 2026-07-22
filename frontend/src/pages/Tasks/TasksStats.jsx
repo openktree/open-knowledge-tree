@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import { STATE_BADGE } from "./constants";
+import ReextractDangerBox from "./ReextractDangerBox";
 
 const badgeVariant = (state) => STATE_BADGE[state] || "gray";
 
@@ -32,6 +33,7 @@ export default function TasksStats(props) {
   const [expanded, setExpanded] = createSignal(false);
   const [confirmRescue, setConfirmRescue] = createSignal(false);
   const [rescueResult, setRescueResult] = createSignal(null);
+  const [showReextract, setShowReextract] = createSignal(false);
   const total = () => props.stats?.totals?.total ?? 0;
   const hasData = () => props.stats?.queues?.length > 0;
   const runningCount = () => props.stats?.totals?.running ?? 0;
@@ -109,11 +111,32 @@ export default function TasksStats(props) {
                   </Button>
                 </Show>
               </Show>
+              <Show when={props.canReextract && (props.repositories?.length || 0) > 0}>
+                <Button
+                  variant="secondary"
+                  onClick={() => setShowReextract(true)}
+                  title="Clear retryable concept skips for a repo and re-enqueue concept extraction"
+                >
+                  Re-extract concepts
+                </Button>
+              </Show>
               <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">
                 {total()} total
               </span>
             </div>
           </div>
+
+          <Show when={showReextract()}>
+            <div class="mt-3">
+              <ReextractDangerBox
+                repositories={props.repositories}
+                currentRepo={props.currentRepo}
+                reextracting={props.reextracting}
+                onConfirm={props.onReextract}
+                onCancel={() => setShowReextract(false)}
+              />
+            </div>
+          </Show>
 
           <Show when={rescueResult()}>
             <div class="mt-2 text-xs text-green-600 dark:text-green-400">

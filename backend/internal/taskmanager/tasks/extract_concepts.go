@@ -41,6 +41,17 @@ type factExtract struct {
 	plans []conceptPlan
 }
 
+// conceptChunk is one LLM-call's worth of facts within an
+// extract_concepts wave: a contiguous slice of the wave's `facts`
+// (start is the offset; input is the per-chunk fact batch). The
+// model's fact_index echo maps back to input[i], and absIdx =
+// start + fact_index maps back to the wave-wide factResults/
+// factErrs slices.
+type conceptChunk struct {
+	start int
+	input []decomposition.FactInput
+}
+
 // ExtractConceptsArgs triggers a per-repository concept-extraction
 // pass. The working set is the repo's stable facts (post-dedup) that
 // have no row yet in fact_concepts and no row in fact_concept_skips.
@@ -75,15 +86,26 @@ func (ExtractConceptsArgs) InsertOpts() river.InsertOpts { return river.InsertOp
 // context) pairs that text-search-matched an existing concept;
 // AliasesMerged is the count of seed aliases merged onto matched
 // concepts (free recall boost, no LLM); Errors carries the count of
-// per-fact failures so the UI can surface partial failures without
-// digging through logs.
+// per-fact failures (transient + permanent) so the UI can surface
+// partial failures without digging through logs; TransientErrors is
+// the subset of Errors that were classified as transient (timeout,
+// rate-limit wait, network blip, 5xx, 429) — these do NOT record a
+// skip row, so the fact is retried on the next pass; ChunksRetried
+// is how many chunk-LLM calls were re-run by the in-job end-of-queue
+// retry loop (0 when no chunk failed the main wave, or when
+// in_job_retries is 0); ChunksStillFailed is how many chunks were
+// still failing after all retry rounds exhausted (their facts are
+// either left unprocessed (transient) or soft-skipped (permanent)).
 type ExtractConceptsResult struct {
-	RepositoryID    string `json:"repository_id"`
-	FactsProcessed  int    `json:"facts_processed"`
-	ConceptsNew     int    `json:"concepts_new"`
-	ConceptsMatched int    `json:"concepts_matched"`
-	AliasesMerged   int    `json:"aliases_merged"`
-	Errors          int    `json:"errors"`
+	RepositoryID      string `json:"repository_id"`
+	FactsProcessed    int    `json:"facts_processed"`
+	ConceptsNew       int    `json:"concepts_new"`
+	ConceptsMatched   int    `json:"concepts_matched"`
+	AliasesMerged     int    `json:"aliases_merged"`
+	Errors            int    `json:"errors"`
+	TransientErrors   int    `json:"transient_errors"`
+	ChunksRetried     int    `json:"chunks_retried"`
+	ChunksStillFailed int    `json:"chunks_still_failed"`
 }
 
 type ExtractConceptsWorker struct {
@@ -106,6 +128,28 @@ type ExtractConceptsWorker struct {
 	embeddingProvider ai.EmbeddingProvider
 	embeddingCfg      config.EmbeddingConfig
 	qdrant            *qdrantstore.Store
+	// maxConceptAttempts caps how many consecutive permanent
+	// failures (parse error, empty result) a fact can accumulate
+	// on fact_concept_skips before it's excluded from the
+	// candidate set. Transient failures (timeout, rate-limit wait,
+	// network blip, 5xx, 429) never write a skip row, so they
+	// don't count against this budget. Default 3; set via
+	// SetMaxConceptAttempts from cfg.Task.ConceptExtraction.MaxAttempts.
+	maxConceptAttempts int32
+	// inJobRetries is how many times the worker re-runs failed
+	// chunks at the end of the main wave before giving up and
+	// leaving the facts unprocessed (transient) or soft-skipped
+	// (permanent). Default 2; set via SetInJobRetries from
+	// cfg.Task.ConceptExtraction.InJobRetries.
+	inJobRetries int
+	// llmTimeout is the per-call wall-clock timeout for a
+	// concept-extraction LLM call. Default 20m; set via
+	// SetLLMTimeout from cfg.Providers.Decomposition.ConceptExtraction.LLMTimeout.
+	// Must exceed the retry budget (4 attempts × 5m PerCallTO +
+	// backoffs ≈ 20m) so the existing retryWithBackoff can ride
+	// out an OpenRouter slowdown. The historical 120s value fired
+	// before the 4 retry attempts could complete.
+	llmTimeout time.Duration
 }
 
 func NewExtractConceptsWorker(
@@ -117,12 +161,15 @@ func NewExtractConceptsWorker(
 	promptsetResolver *PromptsetResolver,
 ) *ExtractConceptsWorker {
 	return &ExtractConceptsWorker{
-		conceptExtractor:  conceptExtractor,
-		conceptCfg:        conceptCfg,
-		registry:          registry,
-		systemQueries:     systemQueries,
-		modelResolver:     modelResolver,
-		promptsetResolver: promptsetResolver,
+		conceptExtractor:     conceptExtractor,
+		conceptCfg:           conceptCfg,
+		registry:             registry,
+		systemQueries:        systemQueries,
+		modelResolver:        modelResolver,
+		promptsetResolver:    promptsetResolver,
+		maxConceptAttempts:   3, // default; overridden via SetMaxConceptAttempts from cfg.Providers.Decomposition.ConceptExtraction.MaxAttempts
+		inJobRetries:         2, // default; overridden via SetInJobRetries from cfg.Providers.Decomposition.ConceptExtraction.InJobRetries
+		llmTimeout:           20 * time.Minute, // default; overridden via SetLLMTimeout
 	}
 }
 
@@ -154,6 +201,45 @@ func (w *ExtractConceptsWorker) SetSummarizationEnabled(enabled bool) {
 // RefineConcepts jobs only when a refiner is wired.
 func (w *ExtractConceptsWorker) SetRefinementEnabled(enabled bool) {
 	w.refinementEnabled = enabled
+}
+
+// SetMaxConceptAttempts sets the soft-skip budget for permanent
+// concept-extraction failures. Once a fact accumulates this many
+// consecutive permanent skip rows on fact_concept_skips, it is
+// excluded from the candidate set until an operator clears the
+// skip via the admin reextract endpoint. Default 3 when unset
+// (matches config.default.yaml).
+func (w *ExtractConceptsWorker) SetMaxConceptAttempts(n int32) {
+	if n <= 0 {
+		n = 3
+	}
+	w.maxConceptAttempts = n
+}
+
+// SetInJobRetries sets how many times the worker re-runs failed
+// chunks at the end of the main wave before giving up. Default 2
+// when unset (matches config.default.yaml). Each retry round
+// re-LLM's only the failed chunks; successful chunks are not
+// re-run, so no duplicate fact_concepts rows are written (the
+// junction's ON CONFLICT DO NOTHING is also a guard).
+func (w *ExtractConceptsWorker) SetInJobRetries(n int) {
+	if n < 0 {
+		n = 0
+	}
+	w.inJobRetries = n
+}
+
+// SetLLMTimeout sets the per-call wall-clock timeout for a
+// concept-extraction LLM call. Default 20m when unset. The value
+// must exceed the retry budget (4 attempts × 5m PerCallTO +
+// backoffs ≈ 20m) so the retryWithBackoff loop can complete its
+// 4 attempts instead of being killed by the worker's outer ctx
+// (the historical 120s value that fired mid-retry and permanently
+// skipped 95,627 facts).
+func (w *ExtractConceptsWorker) SetLLMTimeout(d time.Duration) {
+	if d > 0 {
+		w.llmTimeout = d
+	}
 }
 
 // Work runs a concept-extraction pass over a repo's stable facts.
@@ -319,9 +405,10 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 		var facts []store.ListStableFactsForConceptExtractionRow
 		if sourceScoped {
 			srcFacts, err := store.New(pool.Pool).ListStableFactsForConceptExtractionBySource(ctx, store.ListStableFactsForConceptExtractionBySourceParams{
-				RepositoryID: repoID,
-				SourceID:     srcID,
-				BatchSize:    fetchSize,
+				RepositoryID:       repoID,
+				SourceID:           srcID,
+				MaxConceptAttempts: w.maxConceptAttempts,
+				BatchSize:          fetchSize,
 			})
 			if err != nil {
 				return fmt.Errorf("extract_concepts: listing stable facts by source: %w", err)
@@ -335,8 +422,9 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 			}
 		} else {
 			facts, err = store.New(pool.Pool).ListStableFactsForConceptExtraction(ctx, store.ListStableFactsForConceptExtractionParams{
-				RepositoryID: repoID,
-				BatchSize:    fetchSize,
+				RepositoryID:       repoID,
+				MaxConceptAttempts: w.maxConceptAttempts,
+				BatchSize:          fetchSize,
 			})
 			if err != nil {
 				return fmt.Errorf("extract_concepts: listing stable facts: %w", err)
@@ -351,25 +439,30 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 		// chunk is one LLM call that returns concepts tagged with a
 		// fact_index (0-based within the chunk). The chunks fan out at
 		// conceptConcurrency; each worker uses a fresh background
-		// context (120s) so a slow LLM response cannot cancel the
-		// job's ctx and poison the subsequent write tx. The provider's
-		// internal retryWithBackoff handles 429/5xx/net retries per
-		// call.
+		// context (llmTimeout, default 20m) so a slow LLM response
+		// cannot cancel the job's ctx and poison the subsequent write
+		// tx. The provider's internal retryWithBackoff handles
+		// 429/5xx/net retries per call.
 		//
 		// factResults/factErrs are indexed by the fact's position in
 		// `facts` (the full wave), so phase 2 can iterate them serially
 		// in input order. A chunk-level error marks every fact in that
-		// chunk as failed (and skipped), so one bad LLM call does not
-		// poison the rest of the wave. With fetchSize = Concurrency ×
+		// chunk as failed, so one bad LLM call does not poison the
+		// rest of the wave. With fetchSize = Concurrency ×
 		// factBatchSize the wave produces exactly conceptConcurrency
 		// chunks, so the semaphore is saturated with no straggler.
+		//
+		// After the main wave, failed chunks are re-run up to
+		// inJobRetries times (default 2) at the end of the queue, so
+		// an OpenRouter degradation that cleared in 30s doesn't
+		// leave the facts unprocessed. Only the failed chunks are
+		// re-LLM'd; successful chunks are not re-run, so no duplicate
+		// fact_concepts rows are written (the junction's ON CONFLICT
+		// DO NOTHING is also a guard).
 		factResults := make([]factExtract, len(facts))
 		factErrs := make([]error, len(facts))
 
-		type chunk struct {
-			start int
-			input []decomposition.FactInput
-		}
+		type chunk = conceptChunk
 		var chunks []chunk
 		for start := 0; start < len(facts); start += factBatchSize {
 			end := start + factBatchSize
@@ -390,50 +483,77 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, conceptConcurrency)
-		for _, ch := range chunks {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(ch chunk) {
-				defer wg.Done()
-				defer func() { <-sem }()
+		w.runChunkWaveInto(chunks, conceptExtractor, conceptConcurrency, w.llmTimeout, pool.Pool, factResults, factErrs, contextEntries, args.RepositoryID, taskID, &result, &wg, sem)
+		wg.Wait()
 
-				llmCtx, llmCancel := context.WithTimeout(context.Background(), 120*time.Second)
-				concepts, err := conceptExtractor.ExtractConcepts(llmCtx, pool.Pool, ch.input, contextEntries, decomposition.ConceptExtractionAttribution{
-					RepositoryID: args.RepositoryID,
-					TaskID:       taskID,
-				})
-				llmCancel()
-				if err != nil {
-					// Mark every fact in this chunk as failed so
-					// phase 2 records a skip for each. Other chunks
-					// proceed independently.
-					for i := range ch.input {
-						factErrs[ch.start+i] = err
-					}
-					return
-				}
-
-				// Group the returned concepts by fact_index (0-based
-				// within the chunk) and store under the fact's
-				// absolute position in `facts`.
+		// ---- In-job end-of-queue reprocess of failed chunks ----
+		// After the main wave, collect the chunks that failed (any
+		// fact in the chunk has factErrs[i] != nil) and re-run them
+		// up to inJobRetries times with backoff. Only the failed
+		// chunks are re-LLM'd; successful chunks are not re-run, so
+		// no duplicate fact_concepts rows are written. This recovers
+		// the common "OpenRouter degraded for 2 minutes then
+		// recovered" case without waiting for a cross-job retry.
+		// Each retry round rebuilds the failed-chunk set from the
+		// updated factErrs so a chunk that succeeds on retry 1 is
+		// not re-run on retry 2.
+		for retryRound := 1; retryRound <= w.inJobRetries; retryRound++ {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("extract_concepts: ctx cancelled during retry round %d: %w", retryRound, err)
+			}
+			// Collect chunks whose facts are still in error.
+			var failedChunks []chunk
+			for _, ch := range chunks {
+				anyErr := false
 				for i := range ch.input {
+					if factErrs[ch.start+i] != nil {
+						anyErr = true
+						break
+					}
+				}
+				if anyErr {
+					failedChunks = append(failedChunks, ch)
+				}
+			}
+			if len(failedChunks) == 0 {
+				break // all chunks succeeded
+			}
+			result.ChunksRetried += len(failedChunks)
+			log.Printf("extract_concepts: retry round %d/%d: re-running %d failed chunk(s) for repo %s",
+				retryRound, w.inJobRetries, len(failedChunks), args.RepositoryID)
+			// Backoff before the retry round: 5s, then 10s. Short
+			// enough to stay inside the worker's JobTimeout, long
+			// enough to ride out a brief OpenRouter 429 storm.
+			backoff := time.Duration(5*(1<<uint(retryRound-1))) * time.Second
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return fmt.Errorf("extract_concepts: ctx cancelled during retry backoff: %w", ctx.Err())
+			}
+			// Clear factErrs for the chunks we're about to retry so
+			// a successful retry un-marks the facts. factResults is
+			// also reset for these facts (a successful retry
+			// replaces any stale plans).
+			for _, ch := range failedChunks {
+				for i := range ch.input {
+					factErrs[ch.start+i] = nil
 					factResults[ch.start+i] = factExtract{plans: nil}
 				}
-				for _, c := range concepts {
-					idx := c.FactIndex
-					if idx < 0 || idx >= len(ch.input) {
-						// Out-of-range index: the model returned a
-						// bad fact_index. Drop the concept rather
-						// than panic; log so it's visible.
-						log.Printf("extract_concepts: dropping concept %q with out-of-range fact_index %d (chunk start %d, chunk len %d)", c.Concept, idx, ch.start, len(ch.input))
-						continue
-					}
-					absIdx := ch.start + idx
-					factResults[absIdx].plans = append(factResults[absIdx].plans, conceptPlan{c: c})
-				}
-			}(ch)
+			}
+			w.runChunkWaveInto(failedChunks, conceptExtractor, conceptConcurrency, w.llmTimeout, pool.Pool, factResults, factErrs, contextEntries, args.RepositoryID, taskID, &result, &wg, sem)
+			wg.Wait()
 		}
-		wg.Wait()
+
+		// Count chunks still failing after all retry rounds, for
+		// the result envelope (operator visibility).
+		for _, ch := range chunks {
+			for i := range ch.input {
+				if factErrs[ch.start+i] != nil {
+					result.ChunksStillFailed++
+					break // one failed fact marks the chunk
+				}
+			}
+		}
 
 		// ---- Phase 2: serial persistence (single goroutine) ----
 		// Iterate the ordered results and persist exactly as the old
@@ -443,6 +563,17 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 		// in this serial phase, fact #2's FindConceptByAlias sees
 		// concepts created by fact #1 — strictly more consistent than
 		// the old already-serial-but-inline pattern (no regression).
+		//
+		// Error classification (ClassifyLLMError) decides whether a
+		// failed fact gets a soft-skip row: transient errors (timeout,
+		// rate-limit wait, network blip, 5xx, 429) do NOT record a
+		// skip — the fact stays in the candidate set (via the
+		// NOT EXISTS fact_concepts filter) and is retried on the next
+		// pass / admin reextract endpoint. Permanent errors (parse
+		// failure after sanitization, empty result, auth error)
+		// record a soft-skip row that increments attempts; after
+		// maxConceptAttempts (default 3) consecutive permanent
+		// failures the fact is excluded from the candidate set.
 		for i, fact := range facts {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("extract_concepts: ctx cancelled: %w", err)
@@ -450,8 +581,22 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 			result.FactsProcessed++
 
 			if err := factErrs[i]; err != nil {
-				log.Printf("extract_concepts: extracting concepts for fact %s: %v", pgUUIDToString(fact.ID), err)
+				retryable, reason := decomposition.ClassifyLLMError(err)
+				log.Printf("extract_concepts: extracting concepts for fact %s (%s): %v", pgUUIDToString(fact.ID), reason, err)
 				result.Errors++
+				if retryable {
+					// Transient: do NOT record a skip. The fact
+					// stays in the candidate set via the NOT
+					// EXISTS fact_concepts filter and is retried
+					// on the next pass. No data loss.
+					result.TransientErrors++
+					continue
+				}
+				// Permanent: record a soft-skip (increments
+				// attempts). After maxConceptAttempts consecutive
+				// permanent failures the fact is excluded from
+				// the candidate set; an operator can clear the
+				// skip via the admin reextract endpoint.
 				if rerr := w.recordSkip(context.Background(), pool.Pool, fact.ID, err); rerr != nil {
 					log.Printf("extract_concepts: recording skip for fact %s: %v", pgUUIDToString(fact.ID), rerr)
 				}
@@ -460,6 +605,21 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 
 			plans := factResults[i].plans
 			if len(plans) == 0 {
+				// The LLM call succeeded but returned zero
+				// concepts for this fact. Treat as a permanent
+				// failure (the model decided this fact has no
+				// extractable concepts) and record a soft-skip
+				// so it counts against the retry budget. After
+				// maxConceptAttempts consecutive empty results
+				// the fact is excluded from the candidate set;
+				// an operator can clear via the admin endpoint.
+				// Previously this case was a silent `continue`
+				// that left the fact permanently unlinked with
+				// no record (Mode 6a — 21,765 "neither" facts).
+				emptyErr := fmt.Errorf("concept extraction: model returned no concepts for fact")
+				if rerr := w.recordSkip(context.Background(), pool.Pool, fact.ID, emptyErr); rerr != nil {
+					log.Printf("extract_concepts: recording skip for empty-result fact %s: %v", pgUUIDToString(fact.ID), rerr)
+				}
 				continue
 			}
 
@@ -489,6 +649,31 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 				result.Errors++
 			}
 			writeCancel()
+		}
+
+		// No-progress break: if every fact in this wave either
+		// failed with a transient error (no skip written, no link)
+		// or was already linked/skipped by a concurrent pass, the
+		// next fetch will return the same facts and we'd loop
+		// forever. Track whether any fact was linked OR soft-
+		// skipped (progress was made); if not, break so the
+		// transient failures are retried on the next job / admin
+		// reextract endpoint instead of burning the worker's
+		// entire timeout on the same failing facts.
+		linkedOrSkipped := result.ConceptsNew > 0 || result.ConceptsMatched > 0
+		for i := range factErrs {
+			if factErrs[i] != nil {
+				retryable, _ := decomposition.ClassifyLLMError(factErrs[i])
+				if !retryable {
+					// Permanent error → soft-skip was written → progress.
+					linkedOrSkipped = true
+					break
+				}
+			}
+		}
+		if !linkedOrSkipped && result.FactsProcessed > 0 {
+			log.Printf("extract_concepts: no progress in wave (all transient failures); breaking to avoid infinite loop for repo %s", args.RepositoryID)
+			break
 		}
 	}
 
@@ -737,11 +922,87 @@ func (w *ExtractConceptsWorker) enqueueRefreshConceptRelations(ctx context.Conte
 	log.Printf("extract_concepts: enqueued refresh_concept_relations for repo %s (db %s)", repositoryIDStr, databaseName)
 }
 
-// recordSkip writes a permanent fact_concept_skips row in its own
-// short transaction. A fresh context is used because the caller's
-// batch tx may already be poisoned by the failing LLM call; we
-// still want the skip recorded so the next pass doesn't retry the
-// same failing fact forever.
+// runChunkWaveInto fans the given chunks out at conceptConcurrency,
+// calling conceptExtractor.ExtractConcepts for each chunk and writing
+// the results into factResults/factErrs (indexed by the fact's
+// absolute position in the wave: ch.start + fact_index). Used by
+// both the main wave and the in-job end-of-queue retry rounds — the
+// caller manages the WaitGroup + semaphore so the wave blocks until
+// all chunks complete. A chunk-level error marks every fact in that
+// chunk as failed; the caller's phase 2 (or the next retry round)
+// decides what to do with them.
+//
+// pool, contextEntries, repoIDStr, taskID are threaded into every
+// chunk's ExtractConcepts call so retries see the same prompt +
+// attribution as the main wave.
+func (w *ExtractConceptsWorker) runChunkWaveInto(
+	chunks []conceptChunk,
+	conceptExtractor decomposition.ConceptExtractionProvider,
+	conceptConcurrency int,
+	llmTimeout time.Duration,
+	pool *pgxpool.Pool,
+	factResults []factExtract,
+	factErrs []error,
+	contextEntries []decomposition.ContextEntry,
+	repoIDStr, taskID string,
+	_ *ExtractConceptsResult,
+	wg *sync.WaitGroup,
+	sem chan struct{},
+) {
+	for _, ch := range chunks {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(ch conceptChunk) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			llmCtx, llmCancel := context.WithTimeout(context.Background(), llmTimeout)
+			concepts, err := conceptExtractor.ExtractConcepts(llmCtx, pool, ch.input, contextEntries, decomposition.ConceptExtractionAttribution{
+				RepositoryID: repoIDStr,
+				TaskID:       taskID,
+			})
+			llmCancel()
+			if err != nil {
+				// Mark every fact in this chunk as failed so
+				// phase 2 (or the next retry round) sees the
+				// error. Other chunks proceed independently.
+				for i := range ch.input {
+					factErrs[ch.start+i] = err
+				}
+				return
+			}
+
+			// Group the returned concepts by fact_index (0-based
+			// within the chunk) and store under the fact's
+			// absolute position in the wave.
+			for i := range ch.input {
+				factResults[ch.start+i] = factExtract{plans: nil}
+			}
+			for _, c := range concepts {
+				idx := c.FactIndex
+				if idx < 0 || idx >= len(ch.input) {
+					// Out-of-range index: the model returned a
+					// bad fact_index. Drop the concept rather
+					// than panic; log so it's visible.
+					log.Printf("extract_concepts: dropping concept %q with out-of-range fact_index %d (chunk start %d, chunk len %d)", c.Concept, idx, ch.start, len(ch.input))
+					continue
+				}
+				absIdx := ch.start + idx
+				factResults[absIdx].plans = append(factResults[absIdx].plans, conceptPlan{c: c})
+			}
+		}(ch)
+	}
+}
+
+// recordSkip writes a fact_concept_skips row in its own short
+// transaction, incrementing the per-fact attempts counter. A fresh
+// context is used because the caller's batch tx may already be
+// poisoned by the failing LLM call; we still want the skip recorded
+// so the candidate-selection query can exclude the fact once
+// attempts >= maxConceptAttempts. Called ONLY for permanent errors
+// (parse failure, empty result) — transient errors (timeout,
+// rate-limit wait, network blip) do NOT call this; they leave the
+// fact in the candidate set for the next pass.
 func (w *ExtractConceptsWorker) recordSkip(ctx context.Context, pool *pgxpool.Pool, factID pgtype.UUID, cause error) error {
 	skipCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -756,6 +1017,20 @@ func (w *ExtractConceptsWorker) recordSkip(ctx context.Context, pool *pgxpool.Po
 		LastError: truncateForLog(cause.Error(), 500),
 	}); err != nil {
 		return fmt.Errorf("recording skip: %w", err)
+	}
+	// Bump the denormalized concept_skip_count on every source
+	// linked to this fact so the sources UI row reflects the skip
+	// without a JOIN. A fact may have multiple fact_sources rows
+	// (one per source it was extracted from); bump each.
+	srcRows, err := queries.ListFactSourcesByFact(skipCtx, factID)
+	if err != nil {
+		log.Printf("extract_concepts: listing fact_sources for skip-count bump (fact %s): %v", pgUUIDToString(factID), err)
+	} else {
+		for _, fs := range srcRows {
+			if err := queries.IncrementSourceConceptSkipCount(skipCtx, fs.SourceID); err != nil {
+				log.Printf("extract_concepts: bumping concept_skip_count for source %s: %v", pgUUIDToString(fs.SourceID), err)
+			}
+		}
 	}
 	return tx.Commit(skipCtx)
 }

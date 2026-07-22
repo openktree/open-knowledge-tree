@@ -574,8 +574,9 @@ func TestInvestigations_ConceptsScopedToSources(t *testing.T) {
 // pageEnvelope mirrors the canonical list response shape so tests
 // can decode the `total` field without modeling every row.
 type pageEnvelope struct {
-	Data   []json.RawMessage `json:"data"`
-	Total  int64             `json:"total"`
-	Limit  int               `json:"limit"`
-	Offset int               `json:"offset"`
+	Data       []json.RawMessage `json:"data"`
+	Total      int64             `json:"total"`
+	Limit      int               `json:"limit"`
+	Offset     int               `json:"offset"`
+	SearchMode string            `json:"search_mode,omitempty"`
 }

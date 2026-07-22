@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
 // ContextKey is a private type for context keys defined in this package,
@@ -15,6 +16,12 @@ type ContextKey string
 const (
 	UserIDKey       ContextKey = "userID"
 	RepositoryIDKey ContextKey = "repositoryID"
+	// APIKeyKey is set on the request context when the caller
+	// authenticated via a personal API key (Bearer okt_...). Its
+	// value is an *store.OktSystemApiKey. When absent, the caller
+	// used a session token and the RequirePermission/RequireRepoPermission
+	// middlewares skip the per-key scope check.
+	APIKeyKey ContextKey = "apiKey"
 )
 
 // WithUserID returns a copy of ctx carrying the given user ID.
@@ -39,4 +46,20 @@ func WithRepositoryID(ctx context.Context, repoID string) context.Context {
 func RequestRepositoryID(ctx context.Context) string {
 	repoID, _ := ctx.Value(RepositoryIDKey).(string)
 	return repoID
+}
+
+// WithAPIKey returns a copy of ctx carrying the given API key. The
+// RequirePermission/RequireRepoPermission middlewares read it via
+// RequestAPIKey to enforce the key's (object, action) scope.
+func WithAPIKey(ctx context.Context, key *store.OktSystemApiKey) context.Context {
+	return context.WithValue(ctx, APIKeyKey, key)
+}
+
+// RequestAPIKey returns the API key stored on the request context, or
+// nil when the caller authenticated via a session token (the common
+// case). Middlewares use the nil-vs-non-nil distinction to skip the
+// per-key scope check for session-authenticated requests.
+func RequestAPIKey(ctx context.Context) *store.OktSystemApiKey {
+	k, _ := ctx.Value(APIKeyKey).(*store.OktSystemApiKey)
+	return k
 }

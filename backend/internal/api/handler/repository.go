@@ -251,6 +251,13 @@ func (r *Repository) CreateRepository(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	recordAuditWithRepo(r.deps, req, rbac.AuditActionRepoCreate, rbac.Objects.Repositories, repo.ID, repo.ID.String(), map[string]any{
+		"name":          body.Name,
+		"slug":          body.Slug,
+		"database_name": dbName,
+		"tier":          r.deps.Config.Isolation.TierForDatabaseName(dbName),
+		"preset":        body.Preset,
+	})
 	httputil.WriteJSON(w, http.StatusCreated, repo)
 }
 
@@ -336,6 +343,10 @@ func (r *Repository) UpdateRepository(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	recordAuditWithRepo(r.deps, req, rbac.AuditActionRepoUpdate, rbac.Objects.Repositories, uid, repoID, map[string]any{
+		"name":        body.Name,
+		"description": body.Description,
+	})
 	httputil.WriteJSON(w, http.StatusOK, repo)
 }
 
@@ -355,6 +366,7 @@ func (r *Repository) DeleteRepository(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	recordAuditWithRepo(r.deps, req, rbac.AuditActionRepoDelete, rbac.Objects.Repositories, uid, repoID, nil)
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "repository deleted"})
 }
 

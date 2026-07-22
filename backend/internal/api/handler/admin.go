@@ -40,6 +40,15 @@ type usersListResponse struct {
 // Admin bundles the admin-only HTTP handlers.
 type Admin struct {
 	deps Deps
+	// repoPoolResolver resolves a repository UUID-or-slug string to
+	// its per-repo *pgxpool.Pool + parsed UUID. Set via
+	// SetRepoPoolResolver from the wiring layer; nil disables the
+	// concept-reextract and source-reprocess endpoints (503).
+	repoPoolResolver RepoPoolResolver
+	// taskEnqueuer inserts background jobs (extract_concepts,
+	// source_decomposition). Set via SetTaskEnqueuer from the
+	// wiring layer; nil disables the reextract/reprocess endpoints.
+	taskEnqueuer TaskEnqueuer
 }
 
 // NewAdmin constructs an Admin handler bundle.
@@ -131,6 +140,10 @@ func (a *Admin) AssignRole(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to assign sysadmin role")
 			return
 		}
+		recordAudit(a.deps, r, rbac.AuditActionRoleAssign, rbac.Objects.Users, req.UserID, map[string]any{
+			"role":          req.Role,
+			"repository_id": req.RepositoryID,
+		})
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "role assigned"})
 		return
 	}
@@ -140,6 +153,10 @@ func (a *Admin) AssignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	recordAudit(a.deps, r, rbac.AuditActionRoleAssign, rbac.Objects.Users, req.UserID, map[string]any{
+		"role":          req.Role,
+		"repository_id": req.RepositoryID,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "role assigned"})
 }
 
@@ -161,6 +178,10 @@ func (a *Admin) RemoveRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	recordAudit(a.deps, r, rbac.AuditActionRoleRemove, rbac.Objects.Users, req.UserID, map[string]any{
+		"role":          req.Role,
+		"repository_id": req.RepositoryID,
+	})
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "role removed"})
 }
 

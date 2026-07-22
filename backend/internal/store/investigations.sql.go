@@ -241,7 +241,7 @@ func (q *Queries) ListInvestigationFacts(ctx context.Context, arg ListInvestigat
 }
 
 const listInvestigationSources = `-- name: ListInvestigationSources :many
-SELECT s.id, s.repository_id, s.url, s.kind, s.status, s.created_at, s.updated_at, s.content, s.fetched_at, s.error, s.doi, s.parsed_title, s.parsed_text, s.parsed_html, s.parsed_author, s.parsed_sitename, s.parsed_language, s.parsed_at, s.parse_status, s.published_at, s.processed_at, s.search_tsv, s.storage_key, s.content_type, s.local_path, s.stored_at, s.fetch_attempts, s.oa_status, s.parsed_markdown, s.sentence_offsets,
+SELECT s.id, s.repository_id, s.url, s.kind, s.status, s.created_at, s.updated_at, s.content, s.fetched_at, s.error, s.doi, s.parsed_title, s.parsed_text, s.parsed_html, s.parsed_author, s.parsed_sitename, s.parsed_language, s.parsed_at, s.parse_status, s.published_at, s.processed_at, s.search_tsv, s.storage_key, s.content_type, s.local_path, s.stored_at, s.fetch_attempts, s.oa_status, s.parsed_markdown, s.sentence_offsets, s.chunk_failures, s.chunk_errors, s.last_chunk_failure_at, s.concept_skip_count,
        is_join.added_at
 FROM okt_repository.investigation_sources is_join
 JOIN okt_repository.sources s ON s.id = is_join.source_id
@@ -259,37 +259,41 @@ type ListInvestigationSourcesParams struct {
 }
 
 type ListInvestigationSourcesRow struct {
-	ID              pgtype.UUID        `json:"id"`
-	RepositoryID    pgtype.UUID        `json:"repository_id"`
-	Url             string             `json:"url"`
-	Kind            string             `json:"kind"`
-	Status          string             `json:"status"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-	Content         []byte             `json:"content"`
-	FetchedAt       pgtype.Timestamptz `json:"fetched_at"`
-	Error           *string            `json:"error"`
-	Doi             *string            `json:"doi"`
-	ParsedTitle     *string            `json:"parsed_title"`
-	ParsedText      *string            `json:"parsed_text"`
-	ParsedHtml      *string            `json:"parsed_html"`
-	ParsedAuthor    *string            `json:"parsed_author"`
-	ParsedSitename  *string            `json:"parsed_sitename"`
-	ParsedLanguage  *string            `json:"parsed_language"`
-	ParsedAt        pgtype.Timestamptz `json:"parsed_at"`
-	ParseStatus     *string            `json:"parse_status"`
-	PublishedAt     pgtype.Date        `json:"published_at"`
-	ProcessedAt     pgtype.Timestamptz `json:"processed_at"`
-	SearchTsv       interface{}        `json:"search_tsv"`
-	StorageKey      *string            `json:"storage_key"`
-	ContentType     *string            `json:"content_type"`
-	LocalPath       *string            `json:"local_path"`
-	StoredAt        pgtype.Timestamptz `json:"stored_at"`
-	FetchAttempts   []byte             `json:"fetch_attempts"`
-	OaStatus        *string            `json:"oa_status"`
-	ParsedMarkdown  *string            `json:"parsed_markdown"`
-	SentenceOffsets []int32            `json:"sentence_offsets"`
-	AddedAt         pgtype.Timestamptz `json:"added_at"`
+	ID                 pgtype.UUID        `json:"id"`
+	RepositoryID       pgtype.UUID        `json:"repository_id"`
+	Url                string             `json:"url"`
+	Kind               string             `json:"kind"`
+	Status             string             `json:"status"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	Content            []byte             `json:"content"`
+	FetchedAt          pgtype.Timestamptz `json:"fetched_at"`
+	Error              *string            `json:"error"`
+	Doi                *string            `json:"doi"`
+	ParsedTitle        *string            `json:"parsed_title"`
+	ParsedText         *string            `json:"parsed_text"`
+	ParsedHtml         *string            `json:"parsed_html"`
+	ParsedAuthor       *string            `json:"parsed_author"`
+	ParsedSitename     *string            `json:"parsed_sitename"`
+	ParsedLanguage     *string            `json:"parsed_language"`
+	ParsedAt           pgtype.Timestamptz `json:"parsed_at"`
+	ParseStatus        *string            `json:"parse_status"`
+	PublishedAt        pgtype.Date        `json:"published_at"`
+	ProcessedAt        pgtype.Timestamptz `json:"processed_at"`
+	SearchTsv          interface{}        `json:"search_tsv"`
+	StorageKey         *string            `json:"storage_key"`
+	ContentType        *string            `json:"content_type"`
+	LocalPath          *string            `json:"local_path"`
+	StoredAt           pgtype.Timestamptz `json:"stored_at"`
+	FetchAttempts      []byte             `json:"fetch_attempts"`
+	OaStatus           *string            `json:"oa_status"`
+	ParsedMarkdown     *string            `json:"parsed_markdown"`
+	SentenceOffsets    []int32            `json:"sentence_offsets"`
+	ChunkFailures      int32              `json:"chunk_failures"`
+	ChunkErrors        []byte             `json:"chunk_errors"`
+	LastChunkFailureAt pgtype.Timestamptz `json:"last_chunk_failure_at"`
+	ConceptSkipCount   int32              `json:"concept_skip_count"`
+	AddedAt            pgtype.Timestamptz `json:"added_at"`
 }
 
 // The investigation's source rows, joined from the junction.
@@ -342,6 +346,10 @@ func (q *Queries) ListInvestigationSources(ctx context.Context, arg ListInvestig
 			&i.OaStatus,
 			&i.ParsedMarkdown,
 			&i.SentenceOffsets,
+			&i.ChunkFailures,
+			&i.ChunkErrors,
+			&i.LastChunkFailureAt,
+			&i.ConceptSkipCount,
 			&i.AddedAt,
 		); err != nil {
 			return nil, err

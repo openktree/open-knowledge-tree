@@ -116,6 +116,25 @@ func defaultPolicies() [][]string {
 		[]string{RoleRepoAdmin, "*", Objects.Tasks, Actions.Read},
 		[]string{RoleRepoAdmin, "*", Objects.Tasks, Actions.Cancel},
 		[]string{RoleRepoAdmin, "*", Objects.Promptset, Actions.Manage},
+		// AI Usage: repo-scoped read so repoadmin can see token /
+		// cost consumption for repos they administer. Enforcement
+		// is repo-scoped via RequireRepoPermission (the
+		// /{repoID}/ai/usage/* routes), so the "*" domain here is
+		// the form RequireRepo matches against. sysadmin already
+		// has ai_usage.read at the system scope. The backfill
+		// migration 0057 inserts this row into existing
+		// deployments (seed.go only runs on a fresh casbin_rule
+		// table).
+		[]string{RoleRepoAdmin, "*", Objects.AIUsage, Actions.Read},
+		// Audit log: repo-scoped read so repoadmin can see audit
+		// events for repos they administer. Enforcement is
+		// repo-scoped via RequireRepoPermission (the /{repoID}/audit
+		// route), so the "*" domain here is the form RequireRepo
+		// matches against. sysadmin already has audit.read at the
+		// system scope. The backfill migration 0055 inserts this
+		// row into existing deployments (seed.go only runs on a
+		// fresh casbin_rule table).
+		[]string{RoleRepoAdmin, "*", Objects.Audit, Actions.Read},
 	)
 
 	// ── editor (sources + investigations + reports write) ───────
@@ -198,16 +217,41 @@ func defaultGroupingPolicies() [][]string {
 
 // SetupRBAC is the boot-time entry point. It opens the
 // pgx-backed casbin adapter, loads any persisted policies,
-// and seeds the default set if the table is empty.
+// and seeds the default set if the table is missing the
+// canonical seed marker (the sysadmin → user:read policy).
+//
+// The check is "marker-policy present" rather than "table is
+// empty" because backfill migrations (e.g. 0055 repoadmin
+// audit:read, 0057 repoadmin ai_usage:read) insert policy
+// rows BEFORE SetupRBAC runs at boot. An empty-table check
+// would see those rows as "already seeded" and skip the seed,
+// leaving the standard role policies (sysadmin/editor/viewer/
+// curator/repoadmin) unseeded — every non-sysadmin user would
+// 403 on every gated route. The marker is the first policy
+// defaultPolicies emits (sysadmin → user:read), which is
+// present after a real seed and absent when only backfill
+// migrations have written rows.
 func SetupRBAC(pool *pgxpool.Pool) (*Service, error) {
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `SELECT count(*) FROM casbin_rule`); err != nil {
 		return nil, fmt.Errorf("checking casbin_rule table: %w", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM casbin_rule`).Scan(&count); err != nil {
-		return nil, fmt.Errorf("counting casbin rules: %w", err)
+	// Marker: the sysadmin → user:read policy is the first row
+	// defaultPolicies emits. When it's missing the table has only
+	// backfill rows (or is genuinely empty), so the seed needs to
+	// run. Checking a specific policy (rather than count(*)) makes
+	// the seed idempotent against future backfill migrations that
+	// pre-populate the table.
+	var markerExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM casbin_rule
+			WHERE p_type='p' AND v0=$1 AND v1=$2 AND v2=$3 AND v3=$4
+		)`,
+		RoleSysAdmin, DomainAll, Objects.Users, Actions.Read,
+	).Scan(&markerExists); err != nil {
+		return nil, fmt.Errorf("checking casbin seed marker: %w", err)
 	}
 
 	adapter := NewPgxAdapter(pool)
@@ -216,7 +260,7 @@ func SetupRBAC(pool *pgxpool.Pool) (*Service, error) {
 		return nil, err
 	}
 
-	if count == 0 {
+	if !markerExists {
 		if err := seedPolicies(svc); err != nil {
 			return nil, fmt.Errorf("seeding policies: %w", err)
 		}

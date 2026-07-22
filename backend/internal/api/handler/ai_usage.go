@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
+	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -44,13 +45,20 @@ func NewAIUsage(queries *store.Queries, cfg *config.Config) *AIUsage {
 // repository_id is a UUID string; an empty/invalid value yields
 // a zero-valid pgtype.UUID. The bool returns are for handler
 // validation (a malformed value is a 400).
+//
+// When forcedRepoID is non-nil, the repository_id query param is
+// ignored and the forced UUID is used instead. This is how the
+// repo-scoped handlers (SummaryRepo, ByDayRepo, …) enforce that
+// the scope comes from the URL (RequireRepoPermission) and not a
+// client-supplied query param — a repoadmin of repo A can't pass
+// repo B's UUID to see its usage.
 type usageFilters struct {
 	from         pgtype.Timestamptz
 	to           pgtype.Timestamptz
 	repositoryID pgtype.UUID
 }
 
-func parseUsageFilters(r *http.Request) (usageFilters, string, bool) {
+func parseUsageFilters(r *http.Request, forcedRepoID *pgtype.UUID) (usageFilters, string, bool) {
 	var f usageFilters
 	if raw := r.URL.Query().Get("from"); raw != "" {
 		t, err := time.Parse(time.RFC3339, raw)
@@ -66,7 +74,9 @@ func parseUsageFilters(r *http.Request) (usageFilters, string, bool) {
 		}
 		f.to = pgtype.Timestamptz{Time: t, Valid: true}
 	}
-	if raw := r.URL.Query().Get("repository_id"); raw != "" {
+	if forcedRepoID != nil {
+		f.repositoryID = *forcedRepoID
+	} else if raw := r.URL.Query().Get("repository_id"); raw != "" {
 		var u pgtype.UUID
 		if err := u.Scan(raw); err != nil {
 			return f, "invalid 'repository_id' (must be a UUID)", false
@@ -74,6 +84,18 @@ func parseUsageFilters(r *http.Request) (usageFilters, string, bool) {
 		f.repositoryID = u
 	}
 	return f, "", true
+}
+
+// repoIDFromContext returns the repository UUID from the request
+// context (set by appmw.WithRepoQueries on /{repoID} routes) and a
+// bool indicating whether it was present. Used by the repo-scoped
+// AI Usage handlers to force the repository_id filter.
+func repoIDFromContext(r *http.Request) (pgtype.UUID, bool) {
+	id, ok := appmw.RepoIDFromContext(r.Context())
+	if !ok || !id.Valid {
+		return pgtype.UUID{}, false
+	}
+	return id, true
 }
 
 // modelCost looks up the per-model cost config and returns the
@@ -97,9 +119,28 @@ func rowCost(modelID string, prompt, completion int64, a *AIUsage) float64 {
 
 // Summary returns the per (provider, model, operation) rollup
 // for the optional date range + repository filter, with an
-// estimated cost per row and a grand total.
+// estimated cost per row and a grand total. System-scope: the
+// repository_id query param is honored when present.
 func (a *AIUsage) Summary(w http.ResponseWriter, r *http.Request) {
-	f, msg, ok := parseUsageFilters(r)
+	a.summaryInner(w, r, nil)
+}
+
+// SummaryRepo is the repo-scoped counterpart to Summary. The
+// repository UUID is read from the request context (set by
+// WithRepoQueries on /{repoID} routes) and forced into the
+// filter; any client-supplied repository_id query param is
+// ignored, so a repoadmin of repo A cannot see repo B's usage.
+func (a *AIUsage) SummaryRepo(w http.ResponseWriter, r *http.Request) {
+	id, ok := repoIDFromContext(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+	a.summaryInner(w, r, &id)
+}
+
+func (a *AIUsage) summaryInner(w http.ResponseWriter, r *http.Request, forcedRepoID *pgtype.UUID) {
+	f, msg, ok := parseUsageFilters(r, forcedRepoID)
 	if !ok {
 		httputil.WriteError(w, http.StatusBadRequest, msg)
 		return
@@ -157,7 +198,22 @@ func (a *AIUsage) Summary(w http.ResponseWriter, r *http.Request) {
 // chart. The `bucket` query param selects the date_trunc width
 // (day/week/month); default is "day".
 func (a *AIUsage) ByDay(w http.ResponseWriter, r *http.Request) {
-	f, msg, ok := parseUsageFilters(r)
+	a.byDayInner(w, r, nil)
+}
+
+// ByDayRepo is the repo-scoped counterpart to ByDay. See SummaryRepo
+// for the scope-enforcement contract.
+func (a *AIUsage) ByDayRepo(w http.ResponseWriter, r *http.Request) {
+	id, ok := repoIDFromContext(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+	a.byDayInner(w, r, &id)
+}
+
+func (a *AIUsage) byDayInner(w http.ResponseWriter, r *http.Request, forcedRepoID *pgtype.UUID) {
+	f, msg, ok := parseUsageFilters(r, forcedRepoID)
 	if !ok {
 		httputil.WriteError(w, http.StatusBadRequest, msg)
 		return
@@ -214,7 +270,22 @@ func (a *AIUsage) ByDay(w http.ResponseWriter, r *http.Request) {
 
 // ByOperation returns the per (operation, model) rollup.
 func (a *AIUsage) ByOperation(w http.ResponseWriter, r *http.Request) {
-	f, msg, ok := parseUsageFilters(r)
+	a.byOperationInner(w, r, nil)
+}
+
+// ByOperationRepo is the repo-scoped counterpart to ByOperation.
+// See SummaryRepo for the scope-enforcement contract.
+func (a *AIUsage) ByOperationRepo(w http.ResponseWriter, r *http.Request) {
+	id, ok := repoIDFromContext(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+	a.byOperationInner(w, r, &id)
+}
+
+func (a *AIUsage) byOperationInner(w http.ResponseWriter, r *http.Request, forcedRepoID *pgtype.UUID) {
+	f, msg, ok := parseUsageFilters(r, forcedRepoID)
 	if !ok {
 		httputil.WriteError(w, http.StatusBadRequest, msg)
 		return
@@ -258,7 +329,25 @@ func (a *AIUsage) ByOperation(w http.ResponseWriter, r *http.Request) {
 // repository_id body field, or pre-attribution historical rows)
 // are returned with a null repository_id in the JSON.
 func (a *AIUsage) ByRepository(w http.ResponseWriter, r *http.Request) {
-	f, msg, ok := parseUsageFilters(r)
+	a.byRepositoryInner(w, r, nil)
+}
+
+// ByRepositoryRepo is the repo-scoped counterpart to ByRepository.
+// See SummaryRepo for the scope-enforcement contract. (The
+// breakdown is by source within this repo; the per-repo rollup
+// is degenerate — one row group — but kept for UI parity with
+// the system page's tabs.)
+func (a *AIUsage) ByRepositoryRepo(w http.ResponseWriter, r *http.Request) {
+	id, ok := repoIDFromContext(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+	a.byRepositoryInner(w, r, &id)
+}
+
+func (a *AIUsage) byRepositoryInner(w http.ResponseWriter, r *http.Request, forcedRepoID *pgtype.UUID) {
+	f, msg, ok := parseUsageFilters(r, forcedRepoID)
 	if !ok {
 		httputil.WriteError(w, http.StatusBadRequest, msg)
 		return
@@ -303,11 +392,27 @@ func (a *AIUsage) ByRepository(w http.ResponseWriter, r *http.Request) {
 }
 
 // BySource returns the per (source_id, repository_id, model)
+// BySource returns the per (source_id, repository_id, model)
 // rollup. Source attribution requires the migration 0014
 // columns; rows from before that migration (or interactive
 // calls without a source_id) have a NULL source_id.
 func (a *AIUsage) BySource(w http.ResponseWriter, r *http.Request) {
-	f, msg, ok := parseUsageFilters(r)
+	a.bySourceInner(w, r, nil)
+}
+
+// BySourceRepo is the repo-scoped counterpart to BySource.
+// See SummaryRepo for the scope-enforcement contract.
+func (a *AIUsage) BySourceRepo(w http.ResponseWriter, r *http.Request) {
+	id, ok := repoIDFromContext(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+	a.bySourceInner(w, r, &id)
+}
+
+func (a *AIUsage) bySourceInner(w http.ResponseWriter, r *http.Request, forcedRepoID *pgtype.UUID) {
+	f, msg, ok := parseUsageFilters(r, forcedRepoID)
 	if !ok {
 		httputil.WriteError(w, http.StatusBadRequest, msg)
 		return

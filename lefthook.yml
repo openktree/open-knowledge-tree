@@ -48,3 +48,11 @@ pre-push:
       run: cd backend && go build ./...
     registry-build:
       run: cd registry && go build ./...
+    # Only run the ai-plugins gate when plugin files or sources were
+    # touched — skips the bun install requirement for everyone else.
+    ai-plugins:
+      glob: "ai-plugins/**,.opencode/agent/**,.agents/**"
+      run: |
+        files=$(echo {staged_files} | tr ' ' '\n' | grep -E '^ai-plugins/|^\.opencode/agent/|^\.agents/' || true)
+        if [ -z "$files" ]; then exit 0; fi
+        just check-plugins

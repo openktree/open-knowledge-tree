@@ -80,6 +80,11 @@ type RefineConceptsWorker struct {
 	embeddingProvider ai.EmbeddingProvider
 	embeddingCfg      config.EmbeddingConfig
 	qdrant            *qdrantstore.Store
+	// llmTimeout is the per-call wall-clock timeout for a
+	// refinement LLM call. Default 20m; set via SetLLMTimeout from
+	// cfg.Providers.Refinement.LLMTimeout. See
+	// ExtractConceptsWorker.llmTimeout for the rationale.
+	llmTimeout time.Duration
 }
 
 func NewRefineConceptsWorker(
@@ -106,6 +111,7 @@ func NewRefineConceptsWorker(
 		embeddingProvider: embeddingProvider,
 		embeddingCfg:      embeddingCfg,
 		qdrant:            qdrant,
+		llmTimeout:        20 * time.Minute, // default; overridden via SetLLMTimeout
 	}
 }
 
@@ -113,6 +119,14 @@ func NewRefineConceptsWorker(
 // fan-out without exposing the summarizer instance.
 func (w *RefineConceptsWorker) SetSummarizerEnabled(v bool) {
 	w.summarizerEnabled = v
+}
+
+// SetLLMTimeout sets the per-call wall-clock timeout for a
+// refinement LLM call. Default 20m when unset.
+func (w *RefineConceptsWorker) SetLLMTimeout(d time.Duration) {
+	if d > 0 {
+		w.llmTimeout = d
+	}
 }
 
 // Work processes the chunk of CandidateIDs in args.CandidateIDs. For
@@ -362,7 +376,7 @@ func (w *RefineConceptsWorker) refineOneCandidate(
 	}
 
 	// ---- LLM call (only if pre-LLM routing all misses) ----
-	llmCtx, llmCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	llmCtx, llmCancel := context.WithTimeout(context.Background(), w.llmTimeout)
 	refineModel := modelOverride
 	if refineModel == "" {
 		refineModel = w.cfg.Model

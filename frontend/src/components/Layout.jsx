@@ -1,10 +1,150 @@
 import { useLocation, useNavigate } from "@solidjs/router";
-import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { api } from "../services/api";
-import { setToken } from "../store/auth";
+import { getTokenSignal, setToken } from "../store/auth";
 import { useRBAC } from "../store/rbac";
 import { useRepository } from "../store/repository";
 import { useTheme } from "../store/theme";
+
+// UserMenu is the top-right account dropdown. Shows the current user's
+// email (fetched lazily from /users/me) + a chevron; the menu offers
+// "Profile" (→ /profile, where API tokens live) and "Sign Out" (the
+// existing handleLogout). Mirrors RepositoryDropdown's click-outside
+// pattern so the menu closes on outside clicks and Escape.
+function UserMenu(props) {
+  const [open, setOpen] = createSignal(false);
+  let menuRef;
+
+  const handleClickOutside = (e) => {
+    if (menuRef && !menuRef.contains(e.target)) setOpen(false);
+  };
+  const handleKey = (e) => {
+    if (e.key === "Escape") setOpen(false);
+  };
+  onMount(() => {
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKey);
+  });
+  onCleanup(() => {
+    document.removeEventListener("mousedown", handleClickOutside);
+    document.removeEventListener("keydown", handleKey);
+  });
+
+  const goProfile = () => {
+    setOpen(false);
+    props.onNavigate?.("/profile");
+  };
+  const goTokens = () => {
+    setOpen(false);
+    props.onNavigate?.("/profile?tab=tokens");
+  };
+  const signOut = () => {
+    setOpen(false);
+    props.onSignOut?.();
+  };
+
+  const email = () => props.user()?.email || "Account";
+  const displayName = () => props.user()?.display_name || "";
+
+  return (
+    <div class="relative" ref={menuRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        class="flex items-center gap-2 text-sm border border-border rounded-md px-2.5 py-1.5 bg-surface text-text-muted hover:bg-primary-soft transition max-w-[200px]"
+        title="Account"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-4 w-4 flex-shrink-0 text-text-muted"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
+        </svg>
+        <span class="truncate font-medium hidden sm:inline">{email()}</span>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-3.5 w-3.5 flex-shrink-0 text-text-muted transition-transform"
+          classList={{ "rotate-180": open() }}
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path
+            fill-rule="evenodd"
+            d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
+            clip-rule="evenodd"
+          />
+        </svg>
+      </button>
+      <Show when={open()}>
+        <div class="absolute right-0 mt-2 w-56 bg-surface border border-border rounded-md shadow-lg z-20 overflow-hidden">
+          <div class="px-3 py-2 border-b border-border">
+            <div class="text-sm font-medium text-text-base truncate">{displayName()}</div>
+            <div class="text-xs text-text-muted truncate">{email()}</div>
+          </div>
+          <button
+            type="button"
+            onClick={goProfile}
+            class="w-full text-left px-3 py-2 text-sm text-text-base hover:bg-primary-soft transition flex items-center gap-2"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-4 w-4 text-text-muted"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fill-rule="evenodd"
+                d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"
+                clip-rule="evenodd"
+              />
+            </svg>
+            Profile
+          </button>
+          <button
+            type="button"
+            onClick={goTokens}
+            class="w-full text-left px-3 py-2 text-sm text-text-base hover:bg-primary-soft transition flex items-center gap-2"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-4 w-4 text-text-muted"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fill-rule="evenodd"
+                d="M11.49 3.17a1 1 0 011.02 1.07 1 1 0 01-.05.27l-3.5 9a1 1 0 11-1.88-.66l3.5-9a1 1 0 01.91-.68zM5.7 7.3a1 1 0 010 1.4L3.4 11l2.3 2.3a1 1 0 11-1.4 1.4l-3-3a1 1 0 010-1.4l3-3a1 1 0 011.4 0zm8.6 0a1 1 0 011.4 0l3 3a1 1 0 010 1.4l-3 3a1 1 0 11-1.4-1.4l2.3-2.3-2.3-2.3a1 1 0 010-1.4z"
+                clip-rule="evenodd"
+              />
+            </svg>
+            API Tokens
+          </button>
+          <button
+            type="button"
+            onClick={signOut}
+            class="w-full text-left px-3 py-2 text-sm text-danger hover:bg-danger/10 transition flex items-center gap-2"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-4 w-4"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fill-rule="evenodd"
+                d="M3 3a1 1 0 011-1h7a1 1 0 110 2H5v12h6a1 1 0 110 2H4a1 1 0 01-1-1V3zm10.293 4.293a1 1 0 011.414 0L17.414 10l-2.707 2.707a1 1 0 01-1.414-1.414L14.586 10l-1.293-1.293a1 1 0 010-1.414z"
+                clip-rule="evenodd"
+              />
+            </svg>
+            Sign Out
+          </button>
+        </div>
+      </Show>
+    </div>
+  );
+}
 
 function RepositoryDropdown() {
   const { repositories, currentRepo, selectRepository } = useRepository();
@@ -165,6 +305,11 @@ export default function Layout(props) {
     });
   };
 
+  // Lazily fetch the current user (for the header dropdown label +
+  // the Profile page). Mirrors Dashboard's pattern: createResource
+  // keyed on the token signal so a login/logout re-fetches.
+  const [currentUser] = createResource(getTokenSignal(), (t) => (t ? api.getMe() : null));
+
   const handleLogout = async () => {
     try {
       await api.logout();
@@ -185,6 +330,16 @@ export default function Layout(props) {
     rbac.hasPermission("source_provider", "read") || rbac.hasPermission("ai_provider", "read");
   const showTasks = () => rbac.hasPermission("task", "read");
   const showAIUsage = () => rbac.hasPermission("ai_usage", "read");
+  const showAudit = () => rbac.hasPermission("audit", "read");
+  // System-scope Tasks / AI Usage pages aggregate across every
+  // repository, so only sysadmins reach them. Repo-scoped
+  // equivalents live under /:slug/tasks and /:slug/ai-usage for
+  // repoadmin (and sysadmin). The system links are hidden for
+  // non-sysadmins via systemAdmin() so the page doesn't render a
+  // 403 when clicked.
+  const showSystemTasks = () => rbac.systemAdmin();
+  const showSystemAIUsage = () => rbac.systemAdmin();
+  const showSystemAudit = () => rbac.systemAdmin();
   const showUsers = () => rbac.hasPermission("user", "read");
   const showRemote = () => rbac.hasPermission("remote", "read");
   const showRepositories = () =>
@@ -216,6 +371,8 @@ export default function Layout(props) {
     "/tasks":
       "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4",
     "/ai-usage": "M13 10V3L4 14h7v7l9-11h-7z",
+    "/audit":
+      "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
     "/repositories":
       "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m7 0V5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
   };
@@ -363,7 +520,8 @@ export default function Layout(props) {
                 showRemote() ||
                 showUsers() ||
                 showTasks() ||
-                showAIUsage()
+                showAIUsage() ||
+                showAudit()
               }
             >
               <Divider />
@@ -390,18 +548,36 @@ export default function Layout(props) {
               <Show when={showUsers()}>
                 <NavLink href="/users">Users</NavLink>
               </Show>
-              <Show when={showTasks()}>
-                <NavLink href="/tasks">Tasks</NavLink>
+              <Show when={showTasks() && repoID()}>
+                <NavLink href={`/${currentRepo()?.slug}/tasks`}>Tasks</NavLink>
               </Show>
-              <Show when={showAIUsage()}>
-                <NavLink href="/ai-usage">AI Usage</NavLink>
+              <Show when={showAIUsage() && repoID()}>
+                <NavLink href={`/${currentRepo()?.slug}/ai-usage`}>AI Usage</NavLink>
+              </Show>
+              <Show when={showAudit() && repoID()}>
+                <NavLink href={`/repositories/${currentRepo()?.slug}/audit`}>Audit Log</NavLink>
               </Show>
             </Show>
 
-            <Show when={showRepositories()}>
+            <Show
+              when={
+                showRepositories() || showSystemTasks() || showSystemAIUsage() || showSystemAudit()
+              }
+            >
               <Divider />
               <SectionHeader>System</SectionHeader>
-              <NavLink href="/repositories">Repositories</NavLink>
+              <Show when={showRepositories()}>
+                <NavLink href="/repositories">Repositories</NavLink>
+              </Show>
+              <Show when={showSystemTasks()}>
+                <NavLink href="/tasks">Tasks</NavLink>
+              </Show>
+              <Show when={showSystemAIUsage()}>
+                <NavLink href="/ai-usage">AI Usage</NavLink>
+              </Show>
+              <Show when={showSystemAudit()}>
+                <NavLink href="/audit">Audit Log</NavLink>
+              </Show>
             </Show>
           </div>
         </nav>
@@ -447,9 +623,11 @@ export default function Layout(props) {
               </Show>
             </button>
 
-            <button onClick={handleLogout} class="text-sm text-danger hover:opacity-80 font-medium">
-              Sign Out
-            </button>
+            <UserMenu
+              user={currentUser}
+              onNavigate={(path) => navigate(path)}
+              onSignOut={handleLogout}
+            />
           </div>
         </header>
 

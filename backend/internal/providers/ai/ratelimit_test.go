@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -155,16 +156,18 @@ func TestRateLimit_ContextCancelAbortsWait(t *testing.T) {
 	}
 	before := inner.callCount()
 
-	// Now the limiter is exhausted; a call with a 50ms ctx should
-	// abort with ctx.Err() and NOT call the inner provider.
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	_, err := wrapped.Chat(ctx, nilDB{}, ChatRequest{Model: "m1"})
-	if err == nil {
-		t.Errorf("expected context.DeadlineExceeded, got %v", err)
+	// Now the limiter is exhausted. Under the decoupled-wait design,
+	// the wait runs on a background ctx with the wrapper's
+	// waitTimeout; shrink it so the test doesn't block for 1h. The
+	// wrapper returns ErrRateLimitWaitTimeout when the wait ctx
+	// fires, and does NOT call the inner provider.
+	wrapped.waitTimeout = 50 * time.Millisecond
+	_, err := wrapped.Chat(context.Background(), nilDB{}, ChatRequest{Model: "m1"})
+	if !errors.Is(err, ErrRateLimitWaitTimeout) {
+		t.Errorf("expected ErrRateLimitWaitTimeout, got %v", err)
 	}
 	if got := inner.callCount(); got != before {
-		t.Errorf("inner provider was called despite ctx cancellation; count went from %d to %d", before, got)
+		t.Errorf("inner provider was called despite wait timeout; count went from %d to %d", before, got)
 	}
 }
 
@@ -186,14 +189,18 @@ func TestRateLimit_PerModelIndependent(t *testing.T) {
 		}
 	}
 
-	// Model A is now exhausted; a call with a short ctx should fail.
-	ctxA, cancelA := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancelA()
-	if _, err := wrapped.Chat(ctxA, nilDB{}, ChatRequest{Model: "a"}); err == nil {
-		t.Errorf("model a: expected DeadlineExceeded after draining, got %v", err)
+	// Model A is now exhausted; under the decoupled-wait design the
+	// wait runs on a background ctx with waitTimeout. Shrink it so
+	// the test doesn't block for 1h; the wrapper returns
+	// ErrRateLimitWaitTimeout when the wait ctx fires.
+	wrapped.waitTimeout = 50 * time.Millisecond
+	if _, err := wrapped.Chat(context.Background(), nilDB{}, ChatRequest{Model: "a"}); !errors.Is(err, ErrRateLimitWaitTimeout) {
+		t.Errorf("model a: expected ErrRateLimitWaitTimeout after draining, got %v", err)
 	}
 
 	// Model B should still be immediately available (separate bucket).
+	// Restore the waitTimeout so B isn't artificially throttled.
+	wrapped.waitTimeout = time.Hour
 	ctxB, cancelB := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancelB()
 	if _, err := wrapped.Chat(ctxB, nilDB{}, ChatRequest{Model: "b"}); err != nil {
@@ -232,13 +239,19 @@ func TestRateLimit_UnlimitedModel_Passthrough(t *testing.T) {
 }
 
 // TestRateLimit_EmbedProxiedThroughLimiter asserts that Embed calls
-// on the chat+embed wrapper are also rate-limited per model.
+// on the chat+embed wrapper are also rate-limited per model. Under
+// the decoupled-wait design, the wait runs on a background ctx with
+// the wrapper's waitTimeout; when the wait exceeds waitTimeout the
+// wrapper returns ErrRateLimitWaitTimeout (transient). The caller's
+// ctx no longer fires the wait — it only bounds the inner HTTP call.
 func TestRateLimit_EmbedProxiedThroughLimiter(t *testing.T) {
 	cfg := cfgWithModels(config.AIModelConfig{
 		ID: "emb-1", Provider: "stub", RateLimitRPM: 60, // burst=3
 	})
 	inner := &stubEmbedProvider{}
 	wrapped := MaybeWrapRateLimited(inner, "stub", cfg).(*rateLimitedEmbed)
+	// Shrink the wait timeout so the test doesn't block for 1h.
+	wrapped.waitTimeout = 50 * time.Millisecond
 
 	// Drain the burst.
 	for i := 0; i < 3; i++ {
@@ -248,12 +261,12 @@ func TestRateLimit_EmbedProxiedThroughLimiter(t *testing.T) {
 		}
 	}
 
-	// Next call should block; short ctx → abort.
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	_, err := wrapped.Embed(ctx, nilDB{}, EmbeddingRequest{Model: "emb-1"})
-	if err == nil {
-		t.Errorf("embed: expected DeadlineExceeded after draining, got %v", err)
+	// Next call should block on the rate limiter; the background
+	// wait ctx fires after waitTimeout (50ms) and the wrapper
+	// returns ErrRateLimitWaitTimeout.
+	_, err := wrapped.Embed(context.Background(), nilDB{}, EmbeddingRequest{Model: "emb-1"})
+	if !errors.Is(err, ErrRateLimitWaitTimeout) {
+		t.Errorf("embed: expected ErrRateLimitWaitTimeout after draining, got %v", err)
 	}
 }
 

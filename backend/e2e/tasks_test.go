@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
@@ -130,10 +131,15 @@ func tasksEnvWithRBAC(t *testing.T, client handler.TaskClient) (*httptest.Server
 
 	fetchStrategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
 	queries := store.New(pool)
-	h := api.NewHandler(queries, cfg, rbacSvc, pool, registry)
+	h := api.NewHandler(queries, cfg, rbacSvc, pool, registry, audit.NoopRecorder{})
 	h.SetSource(handler.NewSource(nil, fetchStrategy, nil, nil, nil, nil, testutil.TestParsers()))
 	h.SetStorage(handler.NewStorage(nil))
 	h.SetTasks(handler.NewTasks(client, pool, nil))
+	// Wire the ontology source + provider registry so
+	// createRepository's settings-seeding path (which expands the
+	// "all" context against the ontology) doesn't 400. Mirrors
+	// the shared env builder's WireRepoSettings call.
+	testutil.WireRepoSettings(h, nil, fetchStrategy)
 
 	server := httptest.NewServer(h.Router())
 	t.Cleanup(func() { server.Close() })
@@ -548,5 +554,101 @@ func TestTasksListPagination(t *testing.T) {
 	}
 	if got3.NextCursor != nil {
 		t.Errorf("expected next_cursor=null when result is empty, got %q", *got3.NextCursor)
+	}
+}
+
+// TestRepoTaskStats_RepoScoped verifies the per-repo tasks stats
+// endpoint (GET /api/v1/repositories/{slug}/tasks/stats) returns
+// the queue/state aggregation restricted to jobs whose metadata
+// carries this repo's repo_id. Uses tasksEnvWithRBAC so the
+// tasks bundle is wired (the default NewTestEnv leaves h.tasks
+// nil, which would make the route 404). River jobs are inserted
+// directly with metadata tags for two repos; only the matching
+// repo's rows appear in the aggregation.
+func TestRepoTaskStats_RepoScoped(t *testing.T) {
+	server, rbacSvc, pool, _ := tasksEnvWithRBAC(t, &stubTaskClient{})
+	ctx := context.Background()
+
+	if err := ensureRiverSchemaOnPool(pool); err != nil {
+		t.Fatalf("running River migrations: %v", err)
+	}
+
+	admin := registerAndGrantTasksUser(t, server, rbacSvc, pool, "repotasks-stats-admin@example.com", "passw0rd!", "Stats Admin")
+	resp, body, repoID := createRepository(t, admin, "RepoTasks Stats", "repotasks-stats", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo: %d %s", resp.StatusCode, body)
+	}
+
+	otherRepoID := "11111111-1111-1111-1111-111111111111"
+	ourMeta := `{"repo_id":"` + repoID + `"}`
+	otherMeta := `{"repo_id":"` + otherRepoID + `"}`
+	_, err := pool.Exec(ctx, `
+		INSERT INTO river_job (kind, state, args, metadata, created_at, scheduled_at, attempt, max_attempts, priority, queue)
+		VALUES
+		  ('retrieve_source', 'available', '{}'::jsonb, $1::jsonb, now(), now(), 0, 3, 1, 'retrieve_source'),
+		  ('retrieve_source', 'available', '{}'::jsonb, $1::jsonb, now(), now(), 0, 3, 1, 'retrieve_source'),
+		  ('source_decomposition', 'available', '{}'::jsonb, $2::jsonb, now(), now(), 0, 3, 1, 'source_decomposition')
+	`, ourMeta, otherMeta)
+	if err != nil {
+		t.Fatalf("inserting river jobs: %v", err)
+	}
+
+	resp, body = admin.do("GET", "/api/v1/repositories/repotasks-stats/tasks/stats", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var out struct {
+		Queues []struct {
+			Queue  string            `json:"queue"`
+			States map[string]int64  `json:"states"`
+			Total  int64             `json:"total"`
+		} `json:"queues"`
+		Totals map[string]int64 `json:"totals"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+
+	// Only our two retrieve_source rows should appear.
+	if len(out.Queues) != 1 {
+		t.Fatalf("expected 1 queue (retrieve_source), got %d: %v", len(out.Queues), out.Queues)
+	}
+	q := out.Queues[0]
+	if q.Queue != "retrieve_source" {
+		t.Fatalf("expected queue=retrieve_source, got %q", q.Queue)
+	}
+	if q.Total != 2 {
+		t.Fatalf("expected total=2 for our repo, got %d", q.Total)
+	}
+	if q.States["available"] != 2 {
+		t.Fatalf("expected {available:2}, got %v", q.States)
+	}
+	if out.Totals["total"] != 2 {
+		t.Fatalf("expected totals.total=2, got %d", out.Totals["total"])
+	}
+}
+
+// TestRepoTaskStats_DenyNonAdmin verifies a regular user without
+// task.read gets 403 on the repo-scoped stats endpoint. Uses
+// tasksEnvWithRBAC so the route is actually registered.
+func TestRepoTaskStats_DenyNonAdmin(t *testing.T) {
+	server, rbacSvc, pool, _ := tasksEnvWithRBAC(t, &stubTaskClient{})
+	if err := ensureRiverSchemaOnPool(pool); err != nil {
+		t.Fatalf("running River migrations: %v", err)
+	}
+
+	admin := registerAndGrantTasksUser(t, server, rbacSvc, pool, "repotasks-deny-admin@example.com", "passw0rd!", "Deny Admin")
+	resp, body, _ := createRepository(t, admin, "RepoTasks Deny", "repotasks-deny", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo: %d %s", resp.StatusCode, body)
+	}
+
+	regular := newAuthClient(server.URL)
+	regular.register("repotasks-regular@example.com", "passw0rd!", "Regular")
+	regular.token = loginUser(regular, "repotasks-regular@example.com", "passw0rd!")
+
+	resp, _ = regular.do("GET", "/api/v1/repositories/repotasks-deny/tasks/stats", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-permitted user, got %d", resp.StatusCode)
 	}
 }

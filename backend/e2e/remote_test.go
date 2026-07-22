@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
@@ -281,7 +282,7 @@ func newRemoteEnvWithRegistry(t *testing.T, registryURL string) (*testutil.TestE
 
 	queries := store.New(pool)
 	storageBackend := testutil.NewTestStorageBackend(t)
-	h := api.NewHandler(queries, cfg, rbacSvc, pool, dbReg)
+	h := api.NewHandler(queries, cfg, rbacSvc, pool, dbReg, audit.NoopRecorder{})
 	h.SetSource(handler.NewSource(nil, fetchStrategy, nil, nil, nil, storageBackend, testutil.TestParsers()))
 	testutil.WireRepoSettings(h, nil, fetchStrategy)
 	h.SetStorage(handler.NewStorage(storageBackend))
@@ -427,7 +428,7 @@ func newRemoteEnvWithRegistryAndBatchEnqueuer(t *testing.T, registryURL string) 
 
 	queries := store.New(pool)
 	storageBackend := testutil.NewTestStorageBackend(t)
-	h := api.NewHandler(queries, cfg, rbacSvc, pool, dbReg)
+	h := api.NewHandler(queries, cfg, rbacSvc, pool, dbReg, audit.NoopRecorder{})
 	h.SetSource(handler.NewSource(nil, fetchStrategy, nil, nil, nil, storageBackend, testutil.TestParsers()))
 	testutil.WireRepoSettings(h, nil, fetchStrategy)
 	h.SetStorage(handler.NewStorage(storageBackend))

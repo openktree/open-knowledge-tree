@@ -536,11 +536,13 @@ func TestSourceDecomposition_AllChunksFailedErrors(t *testing.T) {
 
 	// Text extractor that always errors; image extractor nil so
 	// the image loop is skipped (the test is about the text-fail
-	// escalation path).
+	// escalation path). InJobRetries=1 so the retry round runs
+	// once (5s backoff) before the worker gives up and escalates.
 	errExtractor := &errFactExtractor{}
 	registry := testutil.NewForTestPool(env.DB)
 	imageCfg := config.DecompositionImageConfig{Enabled: false}
-	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, errExtractor, nil, config.DecompositionFactConfig{}, imageCfg, registry, store.New(env.DB), nil, nil, nil)
+	factCfg := config.DecompositionFactConfig{InJobRetries: 1}
+	worker := tasks.NewSourceDecompositionWorker(stubChunker{}, errExtractor, nil, factCfg, imageCfg, registry, store.New(env.DB), nil, nil, nil)
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -551,7 +553,7 @@ func TestSourceDecomposition_AllChunksFailedErrors(t *testing.T) {
 	}
 	testWorker := rivertest.NewWorker(t, driver, cfg, worker)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tx, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
