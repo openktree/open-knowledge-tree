@@ -7,6 +7,13 @@ export default function SharedGraphsContent(props) {
       <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <h2 class="text-lg font-semibold dark:text-white">Shared knowledge graphs</h2>
         <div class="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            class="text-xs px-2.5 py-1.5 rounded border border-border bg-surface text-text-base hover:bg-primary-soft transition"
+            onClick={props.onUpload}
+          >
+            Upload Bundle
+          </button>
           <select
             class="text-sm border border-border rounded-md px-2 py-1.5 bg-surface text-text-base"
             value={props.tag()}

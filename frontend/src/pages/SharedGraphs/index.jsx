@@ -19,6 +19,7 @@ export default function SharedGraphs() {
   const [tag, setTag] = createSignal("");
   const [offset, setOffset] = createSignal(0);
   const [selectedGraph, setSelectedGraph] = createSignal(null);
+  const [uploadMode, setUploadMode] = createSignal(false);
 
   const currentRepoSlug = () => (repo.currentRepo() ? repo.currentRepo().slug : "");
 
@@ -48,9 +49,21 @@ export default function SharedGraphs() {
     setOffset(0);
   };
 
-  const handleImport = (g) => setSelectedGraph(g);
+  const handleImport = (g) => {
+    setSelectedGraph(g);
+    setUploadMode(false);
+  };
+  const handleUpload = () => {
+    setSelectedGraph({});
+    setUploadMode(true);
+  };
+  const handleCloseDialog = () => {
+    setSelectedGraph(null);
+    setUploadMode(false);
+  };
   const handleImportSuccess = (info) => {
     setSelectedGraph(null);
+    setUploadMode(false);
     setAlert({ variant: "success", message: info.message });
   };
 
@@ -82,15 +95,17 @@ export default function SharedGraphs() {
             onOffsetChange={setOffset}
             total={() => graphs()?.total || 0}
             limit={PAGE_SIZE}
-            onOpenDetail={setSelectedGraph}
+            onOpenDetail={handleImport}
             onImport={handleImport}
+            onUpload={handleUpload}
           />
         </div>
         <Show when={selectedGraph()}>
           <ImportGraphDialog
             graph={selectedGraph()}
+            upload={uploadMode()}
             currentRepoSlug={currentRepoSlug}
-            onClose={() => setSelectedGraph(null)}
+            onClose={handleCloseDialog}
             onSuccess={handleImportSuccess}
           />
         </Show>
