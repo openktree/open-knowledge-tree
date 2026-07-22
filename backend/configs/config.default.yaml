@@ -1,7 +1,13 @@
 server:
   port: 8080
   read_timeout: 15s
-  write_timeout: 15s
+  # WriteTimeout caps how long a single response may take to write.
+  # The graph download endpoint (GET /{repoID}/export-graph/download)
+  # builds a whole-repo bundle in-process and can take 20-60s for
+  # large repos; 5m comfortably covers that while still bounding a
+  # runaway response. The async export task (POST /export-graph) is
+  # unaffected (it returns 202 immediately).
+  write_timeout: 5m
 
 # Named database registry. The operator declares one or more Postgres
 # databases by name and the rest of the config picks them by name.
