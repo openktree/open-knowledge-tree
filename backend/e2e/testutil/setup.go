@@ -105,6 +105,8 @@ type RecordingTaskEnqueuer struct {
 	Decompositions  []handler.SourceDecompositionArgs
 	ReportAnnotates []handler.AnnotateReportArgs
 	ExtractConcepts []handler.ExtractConceptsArgs
+	RecomputeGroups []handler.RecomputeConceptGroupsArgs
+	Synthesizes     []handler.SynthesizeArgs
 	nextID          int
 }
 
@@ -348,6 +350,22 @@ func (r *RecordingTaskEnqueuer) EnqueueExtractConceptsFromHTTP(_ context.Context
 	r.nextID++
 	r.ExtractConcepts = append(r.ExtractConcepts, args)
 	return "test-extract-concepts-1", nil
+}
+
+func (r *RecordingTaskEnqueuer) EnqueueRecomputeConceptGroupsFromHTTP(_ context.Context, args handler.RecomputeConceptGroupsArgs) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	r.RecomputeGroups = append(r.RecomputeGroups, args)
+	return "test-recompute-concept-groups-1", nil
+}
+
+func (r *RecordingTaskEnqueuer) EnqueueSynthesizeFromHTTP(_ context.Context, args handler.SynthesizeArgs) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	r.Synthesizes = append(r.Synthesizes, args)
+	return "test-synthesize-concept-1", nil
 }
 
 // ExtractConceptsCount returns the number of extract_concepts calls

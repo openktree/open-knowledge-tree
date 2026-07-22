@@ -45,7 +45,18 @@ type SynthesizeConceptArgs struct {
 
 func (SynthesizeConceptArgs) Kind() string { return "synthesize_concept" }
 
-func (SynthesizeConceptArgs) InsertOpts() river.InsertOpts { return river.InsertOpts{} }
+func (SynthesizeConceptArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueSynthesizeConcept,
+		// Retry budget: a synthesis failure is usually a transient LLM
+		// provider error (rate limit, timeout, empty response) or a
+		// transient DB error (connection blip, lock conflict). River's
+		// exponential backoff resolves it without operator intervention.
+		// 5 attempts matches the retry budget used by other LLM-bound
+		// repair jobs (refresh_concept_relations, recompute_concept_groups).
+		MaxAttempts: 5,
+	}
+}
 
 // SynthesizeConceptResult is recorded on the job row so the River UI
 // shows what the pass did.
@@ -198,19 +209,28 @@ func (w *SynthesizeConceptsWorker) Work(ctx context.Context, job *river.Job[Synt
 	taskID := fmt.Sprintf("%d", job.ID)
 	result := SynthesizeConceptResult{RepositoryID: args.RepositoryID}
 
-	w.synthesizeOneGroup(ctx, pool.Pool, conceptID, repoID, args.RepositoryID, args.SourceID,
+	err = w.synthesizeOneGroup(ctx, pool.Pool, conceptID, repoID, args.RepositoryID, args.SourceID,
 		maxTokens, maxImages, maxCands, maxRelated, maxRelatedSynth, thinkingLevel, taskID, &result, synthesisModelOverride, synthesizer)
 
 	log.Printf("synthesize_concept: repo %s concept %s -> %s (created=%d updated=%d skipped-no-delta=%d skipped-locked=%d images=%d errors=%d)",
 		args.RepositoryID, args.ConceptID, result.CanonicalName,
 		result.Created, result.Updated, result.SkippedNoDelta, result.SkippedLocked, result.ImagesPicked, result.Errors)
 
-	return river.RecordOutput(ctx, &result)
+	// Record the partial result so the River UI shows the attempt's
+	// counts even when the job will be retried. A non-nil error makes
+	// River retry the job up to MaxAttempts (5) with exponential backoff;
+	// a nil error completes the job.
+	_ = river.RecordOutput(ctx, &result)
+	return err
 }
 
 // synthesizeOneGroup handles the per-concept claim/load/pick/write/
 // release loop. Split out of Work so the lock release (defer) is
-// scoped to one group.
+// scoped to one group. Returns a non-nil error for retryable
+// failures (LLM call, DB writes, slice/concept loads) so River
+// retries the job up to MaxAttempts. Returns nil for terminal
+// no-ops (concept not found, lock held, no slices, no-delta skip,
+// non-fatal image failures) so River does not waste retry budget.
 func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -222,7 +242,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	result *SynthesizeConceptResult,
 	synthesisModelOverride string,
 	synthesizer synthesis.SynthesisProvider,
-) {
+) error {
 	queries := store.New(pool)
 
 	// 1. Resolve the concept_id -> canonical_name (group key).
@@ -231,11 +251,11 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("synthesize_concept: concept %s not found", pgUUIDToString(conceptID))
 			result.Errors++
-			return
+			return nil
 		}
 		log.Printf("synthesize_concept: loading concept %s: %v", pgUUIDToString(conceptID), err)
 		result.Errors++
-		return
+		return nil
 	}
 	result.CanonicalName = concept.CanonicalName
 	groupKey := repoIDStr + ":" + strings.ToLower(concept.CanonicalName)
@@ -247,11 +267,11 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	if err != nil {
 		log.Printf("synthesize_concept: acquiring lock for group %s: %v", groupKey, err)
 		result.Errors++
-		return
+		return nil
 	}
 	if !ok {
 		result.SkippedLocked++
-		return
+		return nil
 	}
 	defer func() {
 		relCtx, relCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -269,11 +289,11 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	if err != nil {
 		log.Printf("synthesize_concept: listing slices for group %s: %v", groupKey, err)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: listing slices for group %s: %w", groupKey, err)
 	}
 	if len(slices) == 0 {
 		result.SkippedNoDelta++
-		return
+		return nil
 	}
 
 	groupConceptIDs, err := queries.ListGroupConceptIDs(ctx, store.ListGroupConceptIDsParams{
@@ -283,7 +303,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	if err != nil {
 		log.Printf("synthesize_concept: listing group concept_ids for %s: %v", groupKey, err)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: listing group concept_ids for %s: %w", groupKey, err)
 	}
 
 	// 4. No-delta skip: if a synthesis exists and its covered_summary_ids
@@ -295,11 +315,11 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		log.Printf("synthesize_concept: loading existing synthesis for %s: %v", groupKey, err)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: loading existing synthesis for %s: %w", groupKey, err)
 	}
 	if existing.ID.Valid && coversAll(existing.CoveredSummaryIds, slices) {
 		result.SkippedNoDelta++
-		return
+		return nil
 	}
 
 	// 5. Build SliceInput list for the synthesis prompt.
@@ -414,12 +434,12 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	if err != nil {
 		log.Printf("synthesize_concept: synthesizing group %s: %v", groupKey, err)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: synthesizing group %s: %w", groupKey, err)
 	}
 	if content == "" {
 		log.Printf("synthesize_concept: empty synthesis content for group %s", groupKey)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: empty synthesis content for group %s", groupKey)
 	}
 
 	// 8. Extract embedded image fact_ids from the markdown so the read
@@ -439,7 +459,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 		writeCancel()
 		log.Printf("synthesize_concept: beginning write tx for %s: %v", groupKey, txErr)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: beginning write tx for %s: %w", groupKey, txErr)
 	}
 	modelName := w.cfg.Model
 	row, err := store.New(tx).UpsertSynthesis(writeCtx, store.UpsertSynthesisParams{
@@ -456,13 +476,13 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 		writeCancel()
 		log.Printf("synthesize_concept: upserting synthesis for %s: %v", groupKey, err)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: upserting synthesis for %s: %w", groupKey, err)
 	}
 	if err := tx.Commit(writeCtx); err != nil {
 		writeCancel()
 		log.Printf("synthesize_concept: committing write tx for %s: %v", groupKey, err)
 		result.Errors++
-		return
+		return fmt.Errorf("synthesize_concept: committing write tx for %s: %w", groupKey, err)
 	}
 	writeCancel()
 
@@ -471,6 +491,7 @@ func (w *SynthesizeConceptsWorker) synthesizeOneGroup(
 	} else {
 		result.Created++
 	}
+	return nil
 }
 
 // imageRowsToInputs converts the sqlc ListGroupImageFactsRow slice

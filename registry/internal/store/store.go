@@ -67,6 +67,23 @@ type MetadataStore interface {
 	// Stats
 	Stats(ctx context.Context) (repoCount, sourceCount int, err error)
 
+	// Graphs — shared knowledge graph bundles. The bundle bytes live
+	// in S3 at `graphs/{id}.json.gz`; this table is the searchable
+	// metadata index. IndexGraph is an upsert (ON CONFLICT(id) DO
+	// UPDATE) so a re-push of the same graph id refreshes the counts
+	// + tags. Dedup by (name, sha256) is the caller's responsibility
+	// (the service layer resolves the id when the client omits one,
+	// mirroring PushSource's URL→DOI→SHA256 fallback).
+	IndexGraph(ctx context.Context, meta *model.GraphMeta) error
+	GetGraph(ctx context.Context, id string) (*model.GraphMeta, error)
+	ListGraphs(ctx context.Context, limit, offset int) ([]model.GraphMeta, error)
+	SearchGraphsByText(ctx context.Context, query string, limit, offset int) ([]model.GraphMeta, error)
+	SearchGraphsByTag(ctx context.Context, tag string, limit, offset int) ([]model.GraphMeta, error)
+	CountGraphs(ctx context.Context) (int, error)
+	CountGraphsByText(ctx context.Context, query string) (int, error)
+	CountGraphsByTag(ctx context.Context, tag string) (int, error)
+	DeleteGraph(ctx context.Context, id string) error
+
 	// Users
 	CreateUser(ctx context.Context, user *model.User) error
 	GetUserByEmail(ctx context.Context, email string) (*model.User, error)

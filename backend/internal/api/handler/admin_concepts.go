@@ -425,3 +425,108 @@ func pgRepoIDFromStr(s string) pgtype.UUID {
 	}
 	return id
 }
+// recomputePreviewResponse is the wire shape for GET
+// /api/v1/admin/repos/{repoID}/concepts/recompute — the "what would
+// be recomputed" preview the UI shows in the danger box before the
+// user confirms.
+type recomputePreviewResponse struct {
+	RepositoryID   string `json:"repository_id"`
+	CurrentGroups  int64  `json:"current_groups"`
+	ConceptsTotal  int64  `json:"concepts_total"`
+}
+
+// recomputeResponse is the wire shape for POST
+// /api/v1/admin/repos/{repoID}/concepts/recompute.
+type recomputeResponse struct {
+	RepositoryID   string `json:"repository_id"`
+	EnqueuedJobID  string `json:"enqueued_job_id"`
+	Enqueued       bool   `json:"enqueued"`
+}
+
+// PreviewRecomputeRepoConceptGroups handles GET
+// /api/v1/admin/repos/{repoID}/concepts/recompute. Returns the current
+// concept_groups row count + the repo's concept row count so the
+// danger box can show "recomputing N groups from M concepts" without
+// enqueuing anything.
+func (a *Admin) PreviewRecomputeRepoConceptGroups(w http.ResponseWriter, r *http.Request) {
+	if a.repoPoolResolver == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "repo pool resolver not configured")
+		return
+	}
+	repoIDStr := chi.URLParam(r, "repoID")
+	if repoIDStr == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+	pool, repoID, err := a.repoPoolResolver(r.Context(), repoIDStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, "repository not found: "+err.Error())
+		return
+	}
+	queries := store.New(pool)
+	previewCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	currentGroups, err := queries.CountConceptGroupsByRepo(previewCtx, repoID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "counting concept groups: "+err.Error())
+		return
+	}
+	conceptsTotal, err := queries.CountConceptsByRepo(previewCtx, repoID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "counting concepts: "+err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, recomputePreviewResponse{
+		RepositoryID:  repoIDStr,
+		CurrentGroups: currentGroups,
+		ConceptsTotal: conceptsTotal,
+	})
+}
+
+// RecomputeRepoConceptGroups handles POST
+// /api/v1/admin/repos/{repoID}/concepts/recompute. Enqueues a
+// recompute_concept_groups River job that runs
+// RecomputeAllConceptGroupsForRepo (full-repo DELETE + INSERT on
+// concept_groups in one tx). Per-database unique-key dedup collapses
+// a second click while one is running. The job is the repair path;
+// the ingest workers keep the summary live incrementally otherwise.
+func (a *Admin) RecomputeRepoConceptGroups(w http.ResponseWriter, r *http.Request) {
+	if a.repoPoolResolver == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "repo pool resolver not configured")
+		return
+	}
+	if a.taskEnqueuer == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "task enqueuer not configured")
+		return
+	}
+	repoIDStr := chi.URLParam(r, "repoID")
+	if repoIDStr == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "repoID is required")
+		return
+	}
+	_, repoID, err := a.repoPoolResolver(r.Context(), repoIDStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, "repository not found: "+err.Error())
+		return
+	}
+	// Resolve the repo's database_name (the per-database unique key for
+	// the recompute job). The system store carries the mapping.
+	dbName, err := a.deps.Store.GetRepositoryDatabaseName(r.Context(), repoID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "resolving repository database: "+err.Error())
+		return
+	}
+	jobID, err := a.taskEnqueuer.EnqueueRecomputeConceptGroupsFromHTTP(r.Context(), RecomputeConceptGroupsArgs{
+		RepositoryID: repoIDStr,
+		DatabaseName: dbName,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "enqueueing recompute_concept_groups: "+err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, recomputeResponse{
+		RepositoryID:  repoIDStr,
+		EnqueuedJobID: jobID,
+		Enqueued:      true,
+	})
+}

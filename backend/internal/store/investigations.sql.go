@@ -158,10 +158,13 @@ SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at,
 FROM okt_repository.facts f
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 JOIN okt_repository.investigation_sources is_join ON is_join.source_id = fs.source_id
-LEFT JOIN (
-    SELECT fact_id, COUNT(*) AS source_count
-    FROM okt_repository.fact_sources
-    GROUP BY fact_id
+JOIN okt_repository.investigations inv ON inv.id = is_join.investigation_id
+LEFT JOIN LATERAL (
+    SELECT fs2.fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources fs2
+    JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
+    WHERE s2.repository_id = inv.repository_id
+    GROUP BY fs2.fact_id
 ) fs_count ON fs_count.fact_id = f.id
 WHERE is_join.investigation_id = $1
   AND ($2::text = '' OR f.status = $2)

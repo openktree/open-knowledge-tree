@@ -746,6 +746,13 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	h.SetPromptsetResolver(promptsetResolver)
 	h.SetRemoteDedupEnqueuer(tm.RemoteDedupEnqueuer())
 	h.SetRemotePullBatchEnqueuer(tm.RemotePullBatchEnqueuer())
+	// Wire the graph export/import enqueuers (Shared Graphs feature).
+	// The graph handler also needs the registry client map (wired via
+	// SetRegistryClients above) and the storage backend (for the
+	// upload-graph-bundle air-gapped import path).
+	h.SetGraphExportEnqueuer(tm.GraphExportEnqueuer())
+	h.SetGraphImportEnqueuer(tm.GraphImportEnqueuer())
+	h.SetGraphStorageBackend(handler.NewStorage(storageBackend))
 
 	// OAuth 2.1 authorization server + MCP server. The OAuth
 	// server lets MCP clients (Claude Desktop, etc.) connect to

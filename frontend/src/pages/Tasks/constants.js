@@ -47,6 +47,7 @@ export const KIND_OPTIONS = [
   { value: "pull_remote_batch", label: "Pull Remote Batch" },
   { value: "refresh_concept_relations", label: "Refresh Concept Relations" },
   { value: "refresh_all_concept_relations", label: "Refresh All Concept Relations" },
+  { value: "recompute_concept_groups", label: "Recompute Concept Groups" },
   { value: "annotate_report", label: "Annotate Report" },
 ];
 
@@ -70,6 +71,7 @@ export const QUEUE_OPTIONS = [
   { value: "pull_remote_batch", label: "Pull Remote Batch" },
   { value: "refresh_concept_relations", label: "Refresh Concept Relations" },
   { value: "refresh_all_concept_relations", label: "Refresh All Concept Relations" },
+  { value: "recompute_concept_groups", label: "Recompute Concept Groups" },
   { value: "annotate_report", label: "Annotate Report" },
   { value: "default", label: "Default" },
 ];

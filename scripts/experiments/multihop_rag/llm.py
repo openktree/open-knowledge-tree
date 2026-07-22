@@ -85,11 +85,26 @@ def _chat_openrouter(messages: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def _chat(messages: list[dict[str, str]]) -> dict[str, Any]:
-    """Call the configured LLM backend. Returns the raw response dict."""
+    """Call the configured LLM backend with retries.
+
+    Retries up to MAX_RETRIES times with exponential backoff on any
+    exception (timeout, rate-limit, network error, 5xx). 4xx errors
+    (bad request, auth) are not retried — they won't succeed on retry.
+    """
     backend = (config.LLM_BACKEND or "openrouter").lower()
-    if backend == "okt":
-        return _chat_okt(messages)
-    return _chat_openrouter(messages)
+    caller = _chat_okt if backend == "okt" else _chat_openrouter
+    last_err: Exception | None = None
+    for attempt in range(config.MAX_RETRIES + 1):
+        try:
+            return caller(messages)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt < config.MAX_RETRIES:
+                wait = 2.0 * (attempt + 1)
+                print(f"  LLM call failed (attempt {attempt + 1}/{config.MAX_RETRIES + 1}), retrying in {wait:.0f}s: {e}")
+                time.sleep(wait)
+                continue
+    raise last_err  # type: ignore[misc]
 
 
 def _extract_content(resp: dict[str, Any]) -> str:
@@ -220,10 +235,11 @@ def synthesize_answer(question: str, facts: list[dict]) -> dict[str, Any]:
         resp = _chat(messages)
     except Exception as e:  # noqa: BLE001
         return {
-            "answer": "Insufficient information.",
+            "answer": "[LLM ERROR]",
             "raw": f"[LLM call failed: {e}]",
             "usage": {"prompt": 0, "completion": 0},
             "latency_ms": int((time.time() - started) * 1000),
+            "error": str(e),
         }
     raw = _extract_content(resp)
     usage = _extract_usage(resp)

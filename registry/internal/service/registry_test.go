@@ -29,6 +29,10 @@ type storeCall struct {
 }
 
 func (m *mockStorage) StoreJSON(ctx context.Context, key string, data []byte) error {
+	return m.Store(ctx, key, data, "application/json")
+}
+
+func (m *mockStorage) Store(ctx context.Context, key string, data []byte, contentType string) error {
 	if m.storeDelay > 0 {
 		time.Sleep(m.storeDelay)
 	}
@@ -41,6 +45,19 @@ func (m *mockStorage) StoreJSON(ctx context.Context, key string, data []byte) er
 		default:
 		}
 	}
+	return nil
+}
+
+func (m *mockStorage) Delete(ctx context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.storeCalls[:0]
+	for _, c := range m.storeCalls {
+		if c.Key != key {
+			out = append(out, c)
+		}
+	}
+	m.storeCalls = out
 	return nil
 }
 
@@ -184,12 +201,12 @@ func TestPushDecomposition_DuplicateFactHashes(t *testing.T) {
 		Facts: []model.FactData{
 			{ID: "f1", Content: "duplicate text"},
 			{ID: "f2", Content: "unique text 2"},
-			{ID: "f3", Content: "duplicate text"},  // dup of f1
+			{ID: "f3", Content: "duplicate text"}, // dup of f1
 			{ID: "f4", Content: "unique text 4"},
 			{ID: "f5", Content: "unique text 5"},
-			{ID: "f6", Content: "duplicate text"},  // dup of f1
+			{ID: "f6", Content: "duplicate text"}, // dup of f1
 			{ID: "f7", Content: "unique text 7"},
-			{ID: "f8", Content: "unique text 2"},   // dup of f2
+			{ID: "f8", Content: "unique text 2"}, // dup of f2
 			{ID: "f9", Content: "unique text 9"},
 			{ID: "f10", Content: "unique text 10"},
 		},

@@ -26,45 +26,47 @@ const (
 // objects take the form `<resource>:<repoID>` and are
 // produced by RepoObject() below.
 var Objects = struct {
-	Users           string
-	Roles           string
-	Repositories    string
-	Members         string
-	Sources         string
-	Facts           string
-	Concepts        string
-	SourceProvider  string
-	Audit           string
-	Groups          string
-	AIProvider      string
-	Decomposition   string
-	AIUsage         string
-	Investigations  string
-	Tasks           string
-	Reports         string
-	Databases       string
-	Remote          string
-	Promptset       string
+	Users          string
+	Roles          string
+	Repositories   string
+	Members        string
+	Sources        string
+	Facts          string
+	Concepts       string
+	SourceProvider string
+	Audit          string
+	Groups         string
+	AIProvider     string
+	Decomposition  string
+	AIUsage        string
+	Investigations string
+	Tasks          string
+	Reports        string
+	Databases      string
+	Remote         string
+	Promptset      string
+	Graph          string
 }{
-	Users:           "user",
-	Roles:           "role",
-	Repositories:    "repository",
-	Members:         "member",
-	Sources:         "source",
-	Facts:           "fact",
-	Concepts:        "concept",
-	SourceProvider:  "source_provider",
-	Audit:           "audit",
-	Groups:          "group",
-	AIProvider:      "ai_provider",
-	Decomposition:   "decomposition",
-	AIUsage:         "ai_usage",
-	Investigations:  "investigation",
-	Tasks:           "task",
-	Reports:         "report",
-	Databases:       "database",
-	Remote:          "remote",
-	Promptset:       "promptset",
+	Users:          "user",
+	Roles:          "role",
+	Repositories:   "repository",
+	Members:        "member",
+	Sources:        "source",
+	Facts:          "fact",
+	Concepts:       "concept",
+	SourceProvider: "source_provider",
+	Audit:          "audit",
+	Groups:         "group",
+	AIProvider:     "ai_provider",
+	Decomposition:  "decomposition",
+	AIUsage:        "ai_usage",
+	Investigations: "investigation",
+	Tasks:          "task",
+	Reports:        "report",
+	Databases:      "database",
+	Remote:         "remote",
+	Promptset:      "promptset",
+	Graph:          "graph",
 }
 
 // Actions are the typed action strings Casbin uses in
@@ -77,6 +79,7 @@ var Actions = struct {
 	Manage  string
 	Execute string
 	Cancel  string
+	Export  string
 }{
 	Read:    "read",
 	Write:   "write",
@@ -85,6 +88,7 @@ var Actions = struct {
 	Manage:  "manage",
 	Execute: "execute",
 	Cancel:  "cancel",
+	Export:  "export",
 }
 
 // Domains (Casbin's "dom" field, stored in casbin_rule.v1 for
@@ -178,7 +182,8 @@ func IsValidObject(obj string) bool {
 		Objects.Reports,
 		Objects.Databases,
 		Objects.Remote,
-		Objects.Promptset:
+		Objects.Promptset,
+		Objects.Graph:
 		return true
 	}
 	return false
@@ -194,7 +199,8 @@ func IsValidAction(act string) bool {
 		Actions.Delete,
 		Actions.Manage,
 		Actions.Execute,
-		Actions.Cancel:
+		Actions.Cancel,
+		Actions.Export:
 		return true
 	}
 	return false

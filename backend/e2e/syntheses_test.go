@@ -5,6 +5,8 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -854,5 +856,166 @@ func TestSynthesizeConcept_RelatedConceptsDisabledWhenN1Zero(t *testing.T) {
 	}
 	if len(ste.stub.lastSynthReq.RelatedConcepts) != 0 {
 		t.Errorf("related concepts = %d, want 0 (MaxRelatedConcepts=0 disables the block)", len(ste.stub.lastSynthReq.RelatedConcepts))
+	}
+}
+
+// failingSynthesizer is a stub that fails the first N Synthesize calls
+// then succeeds, so tests can assert retry-then-recover behavior.
+type failingSynthesizer struct {
+	stubSynthesizer
+	failN int
+	calls int
+	mu    sync.Mutex
+}
+
+func (f *failingSynthesizer) Synthesize(_ context.Context, _ store.DBTX, _ synthesis.SynthesisRequest) (string, error) {
+	f.mu.Lock()
+	f.calls++
+	n := f.calls
+	f.mu.Unlock()
+	if n <= f.failN {
+		return "", &synthRetryErr{fmt.Sprintf("forced failure %d/%d", n, f.failN)}
+	}
+	return "# Recovered synthesis\n\nFolds slices.", nil
+}
+
+func (f *failingSynthesizer) PickImages(_ context.Context, _ store.DBTX, _ synthesis.ImagePickRequest) ([]string, error) {
+	return nil, nil
+}
+
+func (f *failingSynthesizer) Describe() synthesis.ProviderDescription {
+	return synthesis.ProviderDescription{Name: "failing-synthesizer", Configured: true}
+}
+
+type synthRetryErr struct{ msg string }
+
+func (e *synthRetryErr) Error() string { return e.msg }
+
+// runSynthesizeJobAllowFail wraps the rivertest.Work call but does
+// NOT fatality on a non-completed event — it returns the job + work
+// error so the caller can assert on EventKindJobFailed /
+// EventKindJobRetry. Mirrors the pattern in image_extraction_test.go.
+func runSynthesizeJobAllowFail(t *testing.T, e *synthesizeTestEnv, args tasks.SynthesizeConceptArgs) (river.EventKind, error, tasks.SynthesizeConceptResult) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	tx, err := e.env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+	job, workErr := e.testWorker.Work(ctx, t, tx, args, &river.InsertOpts{Queue: tasks.QueueSynthesizeConcept})
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	var res tasks.SynthesizeConceptResult
+	if job != nil && len(job.Job.Output()) > 0 {
+		_ = json.Unmarshal(job.Job.Output(), &res)
+	}
+	if job == nil {
+		return "", workErr, res
+	}
+	return job.EventKind, workErr, res
+}
+
+// TestSynthesizeConcept_FailsAfterMaxAttempts verifies that when the
+// LLM call fails on every attempt, the worker returns a non-nil error
+// (so River marks the job as retryable/failed) instead of silently
+// swallowing it as completed. The stub synthesizer always fails.
+func TestSynthesizeConcept_FailsAfterMaxAttempts(t *testing.T) {
+	cfg := config.SynthesisConfig{Enabled: true, Model: "stub-synth", MaxImages: 0, MaxImageCandidates: 0}
+	ste := newSynthesizeTestEnv(t, cfg)
+	admin := bootstrapSysAdmin(t, ste.env, "synthfail@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "SynthFail", "synth-fail", "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	conceptID, _ := seedConceptWithFacts(t, ste.env, pgRepo, "FailingConcept", "TestCtx", 2)
+	seedSliceForConcept(t, ste.env, conceptID, pgRepo, "TestCtx", 1, 2, "# Slice 1")
+
+	// Replace the stub with an always-failing synthesizer.
+	alwaysFail := &failingSynthesizer{failN: 999}
+	ste.worker = tasks.NewSynthesizeConceptsWorker(alwaysFail, cfg, testutil.NewForTestPool(ste.env.DB), store.New(ste.env.DB), nil, nil)
+	driver := riverpgxv5.New(ste.env.DB)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, ste.worker)
+	ste.testWorker = rivertest.NewWorker(t, driver, &river.Config{
+		Queues:  map[string]river.QueueConfig{tasks.QueueSynthesizeConcept: {MaxWorkers: 1}},
+		Workers: workers,
+	}, ste.worker)
+
+	eventKind, workErr, res := runSynthesizeJobAllowFail(t, ste, tasks.SynthesizeConceptArgs{RepositoryID: repoID, ConceptID: pgUUIDString(conceptID)})
+	if eventKind != river.EventKindJobFailed {
+		t.Fatalf("expected EventKindJobFailed, got %s (workErr=%v res=%+v)", eventKind, workErr, res)
+	}
+	if workErr == nil {
+		t.Error("expected non-nil workErr when all attempts fail")
+	}
+	if res.Errors == 0 {
+		t.Error("expected result.Errors > 0 when synthesis fails")
+	}
+	// No synthesis row should have been written.
+	if _, err := store.New(ste.env.DB).GetSynthesisByGroup(context.Background(), store.GetSynthesisByGroupParams{
+		RepositoryID:  pgRepo,
+		CanonicalName: "FailingConcept",
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("expected no synthesis row, got err=%v", err)
+	}
+}
+
+// TestSynthesizeConcept_ResynthesizeEndpoint verifies the per-concept
+// POST /{repoID}/concepts/{conceptID}/resynthesize endpoint: a
+// sysadmin can enqueue a synthesize_concept job for a concept, and a
+// regular user (no repositories.*.manage) gets 403.
+func TestSynthesizeConcept_ResynthesizeEndpoint(t *testing.T) {
+	cfg := config.SynthesisConfig{Enabled: true, Model: "stub-synth", MaxImages: 0, MaxImageCandidates: 0}
+	ste := newSynthesizeTestEnv(t, cfg)
+	admin := bootstrapSysAdmin(t, ste.env, "resynthadmin@example.com")
+	const slug = "resynth-repo"
+	_, _, repoID := createRepositoryWithDB(t, admin, "Resynth Repo", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	conceptID, _ := seedConceptWithFacts(t, ste.env, pgRepo, "ResynthConcept", "TestCtx", 2)
+	seedSliceForConcept(t, ste.env, conceptID, pgRepo, "TestCtx", 1, 2, "# Slice 1")
+	cidStr := pgUUIDString(conceptID)
+
+	// POST resynthesize as admin — should enqueue and return 200.
+	resp, raw := admin.do("POST", "/api/v1/repositories/"+slug+"/concepts/"+cidStr+"/resynthesize", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST resynthesize: %d %s", resp.StatusCode, raw)
+	}
+	var out struct {
+		RepositoryID  string `json:"repository_id"`
+		ConceptID    string `json:"concept_id"`
+		EnqueuedJobID string `json:"enqueued_job_id"`
+		Enqueued     bool   `json:"enqueued"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !out.Enqueued || out.EnqueuedJobID == "" {
+		t.Errorf("response enqueued=%v job_id=%q, want enqueued=true with job id", out.Enqueued, out.EnqueuedJobID)
+	}
+	if out.ConceptID != cidStr {
+		t.Errorf("response concept_id = %q, want %q", out.ConceptID, cidStr)
+	}
+
+	// Verify the enqueue was recorded by the test enqueuer.
+	if len(ste.env.TaskEnqueuer.Synthesizes) != 1 {
+		t.Fatalf("expected 1 synthesize enqueue, got %d", len(ste.env.TaskEnqueuer.Synthesizes))
+	}
+	if ste.env.TaskEnqueuer.Synthesizes[0].ConceptID != cidStr {
+		t.Errorf("enqueued concept_id = %q, want %q", ste.env.TaskEnqueuer.Synthesizes[0].ConceptID, cidStr)
+	}
+
+	// Regular user (no repositories.*.manage) gets 403.
+	regular := newAuthClient(ste.env.BaseURL)
+	regular.register("resynth-user@example.com", "passw0rd!", "ResynthUser")
+	regular.token = loginUser(regular, "resynth-user@example.com", "passw0rd!")
+	if r, _ := regular.do("POST", "/api/v1/repositories/"+slug+"/concepts/"+cidStr+"/resynthesize", nil); r.StatusCode != http.StatusForbidden {
+		t.Errorf("regular POST resynthesize: status %d, want 403", r.StatusCode)
+	}
+
+	// Cross-repo concept (non-existent) is a 404.
+	otherCID := uuid.NewString()
+	if r, _ := admin.do("POST", "/api/v1/repositories/"+slug+"/concepts/"+otherCID+"/resynthesize", nil); r.StatusCode != http.StatusNotFound {
+		t.Errorf("cross-repo concept resynthesize: status %d, want 404", r.StatusCode)
 	}
 }

@@ -39,6 +39,7 @@ export function useTasks(repoSlug) {
   const [statsLoading, setStatsLoading] = createSignal(true);
   const [rescuing, setRescuing] = createSignal(false);
   const [reextracting, setReextracting] = createSignal(false);
+  const [recomputing, setRecomputing] = createSignal(false);
 
   // fetchPage applies current filters + optional cursor. append
   // concatenates (Load more); otherwise replaces (initial load +
@@ -147,6 +148,26 @@ export function useTasks(repoSlug) {
     }
   }
 
+  // recomputeConceptGroups calls the admin endpoint that enqueues a
+  // full concept_groups summary recompute for a repo. The repair
+  // path; the ingest workers keep the summary live incrementally
+  // otherwise. Returns the API result so the caller can surface a
+  // toast with the enqueued job id.
+  async function recomputeConceptGroups(repoID) {
+    setRecomputing(true);
+    setAlert(null);
+    try {
+      const result = await api.recomputeRepoConceptGroups(repoID);
+      await fetchStats();
+      return result;
+    } catch (err) {
+      setAlert({ variant: "error", message: err.message });
+      return null;
+    } finally {
+      setRecomputing(false);
+    }
+  }
+
   // Reload whenever a filter signal flips. The lastFilters guard
   // prevents a loop on setJobs (createEffect re-runs whenever a
   // signal it read changes; we only fetch when the filter combo
@@ -177,10 +198,12 @@ export function useTasks(repoSlug) {
     statsLoading,
     rescuing,
     reextracting,
+    recomputing,
     reload,
     loadMore,
     reloadStats,
     rescueStuckJobs,
     reextractConcepts,
+    recomputeConceptGroups,
   };
 }

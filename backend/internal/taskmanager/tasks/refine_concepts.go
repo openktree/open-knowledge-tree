@@ -279,6 +279,27 @@ func (w *RefineConceptsWorker) Work(ctx context.Context, job *river.Job[RefineCo
 	}
 	_ = g.Wait()
 
+	// Recompute the concept_groups summary rows for the concept ids
+	// resolved by this refine pass so the q="" concept list page
+	// reflects the new/merged concepts immediately. refine is the
+	// only writer of fact_concepts on the refinement-enabled path
+	// (extract emits candidates), so this recompute is what keeps
+	// the summary always-live when refinement is on. Best-effort:
+	// a failure is logged and swallowed (the summary is a cache;
+	// the recompute_concept_groups job is the repair path).
+	if len(resolvedConceptIDs) > 0 {
+		recomputeCtx, recomputeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		nameKeys, nerr := store.New(pool.Pool).ListConceptNameKeysByIDs(recomputeCtx, resolvedConceptIDs)
+		if nerr != nil {
+			log.Printf("refine_concepts: resolving touched concept name keys for repo %s: %v", args.RepositoryID, nerr)
+		} else if len(nameKeys) > 0 {
+			if rerr := concepts.RecomputeTouchedGroups(recomputeCtx, store.New(pool.Pool), repoID, nameKeys); rerr != nil {
+				log.Printf("refine_concepts: recompute concept_groups for repo %s: %v", args.RepositoryID, rerr)
+			}
+		}
+		recomputeCancel()
+	}
+
 	log.Printf("refine_concepts: repo %s resolved %d candidates (%d created, %d merged, %d aliases added, %d pruned, %d errors)",
 		args.RepositoryID, result.CandidatesResolved, result.ConceptsCreated, result.ConceptsMerged, result.AliasesAdded, result.AliasesPruned, result.Errors)
 

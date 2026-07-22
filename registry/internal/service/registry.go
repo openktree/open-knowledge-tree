@@ -29,9 +29,11 @@ const defaultRepoID = "default"
 // inject a mock without a real MinIO/S3 instance.
 type Storage interface {
 	StoreJSON(ctx context.Context, key string, data []byte) error
+	Store(ctx context.Context, key string, body []byte, contentType string) error
 	ReadAll(ctx context.Context, key string) ([]byte, string, error)
 	PresignedURL(ctx context.Context, key string, ttl time.Duration) (string, error)
 	PresignedPUTURL(ctx context.Context, key string, ttl time.Duration) (string, error)
+	Delete(ctx context.Context, key string) error
 }
 
 type Registry struct {
@@ -171,9 +173,9 @@ func (r *Registry) SearchSource(ctx context.Context, q model.SearchQuery) (*mode
 	}
 
 	result := &model.SearchResult{
-		Found:    true,
-		SourceID: s.ID,
-		S3Key:    s.S3Key,
+		Found:     true,
+		SourceID:  s.ID,
+		S3Key:     s.S3Key,
 		Presigned: presigned,
 	}
 	for _, d := range decomps {
@@ -389,18 +391,18 @@ func (r *Registry) PushDecomposition(ctx context.Context, sourceID string, decom
 	}
 
 	meta := &model.DecompMeta{
-		ID:              decompID,
-		SourceID:        sourceID,
-		ModelID:         originalModelID,
-		DecomposedBy:    decomp.DecomposedBy,
-		DecomposedAt:    decomp.DecomposedAt,
-		FactCount:       len(decomp.Facts),
-		SummaryCount:    len(decomp.Summaries),
-		HasEmbeddings:   decomp.Embeddings != nil,
-		EmbeddingModel:  embModel,
-		EmbeddingDims:   embDims,
-		S3Key:           s3Key,
-		CreatedAt:       now,
+		ID:             decompID,
+		SourceID:       sourceID,
+		ModelID:        originalModelID,
+		DecomposedBy:   decomp.DecomposedBy,
+		DecomposedAt:   decomp.DecomposedAt,
+		FactCount:      len(decomp.Facts),
+		SummaryCount:   len(decomp.Summaries),
+		HasEmbeddings:  decomp.Embeddings != nil,
+		EmbeddingModel: embModel,
+		EmbeddingDims:  embDims,
+		S3Key:          s3Key,
+		CreatedAt:      now,
 	}
 	if err := r.store.IndexDecomposition(ctx, meta); err != nil {
 		return nil, fmt.Errorf("indexing decomposition: %w", err)

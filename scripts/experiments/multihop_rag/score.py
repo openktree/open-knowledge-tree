@@ -61,6 +61,7 @@ def has_intersection(pred: str, gold: str) -> bool:
 
 
 ABSTENTION = "insufficient information."
+LLM_ERROR = "[llm error]"
 
 
 def _is_refusal(pred: str) -> bool:
@@ -70,6 +71,13 @@ def _is_refusal(pred: str) -> bool:
     return pred.strip().lower().rstrip(".") == ABSTENTION.rstrip(".")
 
 
+def _is_llm_error(pred: str) -> bool:
+    """A prediction is an LLM error (failed synthesis call, not a real answer)."""
+    if not pred:
+        return False
+    return pred.strip().lower() == LLM_ERROR
+
+
 def score_predictions(predictions: list[dict]) -> dict[str, Any]:
     """Compute per-type and overall P/R/F1/Acc.
 
@@ -77,31 +85,46 @@ def score_predictions(predictions: list[dict]) -> dict[str, Any]:
     (one gold per question). We still report all four for completeness
     and to match the official scorer's output shape.
 
-    We also track refusal vs substantive-answer breakdown:
+    Categories:
       - refusal:     prediction is empty or "Insufficient information."
       - substantive: prediction is an actual answer (correct or hallucinated)
       - hallucinated: substantive AND wrong
+      - llm_error:   the synthesis LLM call failed (reported separately,
+                     excluded from acc/refusal/hallucination metrics)
     """
     by_type: dict[str, list[bool]] = {}
     overall: list[bool] = []
-    # Per-type breakdown: n, correct, refusals, substantive, hallucinated.
+    # Per-type breakdown: n, correct, refusals, substantive, hallucinated, llm_errors.
     breakdown_by_type: dict[str, dict[str, int]] = {}
     breakdown_overall = {"n": 0, "correct": 0, "refusals": 0,
-                         "substantive": 0, "hallucinated": 0}
+                         "substantive": 0, "hallucinated": 0,
+                         "llm_errors": 0}
     for p in predictions:
         pred = p.get("prediction") or ""
         gold = p.get("gold") or ""
         ok = has_intersection(pred, gold)
         qt = p.get("question_type") or "unknown"
-        by_type.setdefault(qt, []).append(ok)
-        overall.append(ok)
         refused = _is_refusal(pred)
+        errored = _is_llm_error(pred)
         b = breakdown_by_type.setdefault(qt, {"n": 0, "correct": 0,
-                                              "refusals": 0,
-                                              "substantive": 0,
-                                              "hallucinated": 0})
+                                               "refusals": 0,
+                                               "substantive": 0,
+                                               "hallucinated": 0,
+                                               "llm_errors": 0})
         b["n"] += 1
         breakdown_overall["n"] += 1
+
+        if errored:
+            # LLM errors are excluded from accuracy/refusal/hallucination
+            # metrics — they're reported as a separate count.
+            b["llm_errors"] += 1
+            breakdown_overall["llm_errors"] += 1
+            # Don't add to by_type/overall for accuracy calculation.
+            continue
+
+        by_type.setdefault(qt, []).append(ok)
+        overall.append(ok)
+
         if ok:
             b["correct"] += 1
             breakdown_overall["correct"] += 1
@@ -137,11 +160,11 @@ def score_predictions(predictions: list[dict]) -> dict[str, Any]:
 
 
 def _format_breakdown_table(breakdown: dict[str, Any], title: str) -> str:
-    """Print refusal vs substantive vs hallucinated counts."""
+    """Print refusal vs substantive vs hallucinated vs llm_error counts."""
     lines = [f"\n{title}:"]
     lines.append(
         f"  {'type':<22} {'n':>5} {'corr':>5} {'refuse':>7} "
-        f"{'subst':>7} {'halluc':>7}  {'halluc_rate':>11}"
+        f"{'subst':>7} {'halluc':>7}  {'halluc%':>8} {'llm_err':>8}"
     )
     items: list[tuple[str, dict[str, int]]] = []
     if "by_question_type" in breakdown:
@@ -150,18 +173,20 @@ def _format_breakdown_table(breakdown: dict[str, Any], title: str) -> str:
     for qt, b in items:
         n = b["n"]
         halluc = b["hallucinated"]
-        halluc_rate = (halluc / n) if n else 0.0
+        halluc_pct = (halluc / n * 100) if n else 0.0
         lines.append(
             f"  {qt:<22} {n:>5} {b['correct']:>5} {b['refusals']:>7} "
-            f"{b['substantive']:>7} {halluc:>7}  {halluc_rate:>11.3f}"
+            f"{b['substantive']:>7} {halluc:>7}  {halluc_pct:>7.1f}% "
+            f"{b.get('llm_errors', 0):>8}"
         )
     n = overall.get("n", 0)
     halluc = overall.get("hallucinated", 0)
-    halluc_rate = (halluc / n) if n else 0.0
+    halluc_pct = (halluc / n * 100) if n else 0.0
     lines.append(
         f"  {'OVERALL':<22} {n:>5} {overall.get('correct', 0):>5} "
         f"{overall.get('refusals', 0):>7} {overall.get('substantive', 0):>7} "
-        f"{halluc:>7}  {halluc_rate:>11.3f}"
+        f"{halluc:>7}  {halluc_pct:>7.1f}% "
+        f"{overall.get('llm_errors', 0):>8}"
     )
     return "\n".join(lines)
 
@@ -302,7 +327,7 @@ def _format_side_by_side(
     header = (
         f"  {'variant':<10} {'n':>5} {'acc':>7} {'cov':>7} "
         f"{'refuse':>7} {'subst':>7} {'halluc':>7} {'halluc%':>8} "
-        f"{'tokens':>10} {'prompt':>9} {'completion':>10}"
+        f"{'llm_err':>8} {'tokens':>10} {'prompt':>9} {'completion':>10}"
     )
     lines.append(header)
     for name in variant_names:
@@ -311,13 +336,17 @@ def _format_side_by_side(
         b = m["breakdown_overall"]
         n = b["n"]
         halluc = b["hallucinated"]
-        halluc_rate = (halluc / n) if n else 0.0
+        halluc_rate = (halluc / n * 100) if n else 0.0
+        # n for accuracy excludes llm_errors; report scored_n.
+        scored_n = n - b.get("llm_errors", 0)
+        acc = m["overall"]["accuracy"]
         toks = _sum_tokens(variant_predictions.get(name, []))
         lines.append(
-            f"  {name:<10} {n:>5} {m['overall']['accuracy']:>7.3f} "
+            f"  {name:<10} {scored_n:>5} {acc:>7.3f} "
             f"{cov['overall']['retrieved_any']:>7.3f} "
             f"{b['refusals']:>7} {b['substantive']:>7} {halluc:>7} "
-            f"{halluc_rate*100:>7.1f}% "
+            f"{halluc_rate:>7.1f}% "
+            f"{b.get('llm_errors', 0):>8} "
             f"{toks['total']:>10} {toks['prompt']:>9} {toks['completion']:>10}"
         )
     lines.append("")
@@ -430,6 +459,7 @@ def _format_legend() -> str:
         "  subst    = predicted a substantive answer (not a refusal)\n"
         "  halluc   = substantive AND wrong (potential hallucination)\n"
         "  halluc%  = hallucinated / n, as a percentage\n"
+        "  llm_err  = LLM synthesis call failed (excluded from acc/refuse/halluc)\n"
         "  tokens   = sum of prompt + completion tokens across all questions\n"
         "  breakdown = per-LLM-call token cost "
         "(concept_query_extraction + fact_query_extraction + synthesis)\n"

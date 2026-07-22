@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import { STATE_BADGE } from "./constants";
+import RecomputeDangerBox from "./RecomputeDangerBox";
 import ReextractDangerBox from "./ReextractDangerBox";
 
 const badgeVariant = (state) => STATE_BADGE[state] || "gray";
@@ -34,6 +35,7 @@ export default function TasksStats(props) {
   const [confirmRescue, setConfirmRescue] = createSignal(false);
   const [rescueResult, setRescueResult] = createSignal(null);
   const [showReextract, setShowReextract] = createSignal(false);
+  const [showRecompute, setShowRecompute] = createSignal(false);
   const total = () => props.stats?.totals?.total ?? 0;
   const hasData = () => props.stats?.queues?.length > 0;
   const runningCount = () => props.stats?.totals?.running ?? 0;
@@ -120,6 +122,15 @@ export default function TasksStats(props) {
                   Re-extract concepts
                 </Button>
               </Show>
+              <Show when={props.canRecompute && (props.repositories?.length || 0) > 0}>
+                <Button
+                  variant="secondary"
+                  onClick={() => setShowRecompute(true)}
+                  title="Recompute the concept_groups summary for a repo (repair path)"
+                >
+                  Recompute concept groups
+                </Button>
+              </Show>
               <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">
                 {total()} total
               </span>
@@ -134,6 +145,18 @@ export default function TasksStats(props) {
                 reextracting={props.reextracting}
                 onConfirm={props.onReextract}
                 onCancel={() => setShowReextract(false)}
+              />
+            </div>
+          </Show>
+
+          <Show when={showRecompute()}>
+            <div class="mt-3">
+              <RecomputeDangerBox
+                repositories={props.repositories}
+                currentRepo={props.currentRepo}
+                recomputing={props.recomputing}
+                onConfirm={props.onRecompute}
+                onCancel={() => setShowRecompute(false)}
               />
             </div>
           </Show>

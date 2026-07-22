@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 	"github.com/riverqueue/river"
@@ -139,6 +142,12 @@ func (w *MigrateContextWorker) Work(ctx context.Context, job *river.Job[MigrateC
 		return fmt.Errorf("migrate_context: listing old-context concepts: %w", err)
 	}
 
+	// touchedNameKeys collects the lower(canonical_name) groups
+	// affected by this migration (merge or plain reassign) so the
+	// concept_groups summary can be recomputed once at the end. A
+	// name may appear more than once (multiple contexts); the dedup
+	// happens in RecomputeTouchedGroups.
+	touchedNameKeys := make([]string, 0, len(oldConcepts))
 	for _, old := range oldConcepts {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("migrate_context: ctx cancelled: %w", err)
@@ -158,6 +167,18 @@ func (w *MigrateContextWorker) Work(ctx context.Context, job *river.Job[MigrateC
 		}
 		result.Reassigned += reassigned
 		result.Merged += merged
+		touchedNameKeys = append(touchedNameKeys, strings.ToLower(old.CanonicalName))
+	}
+
+	// Recompute the concept_groups summary for the touched name keys
+	// so the q="" concept list page reflects the new context counts
+	// and any merge-deleted groups immediately. Best-effort.
+	if len(touchedNameKeys) > 0 {
+		recomputeCtx, recomputeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if rerr := concepts.RecomputeTouchedGroups(recomputeCtx, queries, repoID, touchedNameKeys); rerr != nil {
+			log.Printf("migrate_context: recompute concept_groups for repo %s: %v", args.RepositoryID, rerr)
+		}
+		recomputeCancel()
 	}
 
 	// Delete the old context from repository_contexts now that no

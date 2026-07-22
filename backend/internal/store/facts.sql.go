@@ -687,9 +687,11 @@ FROM okt_repository.facts f
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 JOIN okt_repository.sources s ON fs.source_id = s.id
 LEFT JOIN (
-    SELECT fact_id, COUNT(*) AS source_count
-    FROM okt_repository.fact_sources
-    GROUP BY fact_id
+    SELECT fs2.fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources fs2
+    JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
+    WHERE s2.repository_id = $1
+    GROUP BY fs2.fact_id
 ) fs_count ON fs_count.fact_id = f.id
 WHERE s.repository_id = $1
   AND ($2::text = '' OR f.status = $2)
@@ -1140,9 +1142,11 @@ FROM okt_repository.facts f
 JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
 JOIN okt_repository.sources s ON fs.source_id = s.id
 LEFT JOIN (
-    SELECT fact_id, COUNT(*) AS source_count
-    FROM okt_repository.fact_sources
-    GROUP BY fact_id
+    SELECT fs2.fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources fs2
+    JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
+    WHERE s2.repository_id = $1
+    GROUP BY fs2.fact_id
 ) fs_count ON fs_count.fact_id = f.id
 JOIN (
     -- Per-fact coverage: the distinct set of input group indices the

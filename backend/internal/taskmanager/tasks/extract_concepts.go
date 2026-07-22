@@ -574,6 +574,11 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 		// record a soft-skip row that increments attempts; after
 		// maxConceptAttempts (default 3) consecutive permanent
 		// failures the fact is excluded from the candidate set.
+		// touchedConceptIDs collects concept ids whose
+		// concept_groups summary row needs recompute after the
+		// batch's write txs commit; the recompute runs once at
+		// batch end.
+		var touchedConceptIDs []pgtype.UUID
 		for i, fact := range facts {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("extract_concepts: ctx cancelled: %w", err)
@@ -638,17 +643,47 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 			}
 			queries := store.New(tx)
 			for _, p := range plans {
-				if err := w.linkFactToConcept(writeCtx, tx, queries, repoID, fact.ID, p.c, &result, psHashPtr); err != nil {
-					log.Printf("extract_concepts: linking fact %s to concept %q: %v", pgUUIDToString(fact.ID), p.c.Concept, err)
+				touched, lerr := w.linkFactToConcept(writeCtx, tx, queries, repoID, fact.ID, p.c, &result, psHashPtr)
+				if lerr != nil {
+					log.Printf("extract_concepts: linking fact %s to concept %q: %v", pgUUIDToString(fact.ID), p.c.Concept, lerr)
 					result.Errors++
 					continue
 				}
+				// Queue the touched concept IDs for a concept_groups
+				// summary recompute after the tx commits. The
+				// recompute reads live concepts+fact_concepts, so it
+				// must run post-commit (running it inside the tx
+				// would see the pre-commit state). Collected across
+				// the whole batch and deduped by
+				// RecomputeTouchedGroups.
+				if len(touched) > 0 {
+					touchedConceptIDs = append(touchedConceptIDs, touched...)
+				}
 			}
-			if err := tx.Commit(writeCtx); err != nil {
-				log.Printf("extract_concepts: committing write tx for fact %s: %v", pgUUIDToString(fact.ID), err)
-				result.Errors++
+		if err := tx.Commit(writeCtx); err != nil {
+			log.Printf("extract_concepts: committing write tx for fact %s: %v", pgUUIDToString(fact.ID), err)
+			result.Errors++
+		}
+		writeCancel()
+		}
+
+		// Recompute the concept_groups summary rows for the concept
+		// ids touched in this wave so the q="" concept list page stays
+		// always-live. Best-effort: a failure is logged and swallowed
+		// (the summary is a cache; the recompute_concept_groups job
+		// is the repair path). Run on pool.Pool (not in any tx) so the
+		// recompute reads the post-commit live state.
+		if len(touchedConceptIDs) > 0 {
+			recomputeCtx, recomputeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			nameKeys, nerr := store.New(pool.Pool).ListConceptNameKeysByIDs(recomputeCtx, touchedConceptIDs)
+			if nerr != nil {
+				log.Printf("extract_concepts: resolving touched concept name keys for repo %s: %v", args.RepositoryID, nerr)
+			} else if len(nameKeys) > 0 {
+				if rerr := concepts.RecomputeTouchedGroups(recomputeCtx, store.New(pool.Pool), repoID, nameKeys); rerr != nil {
+					log.Printf("extract_concepts: recompute concept_groups for repo %s: %v", args.RepositoryID, rerr)
+				}
 			}
-			writeCancel()
+			recomputeCancel()
 		}
 
 		// No-progress break: if every fact in this wave either
@@ -1075,9 +1110,9 @@ func (w *ExtractConceptsWorker) linkFactToConcept(
 	c decomposition.ExtractedConcept,
 	result *ExtractConceptsResult,
 	psHashPtr *string,
-) error {
+) (touchedConceptIDs []pgtype.UUID, err error) {
 	if c.Concept == "" || c.Context == "" {
-		return nil
+		return nil, nil
 	}
 
 	// Resolved-candidate cache (applies in both branches): a
@@ -1097,7 +1132,7 @@ func (w *ExtractConceptsWorker) linkFactToConcept(
 			PromptsetHash: psHashPtr,
 		}); err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("add fact_concept (cache hit): %w", err)
+				return nil, fmt.Errorf("add fact_concept (cache hit): %w", err)
 			}
 		}
 		for _, alias := range c.SeedAliases {
@@ -1112,10 +1147,12 @@ func (w *ExtractConceptsWorker) linkFactToConcept(
 			}
 			result.AliasesMerged++
 		}
-		return nil
+		return []pgtype.UUID{resolved.ResolvedConceptID}, nil
 	}
 
-	// Refinement ENABLED: emit a candidate (no routing).
+	// Refinement ENABLED: emit a candidate (no routing). No concept
+	// row is touched yet (refine_concepts will create/link later), so
+	// no summary recompute is owed for this fact from extract.
 	if w.refinementEnabled {
 		return w.emitCandidate(ctx, queries, repoID, factID, c, result, psHashPtr)
 	}
@@ -1136,7 +1173,7 @@ func (w *ExtractConceptsWorker) emitCandidate(
 	c decomposition.ExtractedConcept,
 	result *ExtractConceptsResult,
 	psHashPtr *string,
-) error {
+) (touchedConceptIDs []pgtype.UUID, err error) {
 	candidate, err := queries.CreateCandidate(ctx, store.CreateCandidateParams{
 		RepositoryID: repoID,
 		ConceptText:  c.Concept,
@@ -1144,7 +1181,7 @@ func (w *ExtractConceptsWorker) emitCandidate(
 		SeedAliases:  c.SeedAliases,
 	})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("create candidate: %w", err)
+		return nil, fmt.Errorf("create candidate: %w", err)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		// ON CONFLICT DO NOTHING: a candidate for this
@@ -1168,11 +1205,11 @@ func (w *ExtractConceptsWorker) emitCandidate(
 				if _, lerr := queries.AddFactConcept(ctx, store.AddFactConceptParams{
 					FactID: factID, ConceptID: resolved.ResolvedConceptID, PromptsetHash: psHashPtr,
 				}); lerr != nil && !errors.Is(lerr, pgx.ErrNoRows) {
-					return fmt.Errorf("add fact_concept (race cache hit): %w", lerr)
+					return nil, fmt.Errorf("add fact_concept (race cache hit): %w", lerr)
 				}
-				return nil
+				return []pgtype.UUID{resolved.ResolvedConceptID}, nil
 			}
-			return fmt.Errorf("re-find unresolved candidate after ON CONFLICT: %w", ferr)
+			return nil, fmt.Errorf("re-find unresolved candidate after ON CONFLICT: %w", ferr)
 		}
 		candidate = existing
 	}
@@ -1183,10 +1220,10 @@ func (w *ExtractConceptsWorker) emitCandidate(
 		CandidateID: candidate.ID,
 	}); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("add fact_candidate: %w", err)
+			return nil, fmt.Errorf("add fact_candidate: %w", err)
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // routeDirect is the refinement-DISABLED direct-routing path. It
@@ -1204,7 +1241,7 @@ func (w *ExtractConceptsWorker) routeDirect(
 	c decomposition.ExtractedConcept,
 	result *ExtractConceptsResult,
 	psHashPtr *string,
-) error {
+) (touchedConceptIDs []pgtype.UUID, err error) {
 	winner, ok := concepts.ResolveAliasMatchForFact(ctx, queries, w.qdrant, w.embeddingProvider, w.embeddingCfg.Model, repoID, c.Context, c.Concept, factID)
 	if ok {
 		// Match: link fact to the winning concept + merge seed aliases.
@@ -1215,7 +1252,7 @@ func (w *ExtractConceptsWorker) routeDirect(
 			PromptsetHash: psHashPtr,
 		}); err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("add fact_concept (direct match): %w", err)
+				return nil, fmt.Errorf("add fact_concept (direct match): %w", err)
 			}
 		}
 		for _, alias := range c.SeedAliases {
@@ -1233,7 +1270,7 @@ func (w *ExtractConceptsWorker) routeDirect(
 			}
 			result.AliasesMerged++
 		}
-		return nil
+		return []pgtype.UUID{winner.ID}, nil
 	}
 	// Miss: ok is false on 0 matches, OR on >1 matches when the
 	// fact's vector is unavailable (the helper defers). In both cases
@@ -1246,7 +1283,7 @@ func (w *ExtractConceptsWorker) routeDirect(
 		PromptsetHash: psHashPtr,
 	})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("create concept (direct miss): %w", err)
+		return nil, fmt.Errorf("create concept (direct miss): %w", err)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		// ON CONFLICT: a racing pass created the same concept. Re-find.
@@ -1256,7 +1293,7 @@ func (w *ExtractConceptsWorker) routeDirect(
 			Name:         c.Concept,
 		})
 		if ferr != nil {
-			return fmt.Errorf("re-find concept after ON CONFLICT: %w", ferr)
+			return nil, fmt.Errorf("re-find concept after ON CONFLICT: %w", ferr)
 		}
 		created = existing
 	}
@@ -1288,8 +1325,8 @@ func (w *ExtractConceptsWorker) routeDirect(
 		PromptsetHash: psHashPtr,
 	}); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("add fact_concept (direct miss): %w", err)
+			return nil, fmt.Errorf("add fact_concept (direct miss): %w", err)
 		}
 	}
-	return nil
+	return []pgtype.UUID{created.ID}, nil
 }

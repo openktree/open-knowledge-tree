@@ -23,18 +23,18 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/refinement"
 	registryclient "github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/search"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/summarization"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/synthesis"
-	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
-	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
-	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 	"github.com/riverqueue/river"
@@ -84,6 +84,17 @@ func (a *enqueuerAdapter) EnqueueExtractConceptsFromHTTP(ctx context.Context, ar
 	return a.m.EnqueueExtractConcepts(ctx, tasks.ExtractConceptsArgs{
 		RepositoryID: args.RepositoryID,
 		SourceID:     args.SourceID,
+	})
+}
+
+func (a *enqueuerAdapter) EnqueueRecomputeConceptGroupsFromHTTP(ctx context.Context, args handler.RecomputeConceptGroupsArgs) (string, error) {
+	return a.m.EnqueueRecomputeConceptGroups(ctx, args.DatabaseName, args.RepositoryID)
+}
+
+func (a *enqueuerAdapter) EnqueueSynthesizeFromHTTP(ctx context.Context, args handler.SynthesizeArgs) (string, error) {
+	return a.m.EnqueueSynthesize(ctx, tasks.SynthesizeConceptArgs{
+		RepositoryID: args.RepositoryID,
+		ConceptID:    args.ConceptID,
 	})
 }
 
@@ -305,6 +316,15 @@ func New(
 	// context mapper so bulk pulls honor the repo's unmapped-context
 	// policy.
 	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup, psResolver))
+	// Graph export/import. The re-embed enqueuer adapter is wired
+	// after the client exists (same pattern as pullRemoteBatchDedup).
+	// Export builds a whole-repo bundle and pushes it to the registry;
+	// import pulls a shared bundle and re-inserts every entity into a
+	// fresh or existing repo in a single task. Both are no-ops when
+	// no registry is configured (the workers return a clear error).
+	graphImportReembed := &graphImportReembedAdapter{}
+	river.AddWorker(workers, tasks.NewExportGraphWorker(registryClients, registry, systemQueries, qdrantStore, cfg.Providers.Embedding.Model, cfg.Providers.Embedding.Dimensions))
+	river.AddWorker(workers, tasks.NewImportGraphWorker(registryClients, registry, systemQueries, qdrantStore, storageBackend, cfg.Providers.Embedding.Model, graphImportReembed))
 	river.AddWorker(workers, tasks.NewFactCatchupWorker(cfg.Providers.Dedup, qdrantStore, registry, systemQueries))
 	// Audit log retention. Daily sweep that deletes
 	// okt_system.permission_audit rows older than
@@ -346,6 +366,11 @@ func New(
 	// records a no-op result), so it's always registered.
 	river.AddWorker(workers, tasks.NewRefreshConceptRelationsWorker(registry))
 	river.AddWorker(workers, tasks.NewRefreshAllConceptRelationsWorker(registry))
+	// concept_groups summary recompute (operator-driven repair, no
+	// periodic tick). Mirrors refresh_concept_relations' per-database
+	// unique-key dedup so concurrent button clicks coalesce, and the
+	// sweep below purges finished rows so the slot frees immediately.
+	river.AddWorker(workers, tasks.NewRecomputeConceptGroupsWorker(registry))
 	// Context migration (merge semantics). The chain adapter is a
 	// pointer so it can be wired with the Manager after the client
 	// is constructed (the worker registration happens before the
@@ -468,6 +493,8 @@ func New(
 	migrateChain.m = mgr
 	// Wire the pull_remote_batch dedup adapter the same way.
 	pullRemoteBatchDedup.m = mgr
+	// Wire the graph import re-embed adapter the same way.
+	graphImportReembed.m = mgr
 	return mgr, nil
 }
 
@@ -567,7 +594,7 @@ func (m *Manager) SweepStaleUniqueKeyJobs(ctx context.Context) (int64, error) {
 		 WHERE unique_key IS NOT NULL
 		   AND unique_states IS NOT NULL
 		   AND state IN ('completed', 'cancelled', 'discarded')
-		   AND kind IN ('refresh_concept_relations', 'refresh_all_concept_relations')
+		   AND kind IN ('refresh_concept_relations', 'refresh_all_concept_relations', 'recompute_concept_groups')
 		   AND river_job_state_in_bitmask(unique_states, state)`)
 	if err != nil {
 		return 0, err
@@ -886,13 +913,39 @@ func (m *Manager) EnqueueRefreshConceptRelations(ctx context.Context, databaseNa
 	return fmt.Sprintf("%d", res.Job.ID), nil
 }
 
+// EnqueueRecomputeConceptGroups enqueues a full concept_groups
+// summary recompute for one repo. Called by the admin "Recompute
+// concept groups" endpoint (POST /admin/repos/{repoID}/concepts/
+// recompute). Per-database unique-key dedup (the recompute issues a
+// per-database DELETE+INSERT; two repos in the same database share
+// one recompute to avoid racing on the table). `databaseName` MUST be
+// the repository's database_name; `repositoryID` is the target repo
+// and the tasks-list metadata filter. Best-effort: the HTTP handler
+// logs a failure and returns 500; the incremental maintenance in the
+// ingest workers keeps the summary live regardless.
+func (m *Manager) EnqueueRecomputeConceptGroups(ctx context.Context, databaseName, repositoryID string) (string, error) {
+	res, err := m.client.Insert(ctx, tasks.RecomputeConceptGroupsArgs{
+		DatabaseName: databaseName,
+		RepositoryID: repositoryID,
+	}, &river.InsertOpts{
+		Queue: tasks.QueueRecomputeConceptGroups,
+		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{
+			RepositoryID: repositoryID,
+		}),
+	})
+	if err != nil {
+		return "", fmt.Errorf("enqueueing recompute_concept_groups job: %w", err)
+	}
+	return fmt.Sprintf("%d", res.Job.ID), nil
+}
+
 // EnqueueEmbedConcepts enqueues an embed_concepts pass for a repo.
 // Used by the migrate_context chain enqueuer so merged concepts
 // (whose embedded_at was reset to NULL) get re-vectorized. Returns
 // the job id; best-effort at the call site (the caller logs errors).
 func (m *Manager) EnqueueEmbedConcepts(ctx context.Context, repositoryID string) (string, error) {
 	res, err := m.client.Insert(ctx, tasks.EmbedConceptsArgs{RepositoryID: repositoryID}, &river.InsertOpts{
-		Queue: tasks.QueueEmbedConcepts,
+		Queue:    tasks.QueueEmbedConcepts,
 		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{RepositoryID: repositoryID}),
 	})
 	if err != nil {
@@ -921,12 +974,32 @@ func (m *Manager) EnqueueSummarizeConcepts(ctx context.Context, args tasks.Summa
 	return fmt.Sprintf("%d", res.Job.ID), nil
 }
 
+// EnqueueSynthesize enqueues a synthesize_concept job for a single
+// concept. Used by the per-concept "Resynthesize" endpoint to let an
+// operator regenerate a concept's definition on demand (e.g. after a
+// prior synthesis failure, or to fold in new summary slices). The
+// worker resolves the concept_id to its canonical-name group and
+// upserts the single synthesis row. Returns the job id.
+func (m *Manager) EnqueueSynthesize(ctx context.Context, args tasks.SynthesizeConceptArgs) (string, error) {
+	opts := &river.InsertOpts{
+		Queue: tasks.QueueSynthesizeConcept,
+		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{
+			RepositoryID: args.RepositoryID,
+		}),
+	}
+	res, err := m.client.Insert(ctx, args, opts)
+	if err != nil {
+		return "", fmt.Errorf("enqueueing synthesize_concept job: %w", err)
+	}
+	return fmt.Sprintf("%d", res.Job.ID), nil
+}
+
 // EnqueueMigrateContext enqueues a migrate_context job for a repo.
 // Used by the settings handler's MigrateEnqueuer adapter. The args'
 // river unique opts dedup a double-click; returns the job id.
 func (m *Manager) EnqueueMigrateContext(ctx context.Context, args tasks.MigrateContextArgs) (string, error) {
 	res, err := m.client.Insert(ctx, args, &river.InsertOpts{
-		Queue: tasks.QueueMigrateContext,
+		Queue:    tasks.QueueMigrateContext,
 		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{RepositoryID: args.RepositoryID}),
 	})
 	if err != nil {
@@ -966,7 +1039,7 @@ func (m *Manager) EnqueueContributeAll(ctx context.Context, repositoryID string)
 	res, err := m.client.Insert(ctx, tasks.ContributeAllArgs{
 		RepositoryID: repositoryID,
 	}, &river.InsertOpts{
-		Queue: tasks.QueueContributeAll,
+		Queue:    tasks.QueueContributeAll,
 		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{RepositoryID: repositoryID}),
 	})
 	if err != nil {
@@ -982,7 +1055,7 @@ func (m *Manager) EnqueuePullAll(ctx context.Context, repositoryID string) (stri
 	res, err := m.client.Insert(ctx, tasks.PullAllFromRegistryArgs{
 		RepositoryID: repositoryID,
 	}, &river.InsertOpts{
-		Queue: tasks.QueuePullAllFromRegistry,
+		Queue:    tasks.QueuePullAllFromRegistry,
 		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{RepositoryID: repositoryID}),
 	})
 	if err != nil {
@@ -1001,7 +1074,7 @@ func (m *Manager) EnqueuePullRemoteBatch(ctx context.Context, repositoryID strin
 		RepositoryID:    repositoryID,
 		RemoteSourceIDs: remoteSourceIDs,
 	}, &river.InsertOpts{
-		Queue: tasks.QueuePullRemoteBatch,
+		Queue:    tasks.QueuePullRemoteBatch,
 		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{RepositoryID: repositoryID}),
 	})
 	if err != nil {
@@ -1080,6 +1153,105 @@ type remoteDedupEnqueuerAdapter struct {
 
 func (a *remoteDedupEnqueuerAdapter) EnqueueEmbedFacts(ctx context.Context, repositoryID, sourceID string) error {
 	return a.m.EnqueueEmbedFacts(ctx, repositoryID, sourceID)
+}
+
+// graphImportReembedAdapter satisfies tasks.GraphImportReembedEnqueuer
+// by delegating to the Manager's Enqueue* helpers. The pointer is
+// constructed before the River client (so the worker can hold it at
+// registration time) and wired with the Manager after the client
+// exists; calls before wiring are no-ops (logged).
+type graphImportReembedAdapter struct {
+	m *Manager
+}
+
+func (a *graphImportReembedAdapter) EnqueueEmbedFacts(ctx context.Context, repositoryID, sourceID string) error {
+	if a.m == nil {
+		return fmt.Errorf("graph_import: manager not wired")
+	}
+	return a.m.EnqueueEmbedFacts(ctx, repositoryID, sourceID)
+}
+
+func (a *graphImportReembedAdapter) EnqueueEmbedConceptsForRepo(ctx context.Context, repositoryID string) error {
+	if a.m == nil {
+		return fmt.Errorf("graph_import: manager not wired")
+	}
+	_, err := a.m.EnqueueEmbedConcepts(ctx, repositoryID)
+	return err
+}
+
+// EnqueueExportGraph enqueues an export_graph job for a repo. Used by
+// the POST /{repoID}/export-graph handler. Returns the River job id.
+func (m *Manager) EnqueueExportGraph(ctx context.Context, args tasks.ExportGraphArgs) (string, error) {
+	res, err := m.client.Insert(ctx, args, &river.InsertOpts{
+		Queue: tasks.QueueExportGraph,
+		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{
+			RepositoryID: args.RepositoryID,
+		}),
+	})
+	if err != nil {
+		return "", fmt.Errorf("enqueueing export_graph job: %w", err)
+	}
+	return fmt.Sprintf("%d", res.Job.ID), nil
+}
+
+// EnqueueImportGraph enqueues an import_graph job for a repo. Used by
+// the POST /repositories/import-graph (new repo) and POST
+// /{repoID}/import-graph (existing repo) handlers. Returns the River
+// job id.
+func (m *Manager) EnqueueImportGraph(ctx context.Context, args tasks.ImportGraphArgs) (string, error) {
+	res, err := m.client.Insert(ctx, args, &river.InsertOpts{
+		Queue: tasks.QueueImportGraph,
+		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{
+			RepositoryID: args.RepositoryID,
+		}),
+	})
+	if err != nil {
+		return "", fmt.Errorf("enqueueing import_graph job: %w", err)
+	}
+	return fmt.Sprintf("%d", res.Job.ID), nil
+}
+
+// GraphExportEnqueuer returns an object satisfying
+// handler.GraphExportEnqueuer for this manager. The graph handler
+// consumes this to enqueue export_graph jobs.
+func (m *Manager) GraphExportEnqueuer() handler.GraphExportEnqueuer {
+	return &graphExportEnqueuerAdapter{m: m}
+}
+
+// GraphImportEnqueuer returns an object satisfying
+// handler.GraphImportEnqueuer for this manager. The graph handler
+// consumes this to enqueue import_graph jobs.
+func (m *Manager) GraphImportEnqueuer() handler.GraphImportEnqueuer {
+	return &graphImportEnqueuerAdapter{m: m}
+}
+
+type graphExportEnqueuerAdapter struct {
+	m *Manager
+}
+
+func (a *graphExportEnqueuerAdapter) EnqueueExportGraph(ctx context.Context, args handler.ExportGraphArgs) (string, error) {
+	return a.m.EnqueueExportGraph(ctx, tasks.ExportGraphArgs{
+		RepositoryID: args.RepositoryID,
+		RegistryID:   args.RegistryID,
+		Name:         args.Name,
+		Description:  args.Description,
+		Tags:         args.Tags,
+	})
+}
+
+type graphImportEnqueuerAdapter struct {
+	m *Manager
+}
+
+func (a *graphImportEnqueuerAdapter) EnqueueImportGraph(ctx context.Context, args handler.ImportGraphArgs) (string, error) {
+	return a.m.EnqueueImportGraph(ctx, tasks.ImportGraphArgs{
+		RepositoryID:    args.RepositoryID,
+		SourceKind:      args.SourceKind,
+		RegistryGraphID: args.RegistryGraphID,
+		UploadKey:       args.UploadKey,
+		RegistryID:      args.RegistryID,
+		Mode:            args.Mode,
+	})
 }
 
 // migrateChainAdapter satisfies tasks.MigrateContextChainEnqueuer by

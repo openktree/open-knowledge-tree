@@ -65,6 +65,16 @@ type OktRepositoryConceptCandidate struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type OktRepositoryConceptGroup struct {
+	RepositoryID   pgtype.UUID        `json:"repository_id"`
+	NameKey        string             `json:"name_key"`
+	CanonicalName  string             `json:"canonical_name"`
+	ContextCount   int32              `json:"context_count"`
+	TotalFactCount int64              `json:"total_fact_count"`
+	AnyEmbedded    bool               `json:"any_embedded"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type OktRepositoryConceptRelation struct {
 	RepositoryID    pgtype.UUID `json:"repository_id"`
 	NameA           string      `json:"name_a"`

@@ -18,6 +18,7 @@ export default function Tasks() {
   const [selectedJob, setSelectedJob] = createSignal(null);
   const canRescue = () => rbac.hasPermission("task", "manage");
   const canReextract = () => rbac.hasPermission("repositories", "manage");
+  const canRecompute = () => rbac.hasPermission("repositories", "manage");
 
   const reload = () => {
     setSelectedJob(null);
@@ -43,6 +44,9 @@ export default function Tasks() {
           canReextract={canReextract()}
           reextracting={t.reextracting()}
           onReextract={t.reextractConcepts}
+          canRecompute={canRecompute()}
+          recomputing={t.recomputing()}
+          onRecompute={t.recomputeConceptGroups}
           repositories={repo.repositories()}
           currentRepo={repo.currentRepo()}
         />

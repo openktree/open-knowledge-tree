@@ -25,6 +25,7 @@ export default function RepoTasksContent(props) {
   const rbac = useRBAC();
   const [selectedJob, setSelectedJob] = createSignal(null);
   const canReextract = createMemo(() => rbac.hasPermission("repositories", "manage"));
+  const canRecompute = createMemo(() => rbac.hasPermission("repositories", "manage"));
 
   const reload = () => {
     setSelectedJob(null);
@@ -49,6 +50,9 @@ export default function RepoTasksContent(props) {
         canReextract={canReextract()}
         reextracting={t.reextracting()}
         onReextract={t.reextractConcepts}
+        canRecompute={canRecompute()}
+        recomputing={t.recomputing()}
+        onRecompute={t.recomputeConceptGroups}
         repositories={props.repo ? [props.repo] : []}
         currentRepo={props.repo}
       />

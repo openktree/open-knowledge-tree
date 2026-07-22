@@ -243,3 +243,86 @@ func TestAdminReprocessSource_NoChunkErrors(t *testing.T) {
 		t.Errorf("expected 400 (no chunk failures to reprocess), got %d", resp.StatusCode)
 	}
 }
+
+// TestAdminRecomputeRepoConceptGroups verifies the on-demand
+// concept_groups summary recompute endpoint: GET (preview) + POST
+// /api/v1/admin/repos/{repoID}/concepts/recompute. The preview
+// returns the current group/concept counts; the POST enqueues a
+// recompute_concept_groups River job. A regular user without
+// repositories.*.manage gets 403.
+func TestAdminRecomputeRepoConceptGroups(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "recompute@example.com")
+	const slug = "recompute-repo"
+	_, _, repoID := createRepositoryWithDB(t, admin, "Recompute Repo", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	queries := store.New(env.DB)
+
+	// Insert two concepts directly so the summary has something to
+	// count. Direct store writes don't trigger the ingest workers'
+	// incremental recompute, so the summary starts empty — this is
+	// exactly the scenario the recompute endpoint repairs.
+	ctx := context.Background()
+	for _, name := range []string{"Alpha", "Beta"} {
+		if _, err := queries.CreateConcept(ctx, store.CreateConceptParams{
+			RepositoryID: pgRepo, CanonicalName: name, Context: "TestCtx",
+		}); err != nil {
+			t.Fatalf("create concept %s: %v", name, err)
+		}
+	}
+
+	// Preview before recompute: 0 groups (direct inserts, no
+	// incremental recompute) + 2 concepts.
+	pResp, pRaw := admin.do("GET", "/api/v1/admin/repos/"+repoID+"/concepts/recompute", nil)
+	if pResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET recompute preview: %d %s", pResp.StatusCode, pRaw)
+	}
+	var preview recomputePreviewResponse
+	if err := json.Unmarshal(pRaw, &preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if preview.ConceptsTotal != 2 {
+		t.Errorf("preview concepts_total = %d, want 2", preview.ConceptsTotal)
+	}
+	if preview.CurrentGroups != 0 {
+		t.Errorf("preview current_groups = %d, want 0 (direct inserts don't recompute)", preview.CurrentGroups)
+	}
+
+	// POST enqueues the recompute job.
+	rResp, rRaw := admin.do("POST", "/api/v1/admin/repos/"+repoID+"/concepts/recompute", nil)
+	if rResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST recompute: %d %s", rResp.StatusCode, rRaw)
+	}
+	var resp recomputeResponse
+	if err := json.Unmarshal(rRaw, &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Enqueued || resp.EnqueuedJobID == "" {
+		t.Errorf("response enqueued=%v job_id=%q, want enqueued=true with job id", resp.Enqueued, resp.EnqueuedJobID)
+	}
+
+	// A regular user (no repositories.*.manage) gets 403 on both.
+	regular := newAuthClient(env.BaseURL)
+	regular.register("recompute-user@example.com", "passw0rd!", "Recompute")
+	regular.token = loginUser(regular, "recompute-user@example.com", "passw0rd!")
+	if r, _ := regular.do("GET", "/api/v1/admin/repos/"+repoID+"/concepts/recompute", nil); r.StatusCode != http.StatusForbidden {
+		t.Errorf("regular GET recompute: status %d, want 403", r.StatusCode)
+	}
+	if r, _ := regular.do("POST", "/api/v1/admin/repos/"+repoID+"/concepts/recompute", nil); r.StatusCode != http.StatusForbidden {
+		t.Errorf("regular POST recompute: status %d, want 403", r.StatusCode)
+	}
+}
+
+type recomputePreviewResponse struct {
+	RepositoryID  string `json:"repository_id"`
+	CurrentGroups int64  `json:"current_groups"`
+	ConceptsTotal int64  `json:"concepts_total"`
+}
+
+type recomputeResponse struct {
+	RepositoryID  string `json:"repository_id"`
+	EnqueuedJobID string `json:"enqueued_job_id"`
+	Enqueued      bool   `json:"enqueued"`
+}

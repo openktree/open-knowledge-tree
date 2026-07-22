@@ -27,12 +27,27 @@ import (
 // image facts (id, image_url, text) for every image the synthesis
 // embeds, so the frontend can resolve storage URLs to authenticated
 // blob URLs without N extra calls.
+//
+// The resynthesize endpoint is write-side: it enqueues a
+// synthesize_concept job for one concept so an operator can
+// regenerate a definition on demand (e.g. after a prior synthesis
+// failure, or to fold in new summary slices). It reuses the existing
+// synthesize_concept worker — no separate task kind.
 type Syntheses struct {
-	deps Deps
+	deps         Deps
+	taskEnqueuer TaskEnqueuer
 }
 
 func NewSyntheses(deps Deps) *Syntheses {
 	return &Syntheses{deps: deps}
+}
+
+// SetTaskEnqueuer attaches the background-task enqueuer the
+// resynthesize endpoint uses to enqueue synthesize_concept jobs.
+// Wired by api.Handler.SetTaskEnqueuer (same path as source/reports/
+// admin). Nil disables the endpoint (returns 503).
+func (s *Syntheses) SetTaskEnqueuer(eq TaskEnqueuer) {
+	s.taskEnqueuer = eq
 }
 
 // definitionResponse is the JSON body returned by GetDefinition. The
@@ -155,3 +170,83 @@ func pgUUIDToStringHandler(u pgtype.UUID) string {
 
 // guard against unused imports if the file is edited.
 var _ = chi.URLParam
+
+// resynthesizeResponse is the wire shape for POST
+// /{repoID}/concepts/{conceptID}/resynthesize.
+type resynthesizeResponse struct {
+	RepositoryID  string `json:"repository_id"`
+	ConceptID     string `json:"concept_id"`
+	EnqueuedJobID string `json:"enqueued_job_id"`
+	Enqueued      bool   `json:"enqueued"`
+}
+
+// ResynthesizeConcept handles POST
+// /{repoID}/concepts/{conceptID}/resynthesize. Enqueues a
+// synthesize_concept River job for the single concept, which the
+// existing synthesize_concept worker picks up (with MaxAttempts: 5
+// retry budget). The worker resolves the concept_id to its
+// canonical-name group, loads the group's summary slices, runs the
+// synthesis LLM call, and upserts the single concept_syntheses row.
+// Idempotent: the worker's coversAll no-delta skip makes
+// re-enqueueing a concept whose synthesis is already up-to-date a
+// no-op (no LLM call).
+//
+// Gated by repositories.*.manage (sysadmin or repo-admin) — this is a
+// write/control action, not a read. The concept must belong to the
+// route's repo (cross-repo conceptID is a 404, same as GetDefinition).
+func (s *Syntheses) ResynthesizeConcept(w http.ResponseWriter, r *http.Request) {
+	if s.taskEnqueuer == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "task enqueuer not configured")
+		return
+	}
+	pool := appmw.PoolFromContext(r.Context())
+	if pool == nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "no per-repo pool on request context")
+		return
+	}
+	queries := store.New(pool)
+
+	repoID, err := repoIDFromURL(r)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	conceptID, err := conceptIDFromURL(r)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Verify the concept belongs to the repo so a cross-repo id is
+	// a 404, not a silent enqueue on another repo's concept.
+	concept, err := queries.GetConceptByID(r.Context(), conceptID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "concept not found")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get concept")
+		return
+	}
+	if concept.RepositoryID != repoID {
+		httputil.WriteError(w, http.StatusNotFound, "concept not found")
+		return
+	}
+
+	repoIDStr := pgUUIDToStringHandler(repoID)
+	conceptIDStr := pgUUIDToStringHandler(conceptID)
+	jobID, err := s.taskEnqueuer.EnqueueSynthesizeFromHTTP(r.Context(), SynthesizeArgs{
+		RepositoryID: repoIDStr,
+		ConceptID:    conceptIDStr,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "enqueueing synthesize_concept: "+err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, resynthesizeResponse{
+		RepositoryID:  repoIDStr,
+		ConceptID:     conceptIDStr,
+		EnqueuedJobID: jobID,
+		Enqueued:      true,
+	})
+}

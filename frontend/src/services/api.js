@@ -785,6 +785,14 @@ export const api = {
     return request(`/repositories/${slug}/concepts/${conceptID}/definition`);
   },
 
+  // resynthesizeConcept enqueues a synthesize_concept job for a
+  // single concept (on-demand definition regeneration). Gated on
+  // repositories.*.manage. Returns { repository_id, concept_id,
+  // enqueued_job_id, enqueued }.
+  resynthesizeConcept(slug, conceptID) {
+    return request(`/repositories/${slug}/concepts/${conceptID}/resynthesize`, { method: "POST" });
+  },
+
   listFactConcepts(slug, factID) {
     return request(`/repositories/${slug}/facts/${factID}/concepts`);
   },
@@ -993,6 +1001,88 @@ export const api = {
   },
   listRepoAudit(slug, params = {}) {
     return request(`/repositories/${slug}/audit${auditQS(params)}`);
+  },
+
+  // ── Shared knowledge graphs (export/import) ───────────────────
+  // Browse the registry's shared graph library, export the current
+  // repo's graph to it, and import a shared graph into a new or
+  // existing repo. All async (River jobs); the export/import
+  // endpoints return 202 + job_id the UI polls via /tasks/{jobID}.
+
+  // listSharedGraphs proxies the registry's GET /api/v1/graphs so the
+  // Shared Graphs UI can browse without going direct to the registry.
+  // params: { q?, tag?, limit?, offset? }.
+  listSharedGraphs(params = {}) {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.tag) qs.set("tag", params.tag);
+    if (params.limit) qs.set("limit", params.limit);
+    if (params.offset) qs.set("offset", params.offset);
+    const s = qs.toString();
+    return request(`/repositories/shared-graphs${s ? "?" + s : ""}`);
+  },
+
+  // getSharedGraph fetches one graph's metadata + presigned download
+  // URL. Used by the Shared Graphs detail dialog.
+  getSharedGraph(graphID) {
+    return request(`/repositories/shared-graphs/${graphID}`);
+  },
+
+  // exportRepoGraph enqueues a whole-repository graph export. The
+  // body carries the human-readable name/description/tags the
+  // registry indexes for search. Returns 202 + { job_id }.
+  exportRepoGraph(slug, body) {
+    return request(`/repositories/${slug}/export-graph`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // importGraphToNewRepo creates a new repository from a shared graph
+  // and enqueues the import. body: { registry_graph_id?, upload_key?,
+  // name, slug, description?, tags? }. Returns 202 + { job_id,
+  // repository_id, slug }.
+  importGraphToNewRepo(body) {
+    return request(`/repositories/import-graph`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // importGraphToExisting enqueues a graph import into an existing
+  // repository. body: { registry_graph_id?, upload_key? }. Returns
+  // 202 + { job_id }.
+  importGraphToExisting(slug, body) {
+    return request(`/repositories/${slug}/import-graph`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // uploadGraphBundle uploads a gzipped graph bundle (multipart) and
+  // returns { upload_key } the import endpoints reference. Used by the
+  // air-gapped import path (sharing via file/email).
+  async uploadGraphBundle(file) {
+    const token = getToken();
+    const formData = new FormData();
+    formData.append("bundle", file);
+    const headers = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/repositories/upload-graph`, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+    if (!res.ok) {
+      let errorMessage = "upload failed";
+      try {
+        const data = await res.json();
+        errorMessage = data.error || errorMessage;
+      } catch {}
+      if (res.status === 401 && onUnauthorized) onUnauthorized();
+      throw new Error(errorMessage);
+    }
+    return res.json();
   },
 };
 

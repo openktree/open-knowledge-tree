@@ -258,3 +258,113 @@ func Paginate(groups []Group, offset, limit int) []Group {
 	}
 	return groups[offset:end]
 }
+// PageGroupRow is one row of the concept_groups summary (migration
+// 0061): one entry per (repository_id, lower(canonical_name)). It
+// carries the group's precomputed total_fact_count and display
+// canonical_name so the q="" list path can paginate in SQL without
+// re-aggregating fact_concepts in Go. The handler fetches the page
+// of summary rows, then the sibling per-context rows, and
+// BuildGroupsFromPage assembles them.
+type PageGroupRow struct {
+	NameKey        string
+	CanonicalName  string
+	ContextCount   int32
+	TotalFactCount int64
+}
+
+// ContextSourceRow is the per-context concept row fetched by
+// ListConceptsByRepoNameKeys for the groups on the current page. It's
+// the input shape BuildGroupsFromPage consumes alongside the summary
+// page rows.
+type ContextSourceRow struct {
+	ID            pgtype.UUID
+	CanonicalName string
+	Context       string
+	Description   *string
+	EmbeddedAt    pgtype.Timestamptz
+	EmbeddedModel *string
+	CreatedAt     pgtype.Timestamptz
+	FactCount     int64
+}
+
+// BuildGroupsFromPage assembles []Group from a page of concept_groups
+// summary rows plus the sibling per-context concept rows for those
+// groups. Unlike BuildGroups, this does NOT re-aggregate
+// total_fact_count in Go (the summary row already carries it) and it
+// does NOT re-sort the groups (the summary query already ordered them
+// by total_fact_count DESC, canonical_name ASC). Sibling contexts are
+// grouped by their name_key; within a group they appear in the order
+// ListConceptsByRepoNameKeys returned (fact_count DESC, context ASC),
+// so the first context is the group representative. The resulting
+// []Group is the response for the q="" concept list page.
+func BuildGroupsFromPage(pageRows []PageGroupRow, contextRows []ContextSourceRow) []Group {
+	if len(pageRows) == 0 {
+		return nil
+	}
+	groups := make([]Group, len(pageRows))
+	byKey := make(map[string]*Group, len(pageRows))
+	for i, p := range pageRows {
+		g := &Group{
+			CanonicalName:  p.CanonicalName,
+			TotalFactCount: p.TotalFactCount,
+			Contexts:       make([]ContextEntry, 0, p.ContextCount),
+		}
+		groups[i] = *g
+		byKey[p.NameKey] = &groups[i]
+	}
+	for _, cr := range contextRows {
+		g, ok := byKey[strings.ToLower(cr.CanonicalName)]
+		if !ok {
+			continue
+		}
+		g.Contexts = append(g.Contexts, ContextEntry{
+			ConceptID:     cr.ID,
+			Context:       cr.Context,
+			FactCount:     cr.FactCount,
+			Description:   cr.Description,
+			EmbeddedAt:    cr.EmbeddedAt,
+			EmbeddedModel: cr.EmbeddedModel,
+			CreatedAt:     cr.CreatedAt,
+		})
+	}
+	// groups was built by value-copy from g; the map pointers reference
+	// the slice slots, so the appended contexts are already reflected.
+	return groups
+}
+
+// RecomputeTouchedGroups recomputes the concept_groups summary rows
+// for the touched name_keys in one repo, then deletes any stale ones.
+// It's the maintenance call the ingest workers (extract_concepts,
+// refine_concepts, migrate_context) and the registry imports make at
+// the end of their mutating tx so the summary stays always-live. The
+// call is best-effort: an error is returned for the caller to log,
+// not fail the tx (the summary is a cache; the
+// recompute_concept_groups job is the repair path).
+//
+// keys must already be lower(canonica_name) values; the caller
+// collects them as it inserts/updates/deletes concepts.
+func RecomputeTouchedGroups(ctx context.Context, queries *store.Queries, repoID pgtype.UUID, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	// Dedup — the same name may be touched many times in one batch.
+	seen := make(map[string]struct{}, len(keys))
+	deduped := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		deduped = append(deduped, k)
+	}
+	if err := queries.UpsertConceptGroups(ctx, store.UpsertConceptGroupsParams{
+		RepositoryID: repoID,
+		NameKeys:     deduped,
+	}); err != nil {
+		return err
+	}
+	return queries.DeleteStaleConceptGroups(ctx, store.DeleteStaleConceptGroupsParams{
+		RepositoryID: repoID,
+		NameKeys:     deduped,
+	})
+}

@@ -1,0 +1,335 @@
+{
+  "concept": {
+    "qa_metrics": {
+      "by_question_type": {
+        "comparison_query": {
+          "precision": 0.1111111111111111,
+          "recall": 0.1111111111111111,
+          "f1": 0.1111111111111111,
+          "accuracy": 0.1111111111111111,
+          "n": 9
+        },
+        "inference_query": {
+          "precision": 0.4375,
+          "recall": 0.4375,
+          "f1": 0.4375,
+          "accuracy": 0.4375,
+          "n": 16
+        },
+        "null_query": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "accuracy": 1.0,
+          "n": 12
+        },
+        "temporal_query": {
+          "precision": 0.15384615384615385,
+          "recall": 0.15384615384615385,
+          "f1": 0.15384615384615385,
+          "accuracy": 0.15384615384615385,
+          "n": 13
+        }
+      },
+      "overall": {
+        "precision": 0.44,
+        "recall": 0.44,
+        "f1": 0.44,
+        "accuracy": 0.44,
+        "n": 50
+      },
+      "breakdown_by_question_type": {
+        "null_query": {
+          "n": 12,
+          "correct": 12,
+          "refusals": 12,
+          "substantive": 0,
+          "hallucinated": 0
+        },
+        "inference_query": {
+          "n": 16,
+          "correct": 7,
+          "refusals": 9,
+          "substantive": 7,
+          "hallucinated": 0
+        },
+        "temporal_query": {
+          "n": 13,
+          "correct": 2,
+          "refusals": 9,
+          "substantive": 4,
+          "hallucinated": 2
+        },
+        "comparison_query": {
+          "n": 9,
+          "correct": 1,
+          "refusals": 7,
+          "substantive": 2,
+          "hallucinated": 1
+        }
+      },
+      "breakdown_overall": {
+        "n": 50,
+        "correct": 22,
+        "refusals": 37,
+        "substantive": 13,
+        "hallucinated": 3
+      }
+    },
+    "source_coverage": {
+      "by_question_type": {
+        "comparison_query": {
+          "retrieved_any": 1.0,
+          "n": 9
+        },
+        "inference_query": {
+          "retrieved_any": 1.0,
+          "n": 16
+        },
+        "null_query": {
+          "retrieved_any": 1.0,
+          "n": 12
+        },
+        "temporal_query": {
+          "retrieved_any": 1.0,
+          "n": 13
+        }
+      },
+      "overall": {
+        "retrieved_any": 1.0,
+        "n": 50
+      }
+    }
+  },
+  "facts": {
+    "qa_metrics": {
+      "by_question_type": {
+        "comparison_query": {
+          "precision": 0.8888888888888888,
+          "recall": 0.8888888888888888,
+          "f1": 0.8888888888888888,
+          "accuracy": 0.8888888888888888,
+          "n": 9
+        },
+        "inference_query": {
+          "precision": 0.8125,
+          "recall": 0.8125,
+          "f1": 0.8125,
+          "accuracy": 0.8125,
+          "n": 16
+        },
+        "null_query": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "accuracy": 1.0,
+          "n": 12
+        },
+        "temporal_query": {
+          "precision": 0.6923076923076923,
+          "recall": 0.6923076923076923,
+          "f1": 0.6923076923076923,
+          "accuracy": 0.6923076923076923,
+          "n": 13
+        }
+      },
+      "overall": {
+        "precision": 0.84,
+        "recall": 0.84,
+        "f1": 0.84,
+        "accuracy": 0.84,
+        "n": 50
+      },
+      "breakdown_by_question_type": {
+        "temporal_query": {
+          "n": 13,
+          "correct": 9,
+          "refusals": 3,
+          "substantive": 10,
+          "hallucinated": 1
+        },
+        "null_query": {
+          "n": 12,
+          "correct": 12,
+          "refusals": 12,
+          "substantive": 0,
+          "hallucinated": 0
+        },
+        "comparison_query": {
+          "n": 9,
+          "correct": 8,
+          "refusals": 0,
+          "substantive": 9,
+          "hallucinated": 1
+        },
+        "inference_query": {
+          "n": 16,
+          "correct": 13,
+          "refusals": 3,
+          "substantive": 13,
+          "hallucinated": 0
+        }
+      },
+      "breakdown_overall": {
+        "n": 50,
+        "correct": 42,
+        "refusals": 18,
+        "substantive": 32,
+        "hallucinated": 2
+      }
+    },
+    "source_coverage": {
+      "by_question_type": {
+        "comparison_query": {
+          "retrieved_any": 1.0,
+          "n": 9
+        },
+        "inference_query": {
+          "retrieved_any": 1.0,
+          "n": 16
+        },
+        "null_query": {
+          "retrieved_any": 1.0,
+          "n": 12
+        },
+        "temporal_query": {
+          "retrieved_any": 1.0,
+          "n": 13
+        }
+      },
+      "overall": {
+        "retrieved_any": 1.0,
+        "n": 50
+      }
+    }
+  },
+  "direct": {
+    "qa_metrics": {
+      "by_question_type": {
+        "comparison_query": {
+          "precision": 0.7777777777777778,
+          "recall": 0.7777777777777778,
+          "f1": 0.7777777777777778,
+          "accuracy": 0.7777777777777778,
+          "n": 9
+        },
+        "inference_query": {
+          "precision": 0.375,
+          "recall": 0.375,
+          "f1": 0.375,
+          "accuracy": 0.375,
+          "n": 16
+        },
+        "null_query": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "accuracy": 1.0,
+          "n": 12
+        },
+        "temporal_query": {
+          "precision": 0.5384615384615384,
+          "recall": 0.5384615384615384,
+          "f1": 0.5384615384615384,
+          "accuracy": 0.5384615384615384,
+          "n": 13
+        }
+      },
+      "overall": {
+        "precision": 0.64,
+        "recall": 0.64,
+        "f1": 0.64,
+        "accuracy": 0.64,
+        "n": 50
+      },
+      "breakdown_by_question_type": {
+        "null_query": {
+          "n": 12,
+          "correct": 12,
+          "refusals": 12,
+          "substantive": 0,
+          "hallucinated": 0
+        },
+        "temporal_query": {
+          "n": 13,
+          "correct": 7,
+          "refusals": 5,
+          "substantive": 8,
+          "hallucinated": 1
+        },
+        "inference_query": {
+          "n": 16,
+          "correct": 6,
+          "refusals": 10,
+          "substantive": 6,
+          "hallucinated": 0
+        },
+        "comparison_query": {
+          "n": 9,
+          "correct": 7,
+          "refusals": 1,
+          "substantive": 8,
+          "hallucinated": 1
+        }
+      },
+      "breakdown_overall": {
+        "n": 50,
+        "correct": 32,
+        "refusals": 28,
+        "substantive": 22,
+        "hallucinated": 2
+      }
+    },
+    "source_coverage": {
+      "by_question_type": {
+        "comparison_query": {
+          "retrieved_any": 1.0,
+          "n": 9
+        },
+        "inference_query": {
+          "retrieved_any": 1.0,
+          "n": 16
+        },
+        "null_query": {
+          "retrieved_any": 1.0,
+          "n": 12
+        },
+        "temporal_query": {
+          "retrieved_any": 1.0,
+          "n": 13
+        }
+      },
+      "overall": {
+        "retrieved_any": 1.0,
+        "n": 50
+      }
+    }
+  },
+  "agreement": {
+    "shared_n": 50,
+    "union_correct": 45,
+    "all_wrong": 5,
+    "per_variant_only": {
+      "concept": 1,
+      "facts": 9,
+      "direct": 1
+    }
+  },
+  "tokens": {
+    "concept": {
+      "total": 337133,
+      "prompt": 329142,
+      "completion": 7991
+    },
+    "facts": {
+      "total": 249878,
+      "prompt": 242664,
+      "completion": 7214
+    },
+    "direct": {
+      "total": 96280,
+      "prompt": 91922,
+      "completion": 4358
+    }
+  }
+}

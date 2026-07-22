@@ -104,6 +104,8 @@ type TaskEnqueuer interface {
 	EnqueueSourceDecompositionFromHTTP(ctx context.Context, args SourceDecompositionArgs) (string, error)
 	EnqueueAnnotateReportFromHTTP(ctx context.Context, args AnnotateReportArgs) (string, error)
 	EnqueueExtractConceptsFromHTTP(ctx context.Context, args ExtractConceptsArgs) (string, error)
+	EnqueueRecomputeConceptGroupsFromHTTP(ctx context.Context, args RecomputeConceptGroupsArgs) (string, error)
+	EnqueueSynthesizeFromHTTP(ctx context.Context, args SynthesizeArgs) (string, error)
 }
 
 // ExtractConceptsArgs is the wire shape for the admin re-extract
@@ -113,6 +115,25 @@ type TaskEnqueuer interface {
 type ExtractConceptsArgs struct {
 	RepositoryID string `json:"repository_id"`
 	SourceID     string `json:"source_id,omitempty"`
+}
+
+// RecomputeConceptGroupsArgs is the wire shape for the admin
+// "Recompute concept groups" endpoint (POST
+// /api/v1/admin/repos/{repoID}/concepts/recompute). Mirrors
+// tasks.RecomputeConceptGroupsArgs; the enqueuer resolves
+// DatabaseName from the repository before inserting the River job.
+type RecomputeConceptGroupsArgs struct {
+	RepositoryID string `json:"repository_id"`
+	DatabaseName string `json:"database_name,omitempty"`
+}
+
+// SynthesizeArgs is the wire shape for the per-concept "Resynthesize"
+// endpoint (POST /{repoID}/concepts/{conceptID}/resynthesize). Mirrors
+// tasks.SynthesizeConceptArgs; the enqueuer inserts a
+// synthesize_concept River job for the single concept_id.
+type SynthesizeArgs struct {
+	RepositoryID string `json:"repository_id"`
+	ConceptID    string `json:"concept_id"`
 }
 
 // SourceDecompositionArgs is the wire shape for POST

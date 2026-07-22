@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
+	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -463,6 +465,12 @@ func TestInvestigations_ConceptsScopedToSources(t *testing.T) {
 			FactID: factID, ConceptID: c.ID,
 		}); err != nil {
 			t.Fatalf("link fact→concept %s: %v", name, err)
+		}
+		// Mirror the ingest workers: recompute the concept_groups
+		// summary for the touched name key so the q="" list path
+		// (which reads from concept_groups) reflects this insert.
+		if err := concepts.RecomputeTouchedGroups(ctx, queries, pgRepo, []string{strings.ToLower(name)}); err != nil {
+			t.Fatalf("recompute concept_groups for %s: %v", name, err)
 		}
 		return c.ID
 	}

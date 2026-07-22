@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -130,6 +131,25 @@ func migrateSQLite(db *sql.DB) error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+
+		CREATE TABLE IF NOT EXISTS graphs (
+			id             TEXT PRIMARY KEY,
+			name           TEXT NOT NULL,
+			description    TEXT NOT NULL DEFAULT '',
+			owner          TEXT NOT NULL DEFAULT '',
+			tags           TEXT NOT NULL DEFAULT '[]',
+			source_count   INTEGER NOT NULL DEFAULT 0,
+			fact_count     INTEGER NOT NULL DEFAULT 0,
+			concept_count  INTEGER NOT NULL DEFAULT 0,
+			s3_key         TEXT NOT NULL,
+			sha256         TEXT NOT NULL DEFAULT '',
+			schema_version INTEGER NOT NULL DEFAULT 1,
+			created_at     TEXT NOT NULL,
+			updated_at     TEXT NOT NULL
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_graphs_name ON graphs(name);
+		CREATE INDEX IF NOT EXISTS idx_graphs_created_at ON graphs(created_at DESC);
 	`)
 	return err
 }
@@ -485,6 +505,158 @@ func (s *SQLiteStore) Stats(ctx context.Context) (repoCount, sourceCount int, er
 	}
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sources`).Scan(&sourceCount)
 	return
+}
+
+// ── Graphs ──────────────────────────────────────────────────────────
+//
+// SQLite has no array type, so tags is stored as a JSON-encoded string
+// (encoding/json) and parsed on read. The Postgres store uses TEXT[];
+// the model layer always hands the store a []string, and the SQLite
+// layer marshals/unmarshals at the boundary.
+
+func (s *SQLiteStore) IndexGraph(ctx context.Context, meta *model.GraphMeta) error {
+	tagsJSON, err := json.Marshal(meta.Tags)
+	if err != nil {
+		return fmt.Errorf("marshaling graph tags: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO graphs (id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   name=excluded.name, description=excluded.description, owner=excluded.owner,
+		   tags=excluded.tags, source_count=excluded.source_count, fact_count=excluded.fact_count,
+		   concept_count=excluded.concept_count, s3_key=excluded.s3_key, sha256=excluded.sha256,
+		   schema_version=excluded.schema_version, updated_at=excluded.updated_at`,
+		meta.ID, meta.Name, meta.Description, meta.Owner, string(tagsJSON),
+		meta.SourceCount, meta.FactCount, meta.ConceptCount, meta.S3Key, meta.SHA256,
+		meta.SchemaVersion, meta.CreatedAt.UTC().Format(time.RFC3339), meta.UpdatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *SQLiteStore) GetGraph(ctx context.Context, id string) (*model.GraphMeta, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs WHERE id = ?`, id)
+	return scanGraph(row)
+}
+
+func (s *SQLiteStore) ListGraphs(ctx context.Context, limit, offset int) ([]model.GraphMeta, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGraphs(rows)
+}
+
+func (s *SQLiteStore) SearchGraphsByText(ctx context.Context, query string, limit, offset int) ([]model.GraphMeta, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	pattern := "%" + query + "%"
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs WHERE name LIKE ? OR description LIKE ?
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		pattern, pattern, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGraphs(rows)
+}
+
+func (s *SQLiteStore) SearchGraphsByTag(ctx context.Context, tag string, limit, offset int) ([]model.GraphMeta, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	// SQLite: match the tag as a substring of the JSON tags array.
+	// This is a LIKE over the JSON string — not index-accelerated, but
+	// the graphs table is small (shared graphs are few per registry).
+	pattern := `%"` + tag + `"%`
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs WHERE tags LIKE ?
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		pattern, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGraphs(rows)
+}
+
+func (s *SQLiteStore) CountGraphs(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM graphs`).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) CountGraphsByText(ctx context.Context, query string) (int, error) {
+	pattern := "%" + query + "%"
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM graphs WHERE name LIKE ? OR description LIKE ?`,
+		pattern, pattern).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) CountGraphsByTag(ctx context.Context, tag string) (int, error) {
+	pattern := `%"` + tag + `"%`
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM graphs WHERE tags LIKE ?`, pattern).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) DeleteGraph(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM graphs WHERE id = ?`, id)
+	return err
+}
+
+func scanGraph(row interface{ Scan(...any) error }) (*model.GraphMeta, error) {
+	var id, name, desc, owner, s3key, sha, tagsJSON, ca, ua string
+	var srcCount, factCount, conceptCount, schemaVersion int
+	if err := row.Scan(&id, &name, &desc, &owner, &tagsJSON, &srcCount, &factCount, &conceptCount, &s3key, &sha, &schemaVersion, &ca, &ua); err != nil {
+		return nil, err
+	}
+	var tags []string
+	if tagsJSON != "" {
+		_ = json.Unmarshal([]byte(tagsJSON), &tags)
+	}
+	if tags == nil {
+		tags = []string{}
+	}
+	createdAt, _ := time.Parse(time.RFC3339, ca)
+	updatedAt, _ := time.Parse(time.RFC3339, ua)
+	return &model.GraphMeta{
+		ID: id, Name: name, Description: desc, Owner: owner, Tags: tags,
+		SourceCount: srcCount, FactCount: factCount, ConceptCount: conceptCount,
+		S3Key: s3key, SHA256: sha, SchemaVersion: schemaVersion,
+		CreatedAt: createdAt, UpdatedAt: updatedAt,
+	}, nil
+}
+
+func scanGraphs(rows interface {
+	Next() bool
+	Scan(...any) error
+	Close() error
+	Err() error
+}) ([]model.GraphMeta, error) {
+	var out []model.GraphMeta
+	for rows.Next() {
+		m, err := scanGraph(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLiteStore) UpsertContext(ctx context.Context, label, description string) error {

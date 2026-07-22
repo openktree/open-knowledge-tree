@@ -11,6 +11,7 @@ import ContentTypesPanel from "./ContentTypesPanel";
 import ContextMappingsPanel from "./ContextMappingsPanel";
 import ContextsPanel from "./ContextsPanel";
 import ContributorPanel from "./ContributorPanel";
+import ExportGraphPanel from "./ExportGraphPanel";
 import ModelsPanel from "./ModelsPanel";
 import PromptsetPanel from "./PromptsetPanel";
 import ProvidersPanel from "./ProvidersPanel";
@@ -98,6 +99,7 @@ export default function RepositorySettings() {
             onChanged={refetch}
             onAlert={setAlert}
           />
+          <ExportGraphPanel repoID={repoID} slug={() => params.repoID} onAlert={setAlert} />
           <Card>
             <ContextsPanel
               repoID={repoID}

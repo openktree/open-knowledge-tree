@@ -29,10 +29,10 @@ type SourceMeta struct {
 }
 
 type SourceRef struct {
-	SourceID    string                `json:"source_id"`
-	S3Key       string                `json:"s3_key"`
-	Presigned   PresignedURLs         `json:"presigned"`
-	Decomps     []DecompRef           `json:"decompositions,omitempty"`
+	SourceID  string        `json:"source_id"`
+	S3Key     string        `json:"s3_key"`
+	Presigned PresignedURLs `json:"presigned"`
+	Decomps   []DecompRef   `json:"decompositions,omitempty"`
 }
 
 type PresignedURLs struct {
@@ -50,43 +50,43 @@ type DecompRef struct {
 }
 
 type DecompMeta struct {
-	ID              string    `json:"id"`
-	SourceID        string    `json:"source_id"`
-	ModelID         string    `json:"model_id"`
-	DecomposedBy    string    `json:"decomposed_by,omitempty"`
-	DecomposedAt    time.Time `json:"decomposed_at,omitempty"`
-	FactCount       int       `json:"fact_count"`
-	SummaryCount    int       `json:"summary_count"`
-	HasEmbeddings   bool      `json:"has_embeddings"`
-	EmbeddingModel  string    `json:"embedding_model,omitempty"`
-	EmbeddingDims   int       `json:"embedding_dimensions,omitempty"`
-	S3Key           string    `json:"s3_key"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	SourceID       string    `json:"source_id"`
+	ModelID        string    `json:"model_id"`
+	DecomposedBy   string    `json:"decomposed_by,omitempty"`
+	DecomposedAt   time.Time `json:"decomposed_at,omitempty"`
+	FactCount      int       `json:"fact_count"`
+	SummaryCount   int       `json:"summary_count"`
+	HasEmbeddings  bool      `json:"has_embeddings"`
+	EmbeddingModel string    `json:"embedding_model,omitempty"`
+	EmbeddingDims  int       `json:"embedding_dimensions,omitempty"`
+	S3Key          string    `json:"s3_key"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type SourcePackage struct {
-	SchemaVersion int               `json:"schema_version"`
-	Source        SourceData        `json:"source"`
-	Content       ContentData       `json:"content"`
-	Decompositions []DecompRef      `json:"decompositions"`
+	SchemaVersion  int         `json:"schema_version"`
+	Source         SourceData  `json:"source"`
+	Content        ContentData `json:"content"`
+	Decompositions []DecompRef `json:"decompositions"`
 }
 
 type SourceData struct {
-	ID          string     `json:"id"`
-	URL         string     `json:"url,omitempty"`
-	DOI         string     `json:"doi,omitempty"`
-	SHA256      string     `json:"sha256,omitempty"`
-	Title       string     `json:"title,omitempty"`
-	PublishedAt *time.Time `json:"published_at,omitempty"`
+	ID          string      `json:"id"`
+	URL         string      `json:"url,omitempty"`
+	DOI         string      `json:"doi,omitempty"`
+	SHA256      string      `json:"sha256,omitempty"`
+	Title       string      `json:"title,omitempty"`
+	PublishedAt *time.Time  `json:"published_at,omitempty"`
 	Content     ContentData `json:"content,omitempty"`
 }
 
 type ContentData struct {
-	Text        string          `json:"text"`
-	Markdown    string          `json:"markdown,omitempty"`
-	ContentType string          `json:"content_type,omitempty"`
-	HasBody     bool            `json:"has_body"`
-	Images      []ImageRef      `json:"images,omitempty"`
+	Text        string     `json:"text"`
+	Markdown    string     `json:"markdown,omitempty"`
+	ContentType string     `json:"content_type,omitempty"`
+	HasBody     bool       `json:"has_body"`
+	Images      []ImageRef `json:"images,omitempty"`
 }
 
 type ImageRef struct {
@@ -97,15 +97,15 @@ type ImageRef struct {
 }
 
 type DecompositionPackage struct {
-	SchemaVersion    int                    `json:"schema_version"`
-	ModelID          string                 `json:"model_id"`
-	DecomposedBy     string                 `json:"decomposed_by,omitempty"`
-	DecomposedAt     time.Time              `json:"decomposed_at"`
-	Facts            []FactData             `json:"facts"`
-	Concepts         []ConceptData          `json:"concepts"`
-	Summaries        []SummaryData          `json:"summaries,omitempty"`
-	Embeddings       *EmbeddingData         `json:"embeddings,omitempty"`
-	ConceptEmbeddings *EmbeddingData        `json:"concept_embeddings,omitempty"`
+	SchemaVersion     int            `json:"schema_version"`
+	ModelID           string         `json:"model_id"`
+	DecomposedBy      string         `json:"decomposed_by,omitempty"`
+	DecomposedAt      time.Time      `json:"decomposed_at"`
+	Facts             []FactData     `json:"facts"`
+	Concepts          []ConceptData  `json:"concepts"`
+	Summaries         []SummaryData  `json:"summaries,omitempty"`
+	Embeddings        *EmbeddingData `json:"embeddings,omitempty"`
+	ConceptEmbeddings *EmbeddingData `json:"concept_embeddings,omitempty"`
 }
 
 type FactData struct {
@@ -126,12 +126,12 @@ type ConceptData struct {
 }
 
 type SummaryData struct {
-	ID         string   `json:"id"`
-	ConceptID  string   `json:"concept_id"`
-	SliceNum   int      `json:"slice_number"`
-	IsOpen     bool     `json:"is_open"`
-	Content    string   `json:"content"`
-	FactIDs    []string `json:"fact_ids,omitempty"`
+	ID        string   `json:"id"`
+	ConceptID string   `json:"concept_id"`
+	SliceNum  int      `json:"slice_number"`
+	IsOpen    bool     `json:"is_open"`
+	Content   string   `json:"content"`
+	FactIDs   []string `json:"fact_ids,omitempty"`
 }
 
 type EmbeddingData struct {
@@ -141,9 +141,9 @@ type EmbeddingData struct {
 }
 
 type PushResult struct {
-	SourceID     string `json:"source_id"`
-	FactsNew     int    `json:"facts_new"`
-	FactsLinked  int    `json:"facts_linked"`
+	SourceID    string `json:"source_id"`
+	FactsNew    int    `json:"facts_new"`
+	FactsLinked int    `json:"facts_linked"`
 }
 
 // FactHashEntry is the per-fact input to the batch fact-hash upsert.
@@ -164,11 +164,11 @@ type BatchFactHashResult struct {
 }
 
 type SearchQuery struct {
-	URL   string `json:"url,omitempty"`
-	DOI   string `json:"doi,omitempty"`
+	URL    string `json:"url,omitempty"`
+	DOI    string `json:"doi,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
-	Text  string `json:"text,omitempty"`
-	Limit int    `json:"limit,omitempty"`
+	Text   string `json:"text,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 
 type User struct {
@@ -192,9 +192,61 @@ type APIToken struct {
 }
 
 type SearchResult struct {
-	Found      bool         `json:"found"`
-	SourceID   string       `json:"source_id,omitempty"`
-	S3Key      string       `json:"s3_key,omitempty"`
-	Presigned  PresignedURLs `json:"presigned,omitempty"`
-	Decomps    []DecompRef `json:"decompositions,omitempty"`
+	Found     bool          `json:"found"`
+	SourceID  string        `json:"source_id,omitempty"`
+	S3Key     string        `json:"s3_key,omitempty"`
+	Presigned PresignedURLs `json:"presigned,omitempty"`
+	Decomps   []DecompRef   `json:"decompositions,omitempty"`
+}
+
+// ── Shared knowledge graphs ──────────────────────────────────────────
+//
+// A GraphMeta is the searchable metadata row for a shared knowledge
+// graph bundle (one OKT repository's exported graph, pushed to the
+// registry so other instances can import it without re-running the
+// decomposition/summarization/synthesis pipeline). The bundle itself
+// (the GraphPackage JSON, gzipped) lives in S3 at `graphs/{id}.json.gz`;
+// this row is the index, mirroring the sources/decompositions pattern.
+
+type GraphMeta struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description,omitempty"`
+	Owner         string    `json:"owner,omitempty"`
+	Tags          []string  `json:"tags,omitempty"`
+	SourceCount   int       `json:"source_count"`
+	FactCount     int       `json:"fact_count"`
+	ConceptCount  int       `json:"concept_count"`
+	S3Key         string    `json:"s3_key"`
+	SHA256        string    `json:"sha256,omitempty"`
+	SchemaVersion int       `json:"schema_version"`
+	PresignedURL  string    `json:"presigned_url,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// GraphSearchQuery is the list/search input for GET /api/v1/graphs.
+// Query is a free-text LIKE over name + description + tags; Tag is
+// an exact tag match (any-of when multiple are passed — the store
+// layer interprets a single tag as an exact membership test). Either
+// may be empty (empty = no filter).
+type GraphSearchQuery struct {
+	Query  string
+	Tag    string
+	Limit  int
+	Offset int
+}
+
+// GraphListResult is the paginated list response.
+type GraphListResult struct {
+	Graphs []GraphMeta `json:"graphs"`
+	Total  int         `json:"total"`
+}
+
+// GraphPushResult is the outcome of a PushGraph call: the resolved
+// graph id (deduped by (name, sha256) when the caller omitted one) and
+// whether this push created a new row vs linked an existing one.
+type GraphPushResult struct {
+	GraphID string `json:"graph_id"`
+	New     bool   `json:"new"`
 }

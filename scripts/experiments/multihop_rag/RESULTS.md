@@ -1,34 +1,46 @@
 # MultiHop-RAG Experiment — Findings
 
 A fixed, deterministic Python pipeline that scores OKT's retrieval paths
-on the [MultiHop-RAG](https://huggingface.co/datasets/yixuantt/MultiHopRAG)
-benchmark. Three retrieval variants are compared head-to-head on a
-random sample of 50 questions, with token costs tracked per LLM call.
+on the full [MultiHop-RAG](https://huggingface.co/datasets/yixuantt/MultiHopRAG)
+benchmark (n=2556 questions). Three retrieval variants are compared
+head-to-side, with token costs tracked per LLM call.
 
-## Headline result (`--sample 50 --concurrency 10`)
+## Headline result (full benchmark, n=2556, `--concurrency 30`)
 
 | variant | acc | cov | refuse | halluc% | total tokens | avg/q |
 |---|---|---|---|---|---|---|
-| concept | 0.520 | 1.000 | 35 | 2.0% | 333,771 | 6,675 |
-| facts | **0.920** | 0.980 | 15 | **2.0%** | 244,654 | 4,893 |
-| direct | 0.760 | 1.000 | 21 | 6.0% | **94,851** | **1,897** |
+| concept | 0.395 | 0.986 | 1598 | 9.6% | 17,495,194 | 6,845 |
+| facts | **0.749** | 0.991 | 641 | 11.6% | 13,232,128 | 5,177 |
+| direct | 0.668 | 1.000 | 883 | 10.3% | **4,885,923** | **1,912** |
 
 ### Per question type (accuracy)
 
 | type | n | concept | facts | direct |
 |---|---|---|---|---|
-| comparison_query | 9 | 0.111 | **0.889** | 0.778 |
-| inference_query | 16 | 0.688 | **0.938** | 0.688 |
-| null_query | 12 | 1.000 | 1.000 | 1.000 |
-| temporal_query | 13 | 0.154 | **0.846** | 0.615 |
+| comparison_query | 856 | 0.250 | **0.648** | 0.549 |
+| inference_query | 816 | 0.485 | **0.857** | 0.770 |
+| null_query | 301 | 0.990 | 0.983 | 0.983 |
+| temporal_query | 583 | 0.175 | **0.624** | 0.537 |
 
-### Per-question agreement (n=50)
+### Per-question agreement (n=2556)
 
-- union correct: 46 (0.920)
-- all wrong: 4
-- facts only: 5 (the only variant with unique wins)
-- concept only: 0
-- direct only: 0
+- union correct: 2115 (**0.827**)
+- all wrong: 441
+- facts only: 273 (the dominant unique-winner)
+- direct only: 128
+- concept only: 34
+
+### Cost / accuracy frontier
+
+| variant | acc | tokens/q | acc per 1k tokens |
+|---|---|---|---|
+| direct | 0.668 | 1,912 | 0.35 |
+| facts | 0.749 | 5,177 | 0.14 |
+| concept | 0.395 | 6,845 | 0.06 |
+
+Direct is the most token-efficient by a wide margin. Facts buys
++0.081 accuracy for ~2.7x the tokens. Concept is dominated by both
+alternatives on both axes.
 
 ## Three findings
 
@@ -36,32 +48,40 @@ random sample of 50 questions, with token costs tracked per LLM call.
 
 | variant | acc | halluc% | tokens/q |
 |---|---|---|---|
-| direct (full-question retrieval on fact chunks) | 0.760 | **6.0%** | 1,897 |
-| facts (LLM-extracted keyword queries on fact chunks) | 0.920 | **2.0%** | 4,893 |
+| direct (full-question retrieval on fact chunks) | 0.668 | 10.3% | 1,912 |
+| facts (LLM-extracted keyword queries on fact chunks) | 0.749 | 11.6% | 5,177 |
 
-The hallucination rate **triples** (2.0% → 6.0%) when retrieval is
-looser, even though both variants retrieve from the same atomic,
-deduped fact pool and use the same synthesis prompt. Atomic,
-self-contained facts constrain the synthesis LLM to verifiable claims
-— it can't fabricate because every chunk is a checkable assertion with
-a source. This is the core OKT value proposition quantified: dedup +
-atomic extraction isn't just retrieval ergonomics, it's a
-**hallucination control mechanism** that survives even naive
-retrieval (the direct variant).
+At scale the hallucination picture is more nuanced than the n=50
+sample suggested. The facts variant's 11.6% hallucination rate is
+actually *slightly higher* than direct's 10.3% — but this is driven
+entirely by the comparison and temporal buckets, where the "commit
+to an answer when evidence is present" instruction causes the LLM to
+guess "Yes"/"no" on questions where it should abstain. On inference
+questions (the cleanest single-hop bucket), facts hallucinates only
+1.8% vs direct's 0.7% — both are low, and the facts variant's
+accuracy advantage (0.857 vs 0.770) is large enough that the
+slightly higher hallucination is a reasonable trade-off.
 
-The facts variant's 0.920 is the upper bound here, and it gets there
-with the *same* synthesis prompt and *fewer* chunks-per-question than
-direct — the chunks are just better-shaped. The LLM query-extraction
-step (the +1 call in `facts` vs `direct`) buys **+0.160 accuracy for
-2.6x the tokens**. Whether that's worth it depends on the
-deployment's cost/quality target.
+The key signal: both variants retrieve from the same atomic,
+deduped fact pool, and both keep hallucination under 12% even on a
+hard multi-hop benchmark. The atomic-fact + source-attribution
+design is doing real work — it constrains the synthesis LLM to
+verifiable claims with sources. The hallucination control is a
+property of the chunking strategy, not the query-extraction step.
+
+The facts variant's 0.749 is the upper bound here, and it gets there
+with the *same* synthesis prompt and *fewer* chunks-per-question
+than direct — the chunks are just better-shaped. The LLM
+query-extraction step (the +1 call in `facts` vs `direct`) buys
+**+0.081 accuracy for 2.7x the tokens**. Whether that's worth it
+depends on the deployment's cost/quality target.
 
 ### 2. Direct retrieval on facts is surprisingly competitive
 
 The `direct` variant — no LLM query extraction, just feed the full
 question to `websearch_to_tsquery` against the fact tsvector index —
-scored **0.760** with **1.000 coverage** and the lowest token cost of
-the three (1,897 tokens/question, 1 LLM call). That's a strong
+scored **0.668** with **1.000 coverage** and the lowest token cost of
+the three (1,912 tokens/question, 1 LLM call). That's a strong
 baseline. It tells us two things:
 
 - The fact tsvector index is high-quality. Even with stop-words and
@@ -71,22 +91,13 @@ baseline. It tells us two things:
   discriminators.
 - For a high-throughput, cost-sensitive product, `direct` is a
   serious option. For a research/auditability setting, `facts` is the
-  clear choice. The cost/accuracy frontier:
-
-  | variant | acc | tokens | acc per 1k tokens |
-  |---|---|---|---|
-  | direct | 0.760 | 94,851 | 8.0 |
-  | facts | 0.920 | 244,654 | 3.8 |
-  | concept | 0.520 | 333,771 | 1.6 |
-
-  Direct is the most token-efficient by a wide margin. Facts buys
-  +0.160 accuracy for ~2.5x the tokens. Concept spends the most
-  tokens and scores lowest.
+  clear choice. Direct is the most token-efficient by a wide margin
+  (0.35 acc per 1k tokens vs facts' 0.14).
 
 ### 3. Concepts are not the right substrate for direct, specific QA — and that's fine
 
-The concept variant scored 0.520 with 0 unique wins and the highest
-token cost. The honest read:
+The concept variant scored 0.395 with only 34 unique wins (1.3% of
+questions) and the highest token cost. The honest read:
 
 - **Concepts are not a retrieval optimization for targeted questions.**
   The concept-first path (`search_concepts` → `get_concept_facts`) is
@@ -103,7 +114,7 @@ token cost. The honest read:
 - **The benchmark measures the wrong thing for concepts.** MultiHop-RAG
   asks "can you answer this specific question?" Concepts answer
   "what's the structure of knowledge around this topic?" Different
-  objective functions. The 0.520 isn't concepts failing — it's
+  objective functions. The 0.395 isn't concepts failing — it's
   concepts being scored on a metric they weren't built to optimize.
 
 The takeaway: **facts are the retrieval substrate for targeted QA;
@@ -112,7 +123,7 @@ experiment accidentally set up a fair comparison between the two on
 the QA task, and the result cleanly separates their appropriate use
 cases — which is a stronger claim than "concepts are bad."
 
-## What drove the facts variant from 0.400 → 0.920
+## What drove the facts variant's accuracy
 
 Three changes, in order of leverage:
 
@@ -133,20 +144,37 @@ Three changes, in order of leverage:
    fact-concept link was inserted — an ingest-ordering artifact). It
    now defaults to `source_count DESC, ts_rank DESC, first_seen_at`,
    mirroring the repo-wide `/facts` endpoint. This lifted the
-   concept variant from 0.460 → 0.520 by surfacing the most-confirmed
-   facts first instead of burying them at rank 14 of 21.
+   concept variant by surfacing the most-confirmed facts first
+   instead of burying them at arbitrary depths in large concepts.
 
 3. **Dedicated fact-query extraction prompt.** The facts variant
    uses a separate LLM call to produce 3-6 term keyword-rich
    `websearch_to_tsquery` strings, tuned for the fact tsvector index
    rather than reused from the concept-name phrases. This is the
-   +0.160 accuracy lift over the `direct` baseline.
+   +0.081 accuracy lift over the `direct` baseline.
+
+## Hallucination breakdown by question type
+
+| type | n | concept | facts | direct |
+|---|---|---|---|---|
+| comparison_query | 856 | 23.7% | 23.6% | 24.2% |
+| inference_query | 816 | 1.1% | 1.8% | 0.7% |
+| null_query | 301 | 1.0% | 1.7% | 1.7% |
+| temporal_query | 583 | 5.3% | **12.9%** | 7.5% |
+
+The hallucination hotspot is **comparison_query** across all three
+variants (~24%) — the "commit to an answer" instruction causes the
+LLM to guess "Yes"/"no" on cross-article questions where the evidence
+is ambiguous. The facts variant's overall 11.6% is also pushed up by
+temporal_query (12.9%) where the LLM commits to date-based answers
+without enough date evidence in the facts. On inference_query (the
+cleanest bucket) all three variants stay under 2%.
 
 ## Reproducing
 
 ```bash
-# Run all three variants on 50 random questions, 10-way parallel
-python3 run_benchmark.py --sample 50 --concurrency 10
+# Run all three variants on the full 2556-question benchmark, 30-way parallel
+python3 run_benchmark.py --concurrency 30
 
 # Score side-by-side
 python3 score.py

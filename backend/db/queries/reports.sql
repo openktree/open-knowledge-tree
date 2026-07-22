@@ -106,11 +106,14 @@ SELECT ra.report_id, ra.sentence_index, ra.sentence_text, ra.fact_id, ra.score, 
        f.text, f.status, f.fact_kind, f.image_url, f.created_at AS fact_created_at,
        COALESCE(fs_count.source_count, 0) AS source_count
 FROM okt_repository.report_annotations ra
+JOIN okt_repository.reports rep ON rep.id = ra.report_id
 JOIN okt_repository.facts f ON f.id = ra.fact_id
-LEFT JOIN (
-    SELECT fact_id, COUNT(*) AS source_count
-    FROM okt_repository.fact_sources
-    GROUP BY fact_id
+LEFT JOIN LATERAL (
+    SELECT fs2.fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources fs2
+    JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
+    WHERE s2.repository_id = rep.repository_id
+    GROUP BY fs2.fact_id
 ) fs_count ON fs_count.fact_id = f.id
 WHERE ra.report_id = $1
 ORDER BY ra.sentence_index, ra.score DESC;

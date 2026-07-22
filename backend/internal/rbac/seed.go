@@ -82,6 +82,10 @@ func defaultPolicies() [][]string {
 		[]string{RoleSysAdmin, "*", Objects.Tasks, Actions.Manage},
 		[]string{RoleSysAdmin, "*", Objects.Audit, Actions.Read},
 		[]string{RoleSysAdmin, "*", Objects.Promptset, Actions.Manage},
+		// Graph export/import: sysadmin can share any repo's graph to
+		// the registry and import any shared graph into any repo.
+		[]string{RoleSysAdmin, "*", Objects.Graph, Actions.Export},
+		[]string{RoleSysAdmin, "*", Objects.Graph, Actions.Write},
 	)
 
 	// ── repoadmin (repo scope + system-scope utility access) ────
@@ -135,6 +139,10 @@ func defaultPolicies() [][]string {
 		// row into existing deployments (seed.go only runs on a
 		// fresh casbin_rule table).
 		[]string{RoleRepoAdmin, "*", Objects.Audit, Actions.Read},
+		// Graph export/import: repoadmin can share their repo's graph
+		// and import shared graphs into repos they administer.
+		[]string{RoleRepoAdmin, "*", Objects.Graph, Actions.Export},
+		[]string{RoleRepoAdmin, "*", Objects.Graph, Actions.Write},
 	)
 
 	// ── editor (sources + investigations + reports write) ───────
@@ -164,6 +172,10 @@ func defaultPolicies() [][]string {
 		[]string{RoleEditor, "*", Objects.Tasks, Actions.Read},
 		[]string{RoleEditor, "*", Objects.Tasks, Actions.Cancel},
 		[]string{RoleEditor, "*", Objects.Promptset, Actions.Manage},
+		// Graph export: editor can share a repo's graph (export is a
+		// read-ish action — editor already has source:write). Import
+		// (graph:write) is repoadmin/sysadmin only.
+		[]string{RoleEditor, "*", Objects.Graph, Actions.Export},
 	)
 
 	// ── curator (read sources, write investigations + reports) ──

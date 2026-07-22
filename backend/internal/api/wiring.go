@@ -22,10 +22,10 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/bootstrap"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ontology"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
-	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -34,33 +34,34 @@ import (
 // Handler is the application's HTTP wiring layer. It holds the shared
 // dependencies and the handler bundles needed to build a router.
 type Handler struct {
-	deps    handler.Deps
-	auth    *handler.Auth
-	user    *handler.User
-	admin   *handler.Admin
-	adminDB *handler.AdminDB
-	repo    *handler.Repository
-	source  *handler.Source
-	storage *handler.Storage
-	tasks   *handler.Tasks
-	adminTasks *handler.AdminTasks
-	groups  *handler.Groups
-	ai      *handler.AI
-	aiUsage *handler.AIUsage
+	deps           handler.Deps
+	auth           *handler.Auth
+	user           *handler.User
+	admin          *handler.Admin
+	adminDB        *handler.AdminDB
+	repo           *handler.Repository
+	source         *handler.Source
+	storage        *handler.Storage
+	tasks          *handler.Tasks
+	adminTasks     *handler.AdminTasks
+	groups         *handler.Groups
+	ai             *handler.AI
+	aiUsage        *handler.AIUsage
 	investigations *handler.Investigations
 	concepts       *handler.Concepts
 	summaries      *handler.Summaries
 	syntheses      *handler.Syntheses
 	reports        *handler.Reports
 	oauth          *handler.OAuth
-	mcp           *handler.MCP
-	repoSettings  *handler.RepositorySettings
-	promptsets    *handler.Promptsets
-	remote        *handler.Remote
-	audit         *handler.Audit
-	apiKeys       *handler.APIKey
+	mcp            *handler.MCP
+	repoSettings   *handler.RepositorySettings
+	promptsets     *handler.Promptsets
+	remote         *handler.Remote
+	audit          *handler.Audit
+	apiKeys        *handler.APIKey
+	graph          *handler.Graph
 	repoDBCache    *appmw.RepoDBCache
-	slugCache   *appmw.SlugCache
+	slugCache      *appmw.SlugCache
 	// providerGateCache memoizes the per-repo enabled-provider set
 	// (5-min TTL) so the gate doesn't hit the DB on every search.
 	providerGateCache   map[string]providerGateEntry
@@ -125,18 +126,18 @@ func NewHandler(queries *store.Queries, cfg *config.Config, rbacSvc *rbac.Servic
 		deps.Users = rbac.NewUserManager(systemPool, rbacSvc)
 	}
 	return &Handler{
-		deps:        deps,
-		auth:        handler.NewAuth(deps),
-		user:        handler.NewUser(deps),
-		admin:       handler.NewAdmin(deps),
-		adminDB:     handler.NewAdminDB(deps),
-		repo:        handler.NewRepository(deps),
-		source:      nil, // set via SetSource once providers are wired up
-		storage:     nil, // set via SetStorage once the storage backend is wired up
-		tasks:       nil, // set via SetTasks once the task client is wired up
-		groups:      handler.NewGroups(deps),
-		ai:          nil, // set via SetAI once AI providers are wired up
-		aiUsage:     handler.NewAIUsage(queries, cfg),
+		deps:           deps,
+		auth:           handler.NewAuth(deps),
+		user:           handler.NewUser(deps),
+		admin:          handler.NewAdmin(deps),
+		adminDB:        handler.NewAdminDB(deps),
+		repo:           handler.NewRepository(deps),
+		source:         nil, // set via SetSource once providers are wired up
+		storage:        nil, // set via SetStorage once the storage backend is wired up
+		tasks:          nil, // set via SetTasks once the task client is wired up
+		groups:         handler.NewGroups(deps),
+		ai:             nil, // set via SetAI once AI providers are wired up
+		aiUsage:        handler.NewAIUsage(queries, cfg),
 		investigations: handler.NewInvestigations(deps),
 		concepts:       handler.NewConcepts(deps),
 		summaries:      handler.NewSummaries(deps),
@@ -146,8 +147,9 @@ func NewHandler(queries *store.Queries, cfg *config.Config, rbacSvc *rbac.Servic
 		promptsets:     handler.NewPromptsets(deps),
 		audit:          handler.NewAudit(deps),
 		apiKeys:        handler.NewAPIKey(deps),
+		graph:          handler.NewGraph(deps),
 		repoDBCache:    appmw.NewRepoDBCache(queries, 5*time.Minute),
-		slugCache:   appmw.NewSlugCache(queries, 5*time.Minute),
+		slugCache:      appmw.NewSlugCache(queries, 5*time.Minute),
 	}
 }
 
@@ -408,9 +410,9 @@ func (h *Handler) InvalidateProviderGate(repoID string) {
 }
 
 type providerGateEntry struct {
-	set        map[[2]string]bool
-	ok         bool
-	fetchedAt  time.Time
+	set       map[[2]string]bool
+	ok        bool
+	fetchedAt time.Time
 }
 
 // SetStorage attaches the storage handler bundle (the endpoints that
@@ -439,6 +441,11 @@ func (h *Handler) SetTaskEnqueuer(eq handler.TaskEnqueuer) {
 	// historical permanent-skip bug and any future recurrence).
 	if h.admin != nil {
 		h.admin.SetTaskEnqueuer(eq)
+	}
+	// The syntheses handler uses the enqueuer for the per-concept
+	// "Resynthesize" endpoint (on-demand definition regeneration).
+	if h.syntheses != nil {
+		h.syntheses.SetTaskEnqueuer(eq)
 	}
 }
 
@@ -486,6 +493,9 @@ func (h *Handler) SetRegistryClients(m *registry.ClientMap) {
 		h.remote.SetClientMap(m)
 		h.remote.SetStore(h.deps.Store)
 	}
+	if h.graph != nil {
+		h.graph.SetRegistryClients(m)
+	}
 }
 
 // SetModelCatalog wires the AI model catalog onto the settings handler
@@ -524,6 +534,35 @@ func (h *Handler) SetRemotePullBatchEnqueuer(eq handler.RemotePullBatchEnqueuer)
 	if h.remote != nil {
 		h.remote.SetPullBatchEnqueuer(eq)
 	}
+}
+
+// SetGraphExportEnqueuer wires the task enqueuer the graph handler
+// uses to kick off an export_graph job (the "Export graph" button).
+func (h *Handler) SetGraphExportEnqueuer(eq handler.GraphExportEnqueuer) {
+	if h.graph != nil {
+		h.graph.SetExportEnqueuer(eq)
+	}
+}
+
+// SetGraphImportEnqueuer wires the task enqueuer the graph handler
+// uses to kick off an import_graph job (the "Import" button on the
+// Shared Graphs page).
+func (h *Handler) SetGraphImportEnqueuer(eq handler.GraphImportEnqueuer) {
+	if h.graph != nil {
+		h.graph.SetImportEnqueuer(eq)
+	}
+}
+
+// SetGraphStorageBackend wires the file storage backend the graph
+// handler uses for the upload-graph-bundle (air-gapped import) path.
+// Called once during wiring, after the storage backend is built.
+func (h *Handler) SetGraphStorageBackend(s *handler.Storage) {
+	// The storage handler bundle wraps the same FileStorage the graph
+	// handler needs; extract the backend via the handler's accessor.
+	if s == nil || h.graph == nil {
+		return
+	}
+	h.graph.SetStorageBackend(s.Backend())
 }
 
 // SetGateInvalidator wires the per-repo provider gate cache
@@ -635,7 +674,7 @@ func (h *Handler) Router() chi.Router {
 		// MCP server endpoint. Wrapped with OAuthBearer so every
 		// tools/call requires a valid OAuth access JWT; the
 		// bearer's user id lands on the context the same way
-		 // AuthRequired puts it for the REST routes.
+		// AuthRequired puts it for the REST routes.
 		if h.mcp != nil {
 			r.Post("/mcp", appmw.OAuthBearer(
 				h.deps.Config.Auth.JWTSecret,
@@ -786,6 +825,31 @@ func (h *Handler) repoRoutes(r chi.Router) {
 		// the literal "presets" segment matches before the param.
 		r.Get("/presets", h.authed(h.repoSettings.ListPresets))
 
+		// Shared-graph import (new-repo path) + bundle upload. These
+		// live at the /repositories level (not under /{repoID})
+		// because they create a new repository rather than operating
+		// on an existing one. The upload endpoint accepts a multipart
+		// gzipped bundle and returns an upload_key the import endpoint
+		// references. Import-to-new-repo creates the repo row + seeds
+		// default settings, then enqueues the import_graph task.
+		if h.graph != nil {
+			r.Post("/import-graph", h.perm("graph", "write", h.graph.ImportGraphToNewRepo))
+			r.Post("/upload-graph", h.perm("graph", "write", h.graph.UploadGraphBundle))
+			// Browse the shared graph library (proxy to the registry).
+			// Mounted at the /repositories level so the Shared Graphs
+			// UI can list/get graphs without a repo context (the
+			// user picks a graph, then imports it into a new or
+			// existing repo). Gated by graph:write (browse is the
+			// precursor to import; any user who can import can browse).
+			r.Get("/shared-graphs", h.perm("graph", "write", h.graph.ListSharedGraphs))
+			r.Get("/shared-graphs/{graphID}", h.perm("graph", "write", h.graph.GetSharedGraph))
+		} else {
+			r.Post("/import-graph", notConfigured)
+			r.Post("/upload-graph", notConfigured)
+			r.Get("/shared-graphs", notConfigured)
+			r.Get("/shared-graphs/{graphID}", notConfigured)
+		}
+
 		// Per-repo route. {repoID} may be a UUID or a slug;
 		// the middleware resolves either to the database pool
 		// and attaches both the pool and the repo UUID to the
@@ -799,31 +863,31 @@ func (h *Handler) repoRoutes(r chi.Router) {
 			r.Delete("/", h.repoPerm("repository", "delete", h.repo.DeleteRepository))
 			r.Get("/permissions", h.authed(h.repo.GetMyPermissions))
 
-		// Per-repository settings (providers + contexts).
-		r.Get("/settings", h.repoPerm("repository", "manage", h.repoSettings.GetSettings))
-		r.Put("/settings/providers", h.repoPerm("repository", "manage", h.repoSettings.SetProviderEnabled))
-		r.Put("/settings/models", h.repoPerm("repository", "manage", h.repoSettings.SetModelSetting))
-		r.Get("/settings/reports", h.repoPerm("repository", "manage", h.repoSettings.GetReportSettings))
-		r.Put("/settings/reports", h.repoPerm("repository", "manage", h.repoSettings.SetReportSettings))
-		r.Post("/settings/contexts", h.repoPerm("repository", "manage", h.repoSettings.AddContext))
-		r.Put("/settings/contexts/{context}", h.repoPerm("repository", "manage", h.repoSettings.UpdateContext))
-		r.Post("/settings/contexts/{context}/migrate", h.repoPerm("repository", "manage", h.repoSettings.MigrateContext))
-		r.Delete("/settings/contexts/{context}", h.repoPerm("repository", "manage", h.repoSettings.DeleteContext))
-		// Context mappings (local ↔ registry) — see migration 0038.
-		r.Get("/settings/context-mappings", h.repoPerm("repository", "manage", h.repoSettings.ListContextMappings))
-		r.Put("/settings/context-mappings", h.repoPerm("repository", "manage", h.repoSettings.UpsertContextMapping))
-		r.Delete("/settings/context-mappings/{localContext}", h.repoPerm("repository", "manage", h.repoSettings.DeleteContextMappingHandler))
-		r.Put("/settings/unmapped-policy", h.repoPerm("repository", "manage", h.repoSettings.SetUnmappedPolicy))
-		r.Post("/settings/contribute-all", h.repoPerm("repository", "manage", h.repoSettings.ContributeAll))
+			// Per-repository settings (providers + contexts).
+			r.Get("/settings", h.repoPerm("repository", "manage", h.repoSettings.GetSettings))
+			r.Put("/settings/providers", h.repoPerm("repository", "manage", h.repoSettings.SetProviderEnabled))
+			r.Put("/settings/models", h.repoPerm("repository", "manage", h.repoSettings.SetModelSetting))
+			r.Get("/settings/reports", h.repoPerm("repository", "manage", h.repoSettings.GetReportSettings))
+			r.Put("/settings/reports", h.repoPerm("repository", "manage", h.repoSettings.SetReportSettings))
+			r.Post("/settings/contexts", h.repoPerm("repository", "manage", h.repoSettings.AddContext))
+			r.Put("/settings/contexts/{context}", h.repoPerm("repository", "manage", h.repoSettings.UpdateContext))
+			r.Post("/settings/contexts/{context}/migrate", h.repoPerm("repository", "manage", h.repoSettings.MigrateContext))
+			r.Delete("/settings/contexts/{context}", h.repoPerm("repository", "manage", h.repoSettings.DeleteContext))
+			// Context mappings (local ↔ registry) — see migration 0038.
+			r.Get("/settings/context-mappings", h.repoPerm("repository", "manage", h.repoSettings.ListContextMappings))
+			r.Put("/settings/context-mappings", h.repoPerm("repository", "manage", h.repoSettings.UpsertContextMapping))
+			r.Delete("/settings/context-mappings/{localContext}", h.repoPerm("repository", "manage", h.repoSettings.DeleteContextMappingHandler))
+			r.Put("/settings/unmapped-policy", h.repoPerm("repository", "manage", h.repoSettings.SetUnmappedPolicy))
+			r.Post("/settings/contribute-all", h.repoPerm("repository", "manage", h.repoSettings.ContributeAll))
 			r.Post("/settings/pull-all", h.repoPerm("repository", "manage", h.repoSettings.PullAllFromRegistry))
 			r.Put("/settings/auto-contribute", h.repoPerm("repository", "manage", h.repoSettings.SetAutoContribute))
 			r.Put("/settings/registry", h.repoPerm("repository", "manage", h.repoSettings.SetRegistrySettings))
 			r.Put("/settings/sync-levels", h.repoPerm("repository", "manage", h.repoSettings.SetSyncLevels))
 			r.Put("/settings/content-types", h.repoPerm("repository", "manage", h.repoSettings.SetContentTypes))
-		r.Get("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.GetPromptset))
-		r.Put("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.SetPromptset))
-		r.Get("/settings/contributor", h.repoPerm("repository", "manage", h.repoSettings.GetContributor))
-		r.Put("/settings/contributor", h.repoPerm("repository", "manage", h.repoSettings.SetContributor))
+			r.Get("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.GetPromptset))
+			r.Put("/settings/promptset", h.repoPerm("repository", "manage", h.repoSettings.SetPromptset))
+			r.Get("/settings/contributor", h.repoPerm("repository", "manage", h.repoSettings.GetContributor))
+			r.Put("/settings/contributor", h.repoPerm("repository", "manage", h.repoSettings.SetContributor))
 
 			// Remote registry browse / pull.
 			if h.remote != nil {
@@ -840,6 +904,25 @@ func (h *Handler) repoRoutes(r chi.Router) {
 				r.Post("/remote/pull-batch", notConfigured)
 			}
 
+			// Shared-graph export/import. Export enqueues a build+push
+			// task (graph:export); import-into-existing enqueues a
+			// pull+apply task (graph:write). The status endpoints read
+			// the River job state. The shared-graphs browse endpoints
+			// (list/get) proxy to the registry and are mounted at the
+			// /repositories level (see below) since they don't need a
+			// repo context.
+			if h.graph != nil {
+				r.Post("/export-graph", h.repoPerm("graph", "export", h.graph.ExportGraph))
+				r.Get("/export-graph/{jobID}", h.repoPerm("graph", "export", h.graph.GetExportStatus))
+				r.Post("/import-graph", h.repoPerm("graph", "write", h.graph.ImportGraphToExisting))
+				r.Get("/import-graph/{jobID}", h.repoPerm("graph", "write", h.graph.GetImportStatus))
+			} else {
+				r.Post("/export-graph", notConfigured)
+				r.Get("/export-graph/{jobID}", notConfigured)
+				r.Post("/import-graph", notConfigured)
+				r.Get("/import-graph/{jobID}", notConfigured)
+			}
+
 			// Per-repo data plane.
 			r.Get("/sources", h.repoPerm("source", "read", h.source.ListSources))
 			r.Post("/sources", h.repoPerm("source", "write", h.source.CreateSource))
@@ -853,44 +936,50 @@ func (h *Handler) repoRoutes(r chi.Router) {
 			r.Get("/facts", h.repoPerm("fact", "read", h.source.ListRepoFacts))
 			r.Get("/facts/{factID}", h.repoPerm("fact", "read", h.source.GetFact))
 
-	// Concepts: read surface for the concept-extraction pipeline.
-	r.Get("/concepts", h.repoPerm("concept", "read", h.concepts.ListConcepts))
-	r.Get("/concepts/{conceptID}/relations", h.repoPerm("concept", "read", h.concepts.ListConceptRelations))
-	r.Get("/concepts/{conceptID}/relations/{otherConceptID}", h.repoPerm("concept", "read", h.concepts.GetConceptRelationDetails))
-	r.Get("/concepts/{conceptID}", h.repoPerm("concept", "read", h.concepts.GetConcept))
-	r.Get("/concepts/{conceptID}/facts", h.repoPerm("concept", "read", h.concepts.ListConceptFacts))
-	r.Get("/concepts/{conceptID}/sources", h.repoPerm("concept", "read", h.concepts.ListConceptSources))
-		r.Get("/concepts/{conceptID}/summaries", h.repoPerm("concept", "read", h.summaries.ListByConcept))
-		r.Get("/concepts/{conceptID}/definition", h.repoPerm("concept", "read", h.syntheses.GetDefinition))
-		r.Get("/facts/{factID}/concepts", h.repoPerm("fact", "read", h.concepts.ListFactConcepts))
+			// Concepts: read surface for the concept-extraction pipeline.
+			r.Get("/concepts", h.repoPerm("concept", "read", h.concepts.ListConcepts))
+			r.Get("/concepts/{conceptID}/relations", h.repoPerm("concept", "read", h.concepts.ListConceptRelations))
+			r.Get("/concepts/{conceptID}/relations/{otherConceptID}", h.repoPerm("concept", "read", h.concepts.GetConceptRelationDetails))
+			r.Get("/concepts/{conceptID}", h.repoPerm("concept", "read", h.concepts.GetConcept))
+			r.Get("/concepts/{conceptID}/facts", h.repoPerm("concept", "read", h.concepts.ListConceptFacts))
+			r.Get("/concepts/{conceptID}/sources", h.repoPerm("concept", "read", h.concepts.ListConceptSources))
+			r.Get("/concepts/{conceptID}/summaries", h.repoPerm("concept", "read", h.summaries.ListByConcept))
+			r.Get("/concepts/{conceptID}/definition", h.repoPerm("concept", "read", h.syntheses.GetDefinition))
+		// Per-concept on-demand synthesis regeneration. Enqueues a
+		// synthesize_concept job for the concept_id in the URL; the
+		// existing worker picks it up with the MaxAttempts: 5 retry
+		// budget. Gated by repositories.*.manage (write/control, not
+		// a read).
+		r.Post("/concepts/{conceptID}/resynthesize", h.repoPerm("repositories", "manage", h.syntheses.ResynthesizeConcept))
+			r.Get("/facts/{factID}/concepts", h.repoPerm("fact", "read", h.concepts.ListFactConcepts))
 
-		// Per-repo scoped task list + stats. The list endpoint
-		// filters River jobs by the repo_id metadata tag; the
-		// stats endpoint mirrors the system-wide /tasks/stats
-		// aggregation but restricted to the same metadata
-		// containment predicate. Both gated by repo-scope
-		// task.read (repoadmin + editor + curator + viewer via
-		// seed; sysadmin via EnforceSystemAdmin short-circuit).
-		if h.tasks != nil {
-			r.Get("/tasks", h.repoPerm("task", "read", h.tasks.ListRepoJobs))
-			r.Get("/tasks/stats", h.repoPerm("task", "read", h.tasks.ListRepoJobStats))
-		}
+			// Per-repo scoped task list + stats. The list endpoint
+			// filters River jobs by the repo_id metadata tag; the
+			// stats endpoint mirrors the system-wide /tasks/stats
+			// aggregation but restricted to the same metadata
+			// containment predicate. Both gated by repo-scope
+			// task.read (repoadmin + editor + curator + viewer via
+			// seed; sysadmin via EnforceSystemAdmin short-circuit).
+			if h.tasks != nil {
+				r.Get("/tasks", h.repoPerm("task", "read", h.tasks.ListRepoJobs))
+				r.Get("/tasks/stats", h.repoPerm("task", "read", h.tasks.ListRepoJobStats))
+			}
 
-		// Per-repo scoped AI Usage dashboard. The handlers force
-		// the repository_id filter from the URL context (set by
-		// WithRepoQueries), ignoring any client-supplied query
-		// param, so a repoadmin of repo A can't see repo B's
-		// usage. Gated by repo-scope ai_usage.read (repoadmin via
-		// seed + migration 0056; sysadmin via short-circuit).
-		if h.aiUsage != nil {
-			r.Route("/ai/usage", func(r chi.Router) {
-				r.Get("/summary", h.repoPerm("ai_usage", "read", h.aiUsage.SummaryRepo))
-				r.Get("/by-day", h.repoPerm("ai_usage", "read", h.aiUsage.ByDayRepo))
-				r.Get("/by-operation", h.repoPerm("ai_usage", "read", h.aiUsage.ByOperationRepo))
-				r.Get("/by-repository", h.repoPerm("ai_usage", "read", h.aiUsage.ByRepositoryRepo))
-				r.Get("/by-source", h.repoPerm("ai_usage", "read", h.aiUsage.BySourceRepo))
-			})
-		}
+			// Per-repo scoped AI Usage dashboard. The handlers force
+			// the repository_id filter from the URL context (set by
+			// WithRepoQueries), ignoring any client-supplied query
+			// param, so a repoadmin of repo A can't see repo B's
+			// usage. Gated by repo-scope ai_usage.read (repoadmin via
+			// seed + migration 0056; sysadmin via short-circuit).
+			if h.aiUsage != nil {
+				r.Route("/ai/usage", func(r chi.Router) {
+					r.Get("/summary", h.repoPerm("ai_usage", "read", h.aiUsage.SummaryRepo))
+					r.Get("/by-day", h.repoPerm("ai_usage", "read", h.aiUsage.ByDayRepo))
+					r.Get("/by-operation", h.repoPerm("ai_usage", "read", h.aiUsage.ByOperationRepo))
+					r.Get("/by-repository", h.repoPerm("ai_usage", "read", h.aiUsage.ByRepositoryRepo))
+					r.Get("/by-source", h.repoPerm("ai_usage", "read", h.aiUsage.BySourceRepo))
+				})
+			}
 
 			// Per-repo audit log. Gated by audit.read at repo
 			// scope (repoadmin and sysadmin). The handler reads
@@ -906,11 +995,11 @@ func (h *Handler) repoRoutes(r chi.Router) {
 					r.Get("/", h.repoPerm("investigation", "read", h.investigations.GetInvestigation))
 					r.Put("/", h.repoPerm("investigation", "update", h.investigations.UpdateInvestigation))
 					r.Delete("/", h.repoPerm("investigation", "delete", h.investigations.DeleteInvestigation))
-				r.Get("/sources", h.repoPerm("investigation", "read", h.investigations.ListSources))
-				r.Post("/sources", h.repoPerm("investigation", "write", h.investigations.AddSource))
-				r.Delete("/sources/{sourceID}", h.repoPerm("investigation", "delete", h.investigations.RemoveSource))
-				r.Get("/facts", h.repoPerm("investigation", "read", h.investigations.ListFacts))
-				r.Get("/concepts", h.repoPerm("investigation", "read", h.investigations.ListConcepts))
+					r.Get("/sources", h.repoPerm("investigation", "read", h.investigations.ListSources))
+					r.Post("/sources", h.repoPerm("investigation", "write", h.investigations.AddSource))
+					r.Delete("/sources/{sourceID}", h.repoPerm("investigation", "delete", h.investigations.RemoveSource))
+					r.Get("/facts", h.repoPerm("investigation", "read", h.investigations.ListFacts))
+					r.Get("/concepts", h.repoPerm("investigation", "read", h.investigations.ListConcepts))
 				})
 			})
 

@@ -25,6 +25,7 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 	srcH := handler.NewSourceHandler(svc)
 	healthH := handler.NewHealthHandler(svc)
 	ctxH := handler.NewContextHandler(svc)
+	graphH := handler.NewGraphHandler(svc)
 
 	authMW := auth.NewMiddleware(&cfg.Auth)
 	authH := handler.NewAuthHandler(mstore, &cfg.Auth)
@@ -99,6 +100,21 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 				r.Post("/decompositions/{model}", srcH.PushDecomposition)
 				r.Get("/decompositions", srcH.ListDecompositions)
 				r.Get("/decompositions/{model}", srcH.PullDecomposition)
+			})
+
+			// Shared knowledge graphs. Browse/list are open under the
+			// same auth-mode gating as sources; push/delete follow the
+			// auth_mode ("read-open" / "closed" require a JWT for writes).
+			// The owner field on a pushed graph is populated from the
+			// authenticated user's email.
+			r.Route("/graphs", func(r chi.Router) {
+				r.Get("/", graphH.List)
+				r.Post("/", graphH.Push)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", graphH.Get)
+					r.Get("/bundle", graphH.PullBundle)
+					r.Delete("/", graphH.Delete)
+				})
 			})
 		})
 	})

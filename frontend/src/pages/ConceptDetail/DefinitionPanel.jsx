@@ -1,12 +1,14 @@
 import { useNavigate } from "@solidjs/router";
 import { createEffect, createResource, createSignal, onCleanup, Show, untrack } from "solid-js";
 import Badge from "../../components/Badge";
+import Button from "../../components/Button";
 import Card from "../../components/Card";
 import EmptyState from "../../components/EmptyState";
 import { renderMarkdown } from "../../lib/markdown";
 import { normalizeCitations, normalizeImageCitations } from "../../lib/normalizeCitations";
 import { resolveDefinitionImages, revokeBlobUrls } from "../../lib/resolveDefinitionImages";
 import { api } from "../../services/api";
+import { useRBAC } from "../../store/rbac";
 
 // DefinitionPanel renders the concept's "definition" — the single
 // authoritative synthesis the synthesize_concept worker produces for
@@ -35,12 +37,32 @@ export default function DefinitionPanel(props) {
   const slug = () => props.slug;
   const conceptID = () => props.conceptID;
   const navigate = useNavigate();
+  const rbac = useRBAC();
+  const canResynthesize = () => rbac.hasPermission("repositories", "manage");
 
   const [refreshKey, setRefreshKey] = createSignal(0);
   const [collapsed, setCollapsed] = createSignal(true);
   const [blobUrls, setBlobUrls] = createSignal([]);
   const [renderedHtml, setRenderedHtml] = createSignal("");
+  const [resynthesizing, setResynthesizing] = createSignal(false);
+  const [resynthResult, setResynthResult] = createSignal(null);
   let defEl = null;
+
+  async function handleResynthesize() {
+    if (!slug() || !conceptID()) return;
+    setResynthesizing(true);
+    setResynthResult(null);
+    try {
+      const result = await api.resynthesizeConcept(slug(), conceptID());
+      setResynthResult(result);
+      setTimeout(() => setResynthResult(null), 10000);
+    } catch (err) {
+      setResynthResult({ error: err.message || "Failed to enqueue synthesis." });
+      setTimeout(() => setResynthResult(null), 10000);
+    } finally {
+      setResynthesizing(false);
+    }
+  }
 
   const [defData, { refetch }] = createResource(
     () => ({ slug: slug(), conceptID: conceptID(), key: refreshKey() }),
@@ -134,14 +156,42 @@ export default function DefinitionPanel(props) {
             ▾
           </span>
         </button>
-        <button
-          type="button"
-          class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
-          onClick={refetch}
-        >
-          Refresh
-        </button>
+        <div class="flex items-center gap-2">
+          <Show when={canResynthesize()}>
+            <Button
+              variant="secondary"
+              class="text-xs px-2 py-1"
+              onClick={handleResynthesize}
+              loading={resynthesizing()}
+              loadingText="Enqueuing..."
+              title="Regenerate this concept's definition by enqueuing a synthesize_concept job"
+            >
+              Resynthesize
+            </Button>
+          </Show>
+          <button
+            type="button"
+            class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+            onClick={refetch}
+          >
+            Refresh
+          </button>
+        </div>
       </div>
+
+      <Show when={resynthResult()}>
+        <div class="mt-2 text-xs">
+          <Show
+            when={!resynthResult().error}
+            fallback={<span class="text-red-600 dark:text-red-400">{resynthResult().error}</span>}
+          >
+            <span class="text-green-700 dark:text-green-400">
+              Synthesis enqueued — see job{" "}
+              <span class="font-mono">{resynthResult().enqueued_job_id}</span> in Tasks.
+            </span>
+          </Show>
+        </div>
+      </Show>
 
       <Show when={!collapsed()}>
         <div id="concept-definition-body" class="mt-4">

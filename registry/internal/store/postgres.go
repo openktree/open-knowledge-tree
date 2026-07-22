@@ -359,6 +359,108 @@ func (s *PostgresStore) Stats(ctx context.Context) (repoCount, sourceCount int, 
 	return
 }
 
+// ── Graphs ──────────────────────────────────────────────────────────
+
+func (s *PostgresStore) IndexGraph(ctx context.Context, meta *model.GraphMeta) error {
+	tags := meta.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO graphs (id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		 ON CONFLICT(id) DO UPDATE SET
+		   name=EXCLUDED.name, description=EXCLUDED.description, owner=EXCLUDED.owner,
+		   tags=EXCLUDED.tags, source_count=EXCLUDED.source_count, fact_count=EXCLUDED.fact_count,
+		   concept_count=EXCLUDED.concept_count, s3_key=EXCLUDED.s3_key, sha256=EXCLUDED.sha256,
+		   schema_version=EXCLUDED.schema_version, updated_at=EXCLUDED.updated_at`,
+		meta.ID, meta.Name, meta.Description, meta.Owner, tags,
+		meta.SourceCount, meta.FactCount, meta.ConceptCount, meta.S3Key, meta.SHA256,
+		meta.SchemaVersion, meta.CreatedAt, meta.UpdatedAt)
+	return err
+}
+
+func (s *PostgresStore) GetGraph(ctx context.Context, id string) (*model.GraphMeta, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs WHERE id = $1`, id)
+	return scanGraphPG(row)
+}
+
+func (s *PostgresStore) ListGraphs(ctx context.Context, limit, offset int) ([]model.GraphMeta, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGraphsPG(rows)
+}
+
+func (s *PostgresStore) SearchGraphsByText(ctx context.Context, query string, limit, offset int) ([]model.GraphMeta, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	pattern := "%" + query + "%"
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs WHERE name ILIKE $1 OR description ILIKE $2
+		 ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
+		pattern, pattern, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGraphsPG(rows)
+}
+
+func (s *PostgresStore) SearchGraphsByTag(ctx context.Context, tag string, limit, offset int) ([]model.GraphMeta, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, description, owner, tags, source_count, fact_count, concept_count, s3_key, sha256, schema_version, created_at, updated_at
+		 FROM graphs WHERE $1 = ANY(tags)
+		 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+		tag, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGraphsPG(rows)
+}
+
+func (s *PostgresStore) CountGraphs(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM graphs`).Scan(&n)
+	return n, err
+}
+
+func (s *PostgresStore) CountGraphsByText(ctx context.Context, query string) (int, error) {
+	pattern := "%" + query + "%"
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM graphs WHERE name ILIKE $1 OR description ILIKE $2`,
+		pattern, pattern).Scan(&n)
+	return n, err
+}
+
+func (s *PostgresStore) CountGraphsByTag(ctx context.Context, tag string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM graphs WHERE $1 = ANY(tags)`, tag).Scan(&n)
+	return n, err
+}
+
+func (s *PostgresStore) DeleteGraph(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM graphs WHERE id = $1`, id)
+	return err
+}
+
 func (s *PostgresStore) UpsertContext(ctx context.Context, label, description string) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO contexts (label, description, created_at, updated_at)
@@ -607,4 +709,32 @@ func ptrStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func scanGraphPG(row interface{ Scan(...any) error }) (*model.GraphMeta, error) {
+	var id, name, desc, owner, s3key, sha string
+	var tags []string
+	var srcCount, factCount, conceptCount, schemaVersion int
+	var ca, ua time.Time
+	if err := row.Scan(&id, &name, &desc, &owner, &tags, &srcCount, &factCount, &conceptCount, &s3key, &sha, &schemaVersion, &ca, &ua); err != nil {
+		return nil, err
+	}
+	return &model.GraphMeta{
+		ID: id, Name: name, Description: desc, Owner: owner, Tags: tags,
+		SourceCount: srcCount, FactCount: factCount, ConceptCount: conceptCount,
+		S3Key: s3key, SHA256: sha, SchemaVersion: schemaVersion,
+		CreatedAt: ca, UpdatedAt: ua,
+	}, nil
+}
+
+func scanGraphsPG(rows pgxRows) ([]model.GraphMeta, error) {
+	var out []model.GraphMeta
+	for rows.Next() {
+		m, err := scanGraphPG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
 }

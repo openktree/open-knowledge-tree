@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
+	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
@@ -346,6 +347,10 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 	// The decompositions in the hit are already filtered (model
 	// whitelist, promptset acceptance, sync level, context
 	// mapping). Iterate and persist — no re-filtering here.
+	// touchedNameKeys collects lower(canonical_name) groups affected
+	// by this pull (concept creations + fact_concept links) so the
+	// concept_groups summary can be recomputed once at the end.
+	touchedNameKeys := make([]string, 0, len(hit.Decompositions)*4)
 	for i := range hit.Decompositions {
 		decomp := &hit.Decompositions[i]
 
@@ -417,6 +422,7 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 			if c.CanonicalName == "" {
 				continue
 			}
+			touchedNameKeys = append(touchedNameKeys, strings.ToLower(c.CanonicalName))
 			// c.Context is already the local context (the filter
 			// translated it). auto_add was already invoked inside
 			// the filter for unmapped-but-accepted contexts, so the
@@ -471,6 +477,7 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 			if !ok {
 				continue
 			}
+			touchedNameKeys = append(touchedNameKeys, strings.ToLower(link.ConceptName))
 			concept, err := queries.GetConceptByNameContext(ctx, store.GetConceptByNameContextParams{
 				RepositoryID:  repoID,
 				CanonicalName: link.ConceptName,
@@ -582,6 +589,17 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 			stats.ImportedEmbModels = append(stats.ImportedEmbModels, decompEmbModel)
 			stats.ImportedEmbDims = append(stats.ImportedEmbDims, decompEmbDims)
 		}
+	}
+	// Recompute the concept_groups summary for the touched name keys so
+	// the q="" concept list page reflects the imported concepts/links
+	// immediately. Best-effort: a failure is logged and swallowed (the
+	// summary is a cache; the recompute_concept_groups job repairs it).
+	if len(touchedNameKeys) > 0 {
+		recomputeCtx, recomputeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if rerr := concepts.RecomputeTouchedGroups(recomputeCtx, queries, repoID, touchedNameKeys); rerr != nil {
+			log.Printf("pull_all_from_registry: recompute concept_groups for repo %s: %v", repoIDStr, rerr)
+		}
+		recomputeCancel()
 	}
 	return stats, nil
 }

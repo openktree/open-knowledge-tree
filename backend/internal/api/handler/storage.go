@@ -32,6 +32,11 @@ type Storage struct {
 	backend storage.FileStorage
 }
 
+// Backend returns the underlying FileStorage. Exported so the wiring
+// layer can hand the same backend to the graph handler (for the
+// upload-graph-bundle air-gapped import path) without rebuilding it.
+func (s *Storage) Backend() storage.FileStorage { return s.backend }
+
 // NewStorage constructs a Storage handler bundle. `backend` may be
 // nil — the handlers return 503 in that case so a deployment that
 // disabled storage still serves the rest of the API.

@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
@@ -865,6 +866,10 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 	// retrieve_source path persists registry artifacts; the rules
 	// live in registry.Service so the four pull paths stay in
 	// lockstep.
+	// touchedNameKeys collects lower(canonical_name) groups affected
+	// by this import (concept creations + fact_concept links) so the
+	// concept_groups summary can be recomputed once at the end.
+	touchedNameKeys := make([]string, 0, len(hit.Decompositions)*4)
 	for i := range hit.Decompositions {
 		decomp := &hit.Decompositions[i]
 
@@ -946,12 +951,13 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 			stats.Created++
 		}
 
-		// Import concepts + aliases.
-		for _, c := range decomp.Concepts {
-			if c.CanonicalName == "" {
-				continue
-			}
-			desc := strPtrOrNil(c.Context)
+	// Import concepts + aliases.
+	for _, c := range decomp.Concepts {
+		if c.CanonicalName == "" {
+			continue
+		}
+		touchedNameKeys = append(touchedNameKeys, strings.ToLower(c.CanonicalName))
+		desc := strPtrOrNil(c.Context)
 			if _, err := queries.CreateConcept(ctx, store.CreateConceptParams{
 				RepositoryID:  repoID,
 				CanonicalName: c.CanonicalName,
@@ -1006,6 +1012,7 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 			if !ok {
 				continue
 			}
+			touchedNameKeys = append(touchedNameKeys, strings.ToLower(link.ConceptName))
 			concept, err := queries.GetConceptByNameContext(ctx, store.GetConceptByNameContextParams{
 				RepositoryID:  repoID,
 				CanonicalName: link.ConceptName,
@@ -1140,6 +1147,18 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 			stats.ImportedEmbModels = append(stats.ImportedEmbModels, decompEmbModel)
 			stats.ImportedEmbDims = append(stats.ImportedEmbDims, decompEmbDims)
 		}
+	}
+
+	// Recompute the concept_groups summary for the touched name keys so
+	// the q="" concept list page reflects the imported concepts/links
+	// immediately. Best-effort: a failure is logged and swallowed (the
+	// summary is a cache; the recompute_concept_groups job repairs it).
+	if len(touchedNameKeys) > 0 {
+		recomputeCtx, recomputeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if rerr := concepts.RecomputeTouchedGroups(recomputeCtx, queries, repoID, touchedNameKeys); rerr != nil {
+			log.Printf("retrieve_source: recompute concept_groups for repo %s: %v", args.RepositoryID, rerr)
+		}
+		recomputeCancel()
 	}
 
 	return uuidFromPgtype(id), stats, nil

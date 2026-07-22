@@ -22,6 +22,7 @@ import Reports from "./pages/Reports";
 import Repositories from "./pages/Repositories";
 import RepositorySettings from "./pages/RepositorySettings";
 import RepoTasks from "./pages/RepoTasks";
+import SharedGraphs from "./pages/SharedGraphs";
 import SourceDetail from "./pages/SourceDetail";
 import Sources from "./pages/Sources";
 import Tasks from "./pages/Tasks";
@@ -63,6 +64,7 @@ export default function App() {
         <Route path="/repositories" component={Repositories} />
         <Route path="/repositories/:repoID/settings" component={RepositorySettings} />
         <Route path="/repositories/:slug/audit" component={RepoAudit} />
+        <Route path="/shared-graphs" component={SharedGraphs} />
         <Route path="/:slug/tasks" component={RepoTasks} />
         <Route path="/:slug/ai-usage" component={RepoAIUsage} />
         <Route path="/investigations" component={Investigations} />
