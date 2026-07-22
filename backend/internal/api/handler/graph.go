@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
+	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/graph"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
@@ -342,7 +343,7 @@ func (h *Graph) ImportGraphToNewRepo(w http.ResponseWriter, r *http.Request) {
 		Description:  body.Description,
 		OwnerID:      uid,
 		DatabaseName: h.deps.Config.System.Database,
-		Tier:         "tier1",
+		Tier:         config.TierFor(h.deps.Config.Isolation, h.deps.Config.System.Database),
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
