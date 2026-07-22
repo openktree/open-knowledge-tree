@@ -394,6 +394,11 @@ func (h *Graph) ImportGraphToNewRepo(w http.ResponseWriter, r *http.Request) {
 // endpoints use to reference it. The import task deletes the temp
 // object after a successful import.
 //
+// The upload is streamed to the storage backend (the multipart file
+// part is read chunk-by-chunk and written to storage) so peak memory
+// stays bounded even for multi-GB bundles. The MaxBytesReader cap is
+// 20GB to accommodate large repos with embedded PDFs.
+//
 // Gated by graph:write (wiring layer). No repo context (the upload
 // precedes the repo creation on the new-repo path).
 func (h *Graph) UploadGraphBundle(w http.ResponseWriter, r *http.Request) {
@@ -401,9 +406,11 @@ func (h *Graph) UploadGraphBundle(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "storage backend not configured")
 		return
 	}
-	// 2GB cap on the upload.
-	r.Body = http.MaxBytesReader(w, r.Body, 2<<30)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	// 20GB cap — large enough for repos with many embedded PDFs.
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<30)
+	// ParseMultipartForm with 1GB in-memory; the rest spills to temp
+	// files. 1GB memory keeps the parse fast while bounding peak.
+	if err := r.ParseMultipartForm(1 << 30); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "parsing multipart form: "+err.Error())
 		return
 	}
