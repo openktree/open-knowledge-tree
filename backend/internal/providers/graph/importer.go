@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -53,23 +54,29 @@ type ImportResult struct {
 type BundleImporter struct {
 	queries        *store.Queries
 	qdrant         *qdrantstore.Store
+	storage        storage.FileStorage
 	repoID         pgtype.UUID
 	repoUUID       uuid.UUID
+	repoSlug       string
 	embeddingModel string
 }
 
 // NewBundleImporter constructs an importer for the given repo. qdrant
-// may be nil (the embeddings section is skipped). embeddingModel is
-// the local config's embedding model name; when it matches the
-// bundle's model, the importer upserts the Qdrant vectors directly,
-// otherwise it sets NeedsReembed so the caller enqueues embed_facts
-// + embed_concepts.
-func NewBundleImporter(queries *store.Queries, qdrant *qdrantstore.Store, repoID pgtype.UUID, embeddingModel string) *BundleImporter {
+// may be nil (the embeddings section is skipped). storageBackend may
+// be nil (source images + bodies are skipped). repoSlug is the new
+// repo's slug, used to rewrite image_url paths on image facts.
+// embeddingModel is the local config's embedding model name; when it
+// matches the bundle's model, the importer upserts the Qdrant vectors
+// directly, otherwise it sets NeedsReembed so the caller enqueues
+// embed_facts + embed_concepts.
+func NewBundleImporter(queries *store.Queries, qdrant *qdrantstore.Store, storageBackend storage.FileStorage, repoID pgtype.UUID, repoSlug, embeddingModel string) *BundleImporter {
 	return &BundleImporter{
 		queries:        queries,
 		qdrant:         qdrant,
+		storage:        storageBackend,
 		repoID:         repoID,
 		repoUUID:       asUUID(repoID),
+		repoSlug:       repoSlug,
 		embeddingModel: embeddingModel,
 	}
 }
@@ -189,6 +196,125 @@ func (b *BundleImporter) Import(ctx context.Context, bundle *GraphBundle, mode I
 		}
 	}
 
+	// Source bodies. Restore stored PDFs from the bundle's Bodies map.
+	// Skipped when the bundle has no Bodies section (exported without
+	// include_bodies=true) — the source still works (parsed text +
+	// image metadata), just no "view original PDF" for upload://
+	// sources. Best-effort: a storage write failure logs and the body
+	// is skipped.
+	if b.storage != nil && len(bundle.SourceBodies) > 0 {
+		for _, sb := range bundle.SourceBodies {
+			if sb.BodyRef == "" {
+				continue
+			}
+			fb, ok := bundle.Bodies[sb.BodyRef]
+			if !ok {
+				continue
+			}
+			srcID, ok := sourceUUIDByIdx[sb.SourceIdx]
+			if !ok {
+				continue
+			}
+			key := fmt.Sprintf("repositories/%s/sources/%s/body.pdf", b.repoUUID, asUUID(srcID))
+			if _, err := b.storage.Store(ctx, key, fb.ContentType, fb.Data); err != nil {
+				log.Printf("import: storing source body idx %d: %v", sb.SourceIdx, err)
+				continue
+			}
+			ct := fb.ContentType
+			lp := key
+			if _, err := b.queries.MarkSourceBodyStored(ctx, store.MarkSourceBodyStoredParams{
+				ID:          srcID,
+				StorageKey:  &key,
+				ContentType: &ct,
+				LocalPath:   &lp,
+			}); err != nil {
+				log.Printf("import: marking source body stored idx %d: %v", sb.SourceIdx, err)
+			}
+		}
+	}
+
+	// Source images. Insert each SourceImageRow with a fresh UUID,
+	// remapping source_idx → the new source UUID. For storage-backed
+	// images (those with an image_ref in the Images map), write the
+	// bytes to the importing storage backend + set storage_key on the
+	// row. Build sourceImageIdx→newUUID map for image_url remapping
+	// on image facts.
+	sourceImageUUIDByIdx := make(map[int]pgtype.UUID)
+	if len(bundle.SourceImages) > 0 {
+		ids := make([]pgtype.UUID, 0, len(bundle.SourceImages))
+		srcIDs := make([]pgtype.UUID, 0, len(bundle.SourceImages))
+		kinds := make([]string, 0, len(bundle.SourceImages))
+		pageNums := make([]string, 0, len(bundle.SourceImages))
+		positions := make([]int32, 0, len(bundle.SourceImages))
+		urls := make([]string, 0, len(bundle.SourceImages))
+		widths := make([]int32, 0, len(bundle.SourceImages))
+		heights := make([]int32, 0, len(bundle.SourceImages))
+		bytesVals := make([]int32, 0, len(bundle.SourceImages))
+		altTexts := make([]string, 0, len(bundle.SourceImages))
+		storageKeys := make([]string, 0, len(bundle.SourceImages))
+		contentTypes := make([]string, 0, len(bundle.SourceImages))
+		for _, si := range bundle.SourceImages {
+			srcID, ok := sourceUUIDByIdx[si.SourceIdx]
+			if !ok {
+				continue
+			}
+			imgID := pgtype.UUID{}
+			_ = imgID.Scan(uuid.New().String())
+			ids = append(ids, imgID)
+			srcIDs = append(srcIDs, srcID)
+			kinds = append(kinds, si.Kind)
+			if si.PageNumber > 0 {
+				pageNums = append(pageNums, fmt.Sprintf("%d", si.PageNumber))
+			} else {
+				pageNums = append(pageNums, "")
+			}
+			positions = append(positions, int32(si.Position))
+			urls = append(urls, si.URL)
+			widths = append(widths, int32(si.Width))
+			heights = append(heights, int32(si.Height))
+			bytesVals = append(bytesVals, int32(si.Bytes))
+			altTexts = append(altTexts, si.AltText)
+			// For storage-backed images with embedded bytes, write to
+			// storage + set the storage_key. For remote-URL inline
+			// images, storage_key is empty.
+			var storageKey string
+			var contentType string
+			if si.ImageRef != "" && b.storage != nil {
+				if fb, ok := bundle.Images[si.ImageRef]; ok {
+					key := fmt.Sprintf("repositories/%s/sources/%s/images/%s",
+						b.repoUUID, asUUID(srcID), asUUID(imgID))
+					if _, err := b.storage.Store(ctx, key, fb.ContentType, fb.Data); err != nil {
+						log.Printf("import: storing source image idx %d: %v", si.Idx, err)
+					} else {
+						storageKey = key
+						contentType = fb.ContentType
+					}
+				}
+			}
+			storageKeys = append(storageKeys, storageKey)
+			contentTypes = append(contentTypes, contentType)
+			sourceImageUUIDByIdx[si.Idx] = imgID
+		}
+		if len(ids) > 0 {
+			if _, err := b.queries.BatchCreateSourceImages(ctx, store.BatchCreateSourceImagesParams{
+				Column1:  ids,
+				Column2:  srcIDs,
+				Column3:  kinds,
+				Column4:  pageNums,
+				Column5:  positions,
+				Column6:  urls,
+				Column7:  widths,
+				Column8:  heights,
+				Column9:  bytesVals,
+				Column10: altTexts,
+				Column11: storageKeys,
+				Column12: contentTypes,
+			}); err != nil {
+				log.Printf("import: batch creating source_images: %v", err)
+			}
+		}
+	}
+
 	// Facts. Build factIdx→UUID map. Use BatchCreateFacts for the
 	// high-volume insert; the batch is idempotent (ON CONFLICT DO
 	// NOTHING on id) so the existing-repo merge path is safe.
@@ -207,7 +333,32 @@ func (b *BundleImporter) Import(ctx context.Context, bundle *GraphBundle, mode I
 			ids = append(ids, id)
 			texts = append(texts, f.Text)
 			factKinds = append(factKinds, f.FactKind)
-			imageURLs = append(imageURLs, f.ImageURL) // NULLIF handles "" → NULL
+			// Remap image_url for storage-backed image facts. The
+			// builder stamped SourceImageIdx on image facts whose
+			// image_url is a /api/v1/.../images/{imageID} path; the
+			// importer rewrites it to the new repo's slug + new
+			// source/image UUIDs. Remote-URL image facts (SourceImageIdx
+			// == -1) keep their original URL.
+			imageURL := f.ImageURL
+			if f.FactKind == "image" && f.SourceImageIdx >= 0 {
+				if newImgID, ok := sourceImageUUIDByIdx[f.SourceImageIdx]; ok {
+					// Find the source idx for this image to get the
+					// new source UUID. The sourceImageUUIDByIdx maps
+					// bundle image idx → new image UUID; we need the
+					// source UUID too. We can look it up from the
+					// SourceImages section.
+					for _, si := range bundle.SourceImages {
+						if si.Idx == f.SourceImageIdx {
+							if newSrcID, ok := sourceUUIDByIdx[si.SourceIdx]; ok {
+								imageURL = fmt.Sprintf("/api/v1/repositories/%s/sources/%s/images/%s",
+									b.repoSlug, asUUID(newSrcID), asUUID(newImgID))
+							}
+							break
+						}
+					}
+				}
+			}
+			imageURLs = append(imageURLs, imageURL) // NULLIF handles "" → NULL
 			statuses = append(statuses, f.Status)
 			promptsetHashes = append(promptsetHashes, f.PromptsetHash)
 			factUUIDByIdx[f.Idx] = id

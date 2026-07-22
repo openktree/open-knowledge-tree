@@ -9,6 +9,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/graph"
 	registryclient "github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 	"github.com/riverqueue/river"
@@ -23,11 +24,12 @@ const QueueExportGraph = "export_graph"
 // the export queries, fetches Qdrant vectors, and pushes the gzipped
 // bundle via the registry client.
 type ExportGraphArgs struct {
-	RepositoryID string   `json:"repository_id"`
-	RegistryID   string   `json:"registry_id,omitempty"` // "" = repo's configured registry
-	Name         string   `json:"name"`
-	Description  string   `json:"description,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
+	RepositoryID  string   `json:"repository_id"`
+	RegistryID    string   `json:"registry_id,omitempty"` // "" = repo's configured registry
+	Name          string   `json:"name"`
+	Description   string   `json:"description,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	IncludeBodies bool     `json:"include_bodies,omitempty"` // embed source PDFs in the bundle
 }
 
 func (ExportGraphArgs) Kind() string { return "export_graph" }
@@ -59,6 +61,7 @@ type ExportGraphWorker struct {
 	registry        *dbpool.Registry
 	systemQueries   *store.Queries
 	qdrant          *qdrantstore.Store
+	storageBackend  storage.FileStorage
 	embeddingModel  string
 	embeddingDims   int
 }
@@ -68,6 +71,7 @@ func NewExportGraphWorker(
 	poolRegistry *dbpool.Registry,
 	systemQueries *store.Queries,
 	qdrant *qdrantstore.Store,
+	storageBackend storage.FileStorage,
 	embeddingModel string,
 	embeddingDims int,
 ) *ExportGraphWorker {
@@ -76,6 +80,7 @@ func NewExportGraphWorker(
 		registry:        poolRegistry,
 		systemQueries:   systemQueries,
 		qdrant:          qdrant,
+		storageBackend:  storageBackend,
 		embeddingModel:  embeddingModel,
 		embeddingDims:   embeddingDims,
 	}
@@ -120,7 +125,7 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	queries := store.New(pool.Pool)
 
 	// Build the bundle.
-	builder := graph.NewBundleBuilder(queries, w.qdrant, repoID, w.embeddingModel, w.embeddingDims)
+	builder := graph.NewBundleBuilder(queries, w.qdrant, w.storageBackend, repoID, w.embeddingModel, w.embeddingDims, args.IncludeBodies)
 	bundle, err := builder.Build(ctx, graph.BundleMetadata{
 		Name:        args.Name,
 		Description: args.Description,

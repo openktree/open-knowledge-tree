@@ -44,6 +44,10 @@ type GraphBundle struct {
 	InvestigationSources []InvestigationSourceRow `json:"investigation_sources"`
 	Reports              []ReportRow              `json:"reports"`
 	ReportAnnotations    []ReportAnnotationRow    `json:"report_annotations"`
+	SourceImages         []SourceImageRow         `json:"source_images"`
+	SourceBodies         []SourceBodyRef          `json:"source_bodies,omitempty"`
+	Images               map[string]FileBytes     `json:"images,omitempty"`
+	Bodies               map[string]FileBytes     `json:"bodies,omitempty"`
 	Embeddings           *Embeddings              `json:"embeddings,omitempty"`
 }
 
@@ -87,19 +91,21 @@ type SourceRow struct {
 	ParsedMarkdown string `json:"parsed_markdown,omitempty"`
 	PublishedAt    string `json:"published_at,omitempty"` // RFC3339 date
 	SHA256         string `json:"sha256,omitempty"`
+	HasStoredBody  bool   `json:"has_stored_body,omitempty"`
 }
 
 // FactRow is one fact. Idx is the bundle-internal index fact_sources /
 // fact_concepts / report_annotations reference. ContentHash is the
 // dedup key the import path uses to merge facts into an existing repo.
 type FactRow struct {
-	Idx           int    `json:"idx"`
-	Text          string `json:"text"`
-	FactKind      string `json:"fact_kind"`
-	ImageURL      string `json:"image_url,omitempty"`
-	ContentHash   string `json:"content_hash,omitempty"`
-	PromptsetHash string `json:"promptset_hash,omitempty"`
-	Status        string `json:"status"`
+	Idx            int    `json:"idx"`
+	Text           string `json:"text"`
+	FactKind       string `json:"fact_kind"`
+	ImageURL       string `json:"image_url,omitempty"`
+	ContentHash    string `json:"content_hash,omitempty"`
+	PromptsetHash  string `json:"promptset_hash,omitempty"`
+	Status         string `json:"status"`
+	SourceImageIdx int    `json:"source_image_idx,omitempty"` // -1 = none; for image_url remapping on import
 }
 
 // FactSourceRow links a fact idx to a source idx.
@@ -207,4 +213,42 @@ type Embeddings struct {
 	Dimensions     int                  `json:"dimensions"`
 	FactVectors    map[string][]float32 `json:"fact_vectors,omitempty"`
 	ConceptVectors map[string][]float32 `json:"concept_vectors,omitempty"`
+}
+
+// SourceImageRow is one source_images row. Idx is the bundle-internal
+// index; SourceIdx references the parent source. ImageRef is the key
+// into the Images map; empty for remote-URL inline images (no bytes
+// embedded — the importing repo re-fetches from the remote URL).
+type SourceImageRow struct {
+	Idx         int    `json:"idx"`
+	SourceIdx   int    `json:"source_idx"`
+	Kind        string `json:"kind"` // "inline" | "page"
+	PageNumber  int    `json:"page_number,omitempty"`
+	Position    int    `json:"position"`
+	URL         string `json:"url,omitempty"` // remote URL for inline; empty for page
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
+	Bytes       int    `json:"bytes,omitempty"`
+	AltText     string `json:"alt_text,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	ImageRef    string `json:"image_ref,omitempty"` // key into Images map
+}
+
+// SourceBodyRef is one entry per source with a stored body (today:
+// PDFs). BodyRef is the key into the Bodies map. Only populated when
+// the export was requested with include_bodies=true; otherwise the
+// section is absent and the importing repo re-fetches the URL (or
+// loses the body for upload:// sources).
+type SourceBodyRef struct {
+	SourceIdx   int    `json:"source_idx"`
+	BodyRef     string `json:"body_ref,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+}
+
+// FileBytes carries the raw bytes for an embedded image or source
+// body. base64 in JSON; gzip compresses (poorly for already-compressed
+// PDFs/PNGs, but the bundle is self-contained).
+type FileBytes struct {
+	ContentType string `json:"content_type"`
+	Data        []byte `json:"data"`
 }

@@ -118,6 +118,10 @@ func TestGraph_DownloadStream(t *testing.T) {
 			Name        string `json:"name"`
 			SourceCount int    `json:"source_count"`
 		} `json:"metadata"`
+		SourceImages []json.RawMessage          `json:"source_images"`
+		SourceBodies []json.RawMessage          `json:"source_bodies"`
+		Images       map[string]json.RawMessage `json:"images"`
+		Bodies       map[string]json.RawMessage `json:"bodies"`
 	}
 	if err := json.Unmarshal(jsonBytes, &bundle); err != nil {
 		t.Fatalf("download: bundle is not valid JSON: %v", err)
@@ -130,6 +134,19 @@ func TestGraph_DownloadStream(t *testing.T) {
 	}
 	if bundle.Metadata.SourceCount != 0 {
 		t.Errorf("download: expected empty repo (0 sources), got %d", bundle.Metadata.SourceCount)
+	}
+	// source_images section should be present when a storage backend
+	// is wired (the builder reads source_images from the DB + embeds
+	// bytes). The default test env doesn't wire storage, so the section
+	// is nil — that's correct (images are skipped when storage is nil).
+	// We only assert the bundle is valid JSON; the source_images
+	// section is nil-safe.
+	// source_bodies + bodies should be absent (include_bodies not set).
+	if len(bundle.SourceBodies) > 0 {
+		t.Errorf("download: expected no source_bodies (include_bodies=false), got %d", len(bundle.SourceBodies))
+	}
+	if bundle.Bodies != nil {
+		t.Errorf("download: expected no bodies map (include_bodies=false), got non-nil")
 	}
 }
 

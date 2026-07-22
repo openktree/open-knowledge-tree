@@ -323,7 +323,7 @@ func New(
 	// fresh or existing repo in a single task. Both are no-ops when
 	// no registry is configured (the workers return a clear error).
 	graphImportReembed := &graphImportReembedAdapter{}
-	river.AddWorker(workers, tasks.NewExportGraphWorker(registryClients, registry, systemQueries, qdrantStore, cfg.Providers.Embedding.Model, cfg.Providers.Embedding.Dimensions))
+	river.AddWorker(workers, tasks.NewExportGraphWorker(registryClients, registry, systemQueries, qdrantStore, storageBackend, cfg.Providers.Embedding.Model, cfg.Providers.Embedding.Dimensions))
 	river.AddWorker(workers, tasks.NewImportGraphWorker(registryClients, registry, systemQueries, qdrantStore, storageBackend, cfg.Providers.Embedding.Model, graphImportReembed))
 	river.AddWorker(workers, tasks.NewFactCatchupWorker(cfg.Providers.Dedup, qdrantStore, registry, systemQueries))
 	// Audit log retention. Daily sweep that deletes
@@ -1231,11 +1231,12 @@ type graphExportEnqueuerAdapter struct {
 
 func (a *graphExportEnqueuerAdapter) EnqueueExportGraph(ctx context.Context, args handler.ExportGraphArgs) (string, error) {
 	return a.m.EnqueueExportGraph(ctx, tasks.ExportGraphArgs{
-		RepositoryID: args.RepositoryID,
-		RegistryID:   args.RegistryID,
-		Name:         args.Name,
-		Description:  args.Description,
-		Tags:         args.Tags,
+		RepositoryID:  args.RepositoryID,
+		RegistryID:    args.RegistryID,
+		Name:          args.Name,
+		Description:   args.Description,
+		Tags:          args.Tags,
+		IncludeBodies: args.IncludeBodies,
 	})
 }
 

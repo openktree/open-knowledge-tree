@@ -447,10 +447,76 @@ func (q *Queries) ListAllReportsForExport(ctx context.Context, repositoryID pgty
 	return items, nil
 }
 
+const listAllSourceImagesForExport = `-- name: ListAllSourceImagesForExport :many
+SELECT si.id, si.source_id, si.kind, si.page_number, si.position,
+       si.url, si.width, si.height, si.bytes, si.alt_text,
+       si.storage_key, si.content_type
+FROM okt_repository.source_images si
+JOIN okt_repository.sources s ON si.source_id = s.id
+WHERE s.repository_id = $1
+ORDER BY si.source_id, si.position
+`
+
+type ListAllSourceImagesForExportRow struct {
+	ID          pgtype.UUID `json:"id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	Kind        string      `json:"kind"`
+	PageNumber  *int32      `json:"page_number"`
+	Position    int32       `json:"position"`
+	Url         *string     `json:"url"`
+	Width       *int32      `json:"width"`
+	Height      *int32      `json:"height"`
+	Bytes       *int32      `json:"bytes"`
+	AltText     *string     `json:"alt_text"`
+	StorageKey  *string     `json:"storage_key"`
+	ContentType *string     `json:"content_type"`
+}
+
+// Every source_images row for the repo's sources, including the
+// storage_key + content_type the builder needs to read the image
+// bytes from the storage backend. The builder embeds bytes for
+// storage-backed images (storage_key non-null AND url empty — PDF
+// page renders + mirrored inline images); inline images with a
+// remote url are included as metadata only (the importing repo
+// re-fetches from the remote URL). Ordered by source_id, position
+// for stable bundle output.
+func (q *Queries) ListAllSourceImagesForExport(ctx context.Context, repositoryID pgtype.UUID) ([]ListAllSourceImagesForExportRow, error) {
+	rows, err := q.db.Query(ctx, listAllSourceImagesForExport, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllSourceImagesForExportRow
+	for rows.Next() {
+		var i ListAllSourceImagesForExportRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.Kind,
+			&i.PageNumber,
+			&i.Position,
+			&i.Url,
+			&i.Width,
+			&i.Height,
+			&i.Bytes,
+			&i.AltText,
+			&i.StorageKey,
+			&i.ContentType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllSourcesForExport = `-- name: ListAllSourcesForExport :many
 
 SELECT id, url, doi, kind, status, parsed_title, parsed_text,
-       parsed_markdown, published_at
+       parsed_markdown, published_at, storage_key, content_type
 FROM okt_repository.sources
 WHERE repository_id = $1
 ORDER BY id
@@ -466,6 +532,8 @@ type ListAllSourcesForExportRow struct {
 	ParsedText     *string     `json:"parsed_text"`
 	ParsedMarkdown *string     `json:"parsed_markdown"`
 	PublishedAt    pgtype.Date `json:"published_at"`
+	StorageKey     *string     `json:"storage_key"`
+	ContentType    *string     `json:"content_type"`
 }
 
 // graph_export.sql — whole-repository graph export queries.
@@ -487,10 +555,10 @@ type ListAllSourcesForExportRow struct {
 // rows are physically present.
 // Every source row for a repository, including the parsed
 // text/markdown the import path re-persists so the importing repo
-// doesn't need to re-fetch the URL. Ordered by id for a stable idx
-// assignment in the export builder. (sha256 is computed in Go from
-// the parsed content at bundle-assembly time, not stored on the
-// sources row — the column is registry-side only.)
+// doesn't need to re-fetch the URL. storage_key + content_type are
+// included so the builder can read the stored body (PDF) from the
+// storage backend when include_bodies=true. Ordered by id for a
+// stable idx assignment in the export builder.
 func (q *Queries) ListAllSourcesForExport(ctx context.Context, repositoryID pgtype.UUID) ([]ListAllSourcesForExportRow, error) {
 	rows, err := q.db.Query(ctx, listAllSourcesForExport, repositoryID)
 	if err != nil {
@@ -510,6 +578,8 @@ func (q *Queries) ListAllSourcesForExport(ctx context.Context, repositoryID pgty
 			&i.ParsedText,
 			&i.ParsedMarkdown,
 			&i.PublishedAt,
+			&i.StorageKey,
+			&i.ContentType,
 		); err != nil {
 			return nil, err
 		}

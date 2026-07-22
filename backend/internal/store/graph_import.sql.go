@@ -226,3 +226,71 @@ func (q *Queries) BatchCreateFacts(ctx context.Context, arg BatchCreateFactsPara
 	}
 	return result.RowsAffected(), nil
 }
+
+const batchCreateSourceImages = `-- name: BatchCreateSourceImages :execrows
+INSERT INTO okt_repository.source_images
+    (id, source_id, kind, page_number, position, url, width, height, bytes, alt_text, storage_key, content_type)
+SELECT
+    ids.id, source_ids.source_id, kinds.kind,
+    NULLIF(page_numbers.page_number, '')::int, positions.position,
+    NULLIF(urls.url, ''), widths.width, heights.height, bytes_vals.bytes_val,
+    NULLIF(alt_texts.alt_text, ''), NULLIF(storage_keys.storage_key, ''),
+    NULLIF(content_types.content_type, '')
+FROM unnest($1::uuid[]) WITH ORDINALITY AS ids(id, rn)
+JOIN unnest($2::uuid[]) WITH ORDINALITY AS source_ids(source_id, rn) ON source_ids.rn = ids.rn
+JOIN unnest($3::text[]) WITH ORDINALITY AS kinds(kind, rn) ON kinds.rn = ids.rn
+JOIN unnest($4::text[]) WITH ORDINALITY AS page_numbers(page_number, rn) ON page_numbers.rn = ids.rn
+JOIN unnest($5::int4[]) WITH ORDINALITY AS positions(position, rn) ON positions.rn = ids.rn
+JOIN unnest($6::text[]) WITH ORDINALITY AS urls(url, rn) ON urls.rn = ids.rn
+JOIN unnest($7::int4[]) WITH ORDINALITY AS widths(width, rn) ON widths.rn = ids.rn
+JOIN unnest($8::int4[]) WITH ORDINALITY AS heights(height, rn) ON heights.rn = ids.rn
+JOIN unnest($9::int4[]) WITH ORDINALITY AS bytes_vals(bytes_val, rn) ON bytes_vals.rn = ids.rn
+JOIN unnest($10::text[]) WITH ORDINALITY AS alt_texts(alt_text, rn) ON alt_texts.rn = ids.rn
+JOIN unnest($11::text[]) WITH ORDINALITY AS storage_keys(storage_key, rn) ON storage_keys.rn = ids.rn
+JOIN unnest($12::text[]) WITH ORDINALITY AS content_types(content_type, rn) ON content_types.rn = ids.rn
+ON CONFLICT (id) DO NOTHING
+`
+
+type BatchCreateSourceImagesParams struct {
+	Column1  []pgtype.UUID `json:"column_1"`
+	Column2  []pgtype.UUID `json:"column_2"`
+	Column3  []string      `json:"column_3"`
+	Column4  []string      `json:"column_4"`
+	Column5  []int32       `json:"column_5"`
+	Column6  []string      `json:"column_6"`
+	Column7  []int32       `json:"column_7"`
+	Column8  []int32       `json:"column_8"`
+	Column9  []int32       `json:"column_9"`
+	Column10 []string      `json:"column_10"`
+	Column11 []string      `json:"column_11"`
+	Column12 []string      `json:"column_12"`
+}
+
+// Bulk insert source_images rows with fresh UUIDs. The caller passes
+// parallel arrays: ids, source_ids, kinds, page_numbers (nullable via
+// NULLIF), positions, urls (nullable via NULLIF), widths, heights,
+// bytes_vals, alt_texts (nullable), storage_keys (nullable),
+// content_types (nullable). ON CONFLICT DO NOTHING so a re-import
+// is a no-op. The importer writes the image bytes to the storage
+// backend separately (after the row insert) and updates storage_key
+// when the bytes are embedded in the bundle.
+func (q *Queries) BatchCreateSourceImages(ctx context.Context, arg BatchCreateSourceImagesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, batchCreateSourceImages,
+		arg.Column1,
+		arg.Column2,
+		arg.Column3,
+		arg.Column4,
+		arg.Column5,
+		arg.Column6,
+		arg.Column7,
+		arg.Column8,
+		arg.Column9,
+		arg.Column10,
+		arg.Column11,
+		arg.Column12,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

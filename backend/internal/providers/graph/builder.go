@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -28,25 +30,31 @@ import (
 type BundleBuilder struct {
 	queries        *store.Queries
 	qdrant         *qdrantstore.Store
+	storage        storage.FileStorage
 	repoID         pgtype.UUID
 	repoUUID       uuid.UUID
 	embeddingModel string
 	embeddingDims  int
+	includeBodies  bool
 }
 
 // NewBundleBuilder constructs a builder for the given repo. queries
 // is the per-repo *store.Queries (the caller resolves the pool); qdrant
 // may be nil (the bundle's embeddings section is left empty).
-// embeddingModel/dims are stamped on the bundle so the import path
-// can decide whether to upsert the vectors directly or re-embed.
-func NewBundleBuilder(queries *store.Queries, qdrant *qdrantstore.Store, repoID pgtype.UUID, embeddingModel string, embeddingDims int) *BundleBuilder {
+// storageBackend may be nil (source images + bodies are skipped).
+// includeBodies controls whether source body files (PDFs) are embedded
+// in the bundle (opt-in; images are always embedded when storage is
+// available).
+func NewBundleBuilder(queries *store.Queries, qdrant *qdrantstore.Store, storageBackend storage.FileStorage, repoID pgtype.UUID, embeddingModel string, embeddingDims int, includeBodies bool) *BundleBuilder {
 	return &BundleBuilder{
 		queries:        queries,
 		qdrant:         qdrant,
+		storage:        storageBackend,
 		repoID:         repoID,
 		repoUUID:       asUUID(repoID),
 		embeddingModel: embeddingModel,
 		embeddingDims:  embeddingDims,
+		includeBodies:  includeBodies,
 	}
 }
 
@@ -82,6 +90,7 @@ func (b *BundleBuilder) Build(ctx context.Context, meta BundleMetadata) (*GraphB
 	for _, r := range srcRows {
 		idx := len(bundle.Sources)
 		sourceIdxByID[asUUID(r.ID)] = idx
+		hasStoredBody := r.StorageKey != nil && *r.StorageKey != ""
 		bundle.Sources = append(bundle.Sources, SourceRow{
 			Idx:            idx,
 			URL:            r.Url,
@@ -93,9 +102,62 @@ func (b *BundleBuilder) Build(ctx context.Context, meta BundleMetadata) (*GraphB
 			ParsedMarkdown: ptrStr(r.ParsedMarkdown),
 			PublishedAt:    dateStr(r.PublishedAt),
 			SHA256:         sourceSHA(r),
+			HasStoredBody:  hasStoredBody,
 		})
+		// Embed the source body (PDF) when include_bodies is set and
+		// the source has a stored body. Best-effort: a storage read
+		// failure logs and the body is skipped (the source still has
+		// its parsed text + image metadata).
+		if b.includeBodies && hasStoredBody && b.storage != nil {
+			if err := b.embedSourceBody(ctx, bundle, idx, *r.StorageKey, r.ContentType); err != nil {
+				log.Printf("export: embedding source body idx %d: %v", idx, err)
+			}
+		}
 	}
 	bundle.Metadata.SourceCount = len(bundle.Sources)
+
+	// Source images. Build imageID→idx map for image_url remapping on
+	// image facts. Embed bytes for storage-backed images (storage_key
+	// non-null AND url empty — PDF page renders + mirrored inline).
+	// Inline images with a remote url are metadata-only.
+	sourceImageIdxByID := make(map[uuid.UUID]int)
+	if b.storage != nil {
+		siRows, err := b.queries.ListAllSourceImagesForExport(ctx, b.repoID)
+		if err != nil {
+			return nil, fmt.Errorf("export: listing source_images: %w", err)
+		}
+		for _, r := range siRows {
+			idx := len(bundle.SourceImages)
+			sourceImageIdxByID[asUUID(r.ID)] = idx
+			sIdx, ok := sourceIdxByID[asUUID(r.SourceID)]
+			if !ok {
+				continue
+			}
+			row := SourceImageRow{
+				Idx:         idx,
+				SourceIdx:   sIdx,
+				Kind:        r.Kind,
+				PageNumber:  ptrInt(r.PageNumber),
+				Position:    int(r.Position),
+				URL:         ptrStr(r.Url),
+				Width:       ptrInt(r.Width),
+				Height:      ptrInt(r.Height),
+				Bytes:       ptrInt(r.Bytes),
+				AltText:     ptrStr(r.AltText),
+				ContentType: ptrStr(r.ContentType),
+			}
+			// Embed bytes for storage-backed images (no remote URL).
+			if r.StorageKey != nil && *r.StorageKey != "" && (r.Url == nil || *r.Url == "") {
+				ref := fmt.Sprintf("img-%d", idx)
+				if err := b.embedImage(ctx, bundle, ref, *r.StorageKey, r.ContentType); err == nil {
+					row.ImageRef = ref
+				} else {
+					log.Printf("export: embedding source image idx %d: %v", idx, err)
+				}
+			}
+			bundle.SourceImages = append(bundle.SourceImages, row)
+		}
+	}
 
 	// Facts. Build id→idx map for fact_concepts / report_annotations.
 	factIdxByID := make(map[uuid.UUID]int)
@@ -106,14 +168,23 @@ func (b *BundleBuilder) Build(ctx context.Context, meta BundleMetadata) (*GraphB
 	for _, r := range factRows {
 		idx := len(bundle.Facts)
 		factIdxByID[asUUID(r.ID)] = idx
+		imageURL := ptrStr(r.ImageUrl)
+		// For image facts, resolve the source_image idx from the
+		// image_url so the importer can remap it to the new repo's
+		// slug/sourceID/imageID. -1 = no storage image (remote URL).
+		sourceImageIdx := -1
+		if r.FactKind == "image" && imageURL != "" {
+			sourceImageIdx = resolveSourceImageIdx(imageURL, sourceImageIdxByID)
+		}
 		bundle.Facts = append(bundle.Facts, FactRow{
-			Idx:           idx,
-			Text:          r.Text,
-			FactKind:      r.FactKind,
-			ImageURL:      ptrStr(r.ImageUrl),
-			ContentHash:   factContentHash(r.Text),
-			PromptsetHash: ptrStr(r.PromptsetHash),
-			Status:        r.Status,
+			Idx:            idx,
+			Text:           r.Text,
+			FactKind:       r.FactKind,
+			ImageURL:       imageURL,
+			ContentHash:    factContentHash(r.Text),
+			PromptsetHash:  ptrStr(r.PromptsetHash),
+			Status:         r.Status,
+			SourceImageIdx: sourceImageIdx,
 		})
 	}
 	bundle.Metadata.FactCount = len(bundle.Facts)
@@ -516,11 +587,129 @@ func bundleSHA(b *GraphBundle) (string, error) {
 
 func marshalCanonical(b *GraphBundle) ([]byte, error) {
 	// json.Marshal is deterministic for structs (fields in declaration
-	// order). Maps (embeddings vectors) are NOT deterministic, so we
-	// skip them in the hash computation by zeroing them temporarily.
+	// order). Maps (embeddings vectors, images, bodies) are NOT
+	// deterministic, so we skip them in the hash computation by
+	// zeroing them temporarily.
 	savedEmb := b.Embeddings
+	savedImg := b.Images
+	savedBod := b.Bodies
 	b.Embeddings = nil
+	b.Images = nil
+	b.Bodies = nil
 	data, err := json.Marshal(b)
 	b.Embeddings = savedEmb
+	b.Images = savedImg
+	b.Bodies = savedBod
 	return data, err
+}
+
+// embedSourceBody reads the source body (PDF) from the storage backend
+// and stores it in the bundle's Bodies map + SourceBodies slice.
+func (b *BundleBuilder) embedSourceBody(ctx context.Context, bundle *GraphBundle, sourceIdx int, storageKey string, contentType *string) error {
+	file, err := b.storage.Get(ctx, storageKey)
+	if err != nil {
+		return fmt.Errorf("reading source body from storage: %w", err)
+	}
+	defer file.Body.Close()
+	data, err := readAll(file.Body)
+	if err != nil {
+		return fmt.Errorf("reading source body bytes: %w", err)
+	}
+	ct := "application/pdf"
+	if contentType != nil && *contentType != "" {
+		ct = *contentType
+	}
+	ref := fmt.Sprintf("body-%d", sourceIdx)
+	if bundle.Bodies == nil {
+		bundle.Bodies = make(map[string]FileBytes)
+	}
+	bundle.Bodies[ref] = FileBytes{ContentType: ct, Data: data}
+	bundle.SourceBodies = append(bundle.SourceBodies, SourceBodyRef{
+		SourceIdx:   sourceIdx,
+		BodyRef:     ref,
+		ContentType: ct,
+	})
+	return nil
+}
+
+// embedImage reads an image from the storage backend and stores it in
+// the bundle's Images map.
+func (b *BundleBuilder) embedImage(ctx context.Context, bundle *GraphBundle, ref, storageKey string, contentType *string) error {
+	file, err := b.storage.Get(ctx, storageKey)
+	if err != nil {
+		return fmt.Errorf("reading source image from storage: %w", err)
+	}
+	defer file.Body.Close()
+	data, err := readAll(file.Body)
+	if err != nil {
+		return fmt.Errorf("reading source image bytes: %w", err)
+	}
+	ct := "image/png"
+	if contentType != nil && *contentType != "" {
+		ct = *contentType
+	}
+	if bundle.Images == nil {
+		bundle.Images = make(map[string]FileBytes)
+	}
+	bundle.Images[ref] = FileBytes{ContentType: ct, Data: data}
+	return nil
+}
+
+// resolveSourceImageIdx parses a storage image_url
+// (/api/v1/repositories/{slug}/sources/{sourceID}/images/{imageID})
+// and looks up the imageID in the sourceImageIdxByID map. Returns -1
+// when the URL doesn't match the storage path pattern or the imageID
+// isn't in the map (e.g. a remote URL).
+func resolveSourceImageIdx(imageURL string, sourceImageIdxByID map[uuid.UUID]int) int {
+	// The path ends with /images/{imageID}. Extract the last segment.
+	idx := lastSegmentIndex(imageURL)
+	if idx < 0 {
+		return -1
+	}
+	imageIDStr := imageURL[idx:]
+	id, err := uuid.Parse(imageIDStr)
+	if err != nil {
+		return -1
+	}
+	if imgIdx, ok := sourceImageIdxByID[id]; ok {
+		return imgIdx
+	}
+	return -1
+}
+
+// lastSegmentIndex returns the byte offset of the last "/" in s, or -1.
+func lastSegmentIndex(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// readAll reads all bytes from r without importing io (avoids an
+// unused-import in files that only use the builder). Mirrors
+// io.ReadAll.
+func readAll(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
+	buf := make([]byte, 0, 4096)
+	for {
+		chunk := make([]byte, 32768)
+		n, err := r.Read(chunk)
+		if n > 0 {
+			buf = append(buf, chunk[:n]...)
+		}
+		if err != nil {
+			if err.Error() == "EOF" {
+				return buf, nil
+			}
+			return buf, err
+		}
+	}
+}
+
+func ptrInt(i *int32) int {
+	if i == nil {
+		return 0
+	}
+	return int(*i)
 }

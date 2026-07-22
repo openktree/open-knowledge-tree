@@ -1030,7 +1030,9 @@ export const api = {
 
   // exportRepoGraph enqueues a whole-repository graph export. The
   // body carries the human-readable name/description/tags the
-  // registry indexes for search. Returns 202 + { job_id }.
+  // registry indexes for search. include_bodies controls whether
+  // source PDFs are embedded in the bundle (opt-in; images are always
+  // embedded). Returns 202 + { job_id }.
   exportRepoGraph(slug, body) {
     return request(`/repositories/${slug}/export-graph`, {
       method: "POST",
@@ -1041,14 +1043,21 @@ export const api = {
   // downloadRepoGraph builds a graph bundle synchronously and streams
   // it back as a gzipped JSON attachment. No registry required — the
   // bundle is built in-process and returned directly. The browser
-  // saves it as <slug>.json.gz. Returns a Blob the caller can turn
-  // into a download via an object URL.
-  async downloadRepoGraph(slug, name) {
+  // saves it as <slug>.json.gz. includeBodies controls whether source
+  // PDFs are embedded (opt-in; images are always embedded). Returns a
+  // Blob the caller can turn into a download via an object URL.
+  async downloadRepoGraph(slug, name, includeBodies) {
     const token = getToken();
-    const qs = name ? `?name=${encodeURIComponent(name)}` : "";
-    const res = await fetch(`${BASE}/repositories/${slug}/export-graph/download${qs}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const params = new URLSearchParams();
+    if (name) params.set("name", name);
+    if (includeBodies) params.set("include_bodies", "true");
+    const qs = params.toString();
+    const res = await fetch(
+      `${BASE}/repositories/${slug}/export-graph/download${qs ? "?" + qs : ""}`,
+      {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      },
+    );
     if (!res.ok) {
       let errorMessage = "download failed";
       try {

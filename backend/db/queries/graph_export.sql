@@ -19,12 +19,12 @@
 -- name: ListAllSourcesForExport :many
 -- Every source row for a repository, including the parsed
 -- text/markdown the import path re-persists so the importing repo
--- doesn't need to re-fetch the URL. Ordered by id for a stable idx
--- assignment in the export builder. (sha256 is computed in Go from
--- the parsed content at bundle-assembly time, not stored on the
--- sources row — the column is registry-side only.)
+-- doesn't need to re-fetch the URL. storage_key + content_type are
+-- included so the builder can read the stored body (PDF) from the
+-- storage backend when include_bodies=true. Ordered by id for a
+-- stable idx assignment in the export builder.
 SELECT id, url, doi, kind, status, parsed_title, parsed_text,
-       parsed_markdown, published_at
+       parsed_markdown, published_at, storage_key, content_type
 FROM okt_repository.sources
 WHERE repository_id = $1
 ORDER BY id;
@@ -160,3 +160,20 @@ SELECT id
 FROM okt_repository.concepts
 WHERE repository_id = $1
 ORDER BY id;
+
+-- name: ListAllSourceImagesForExport :many
+-- Every source_images row for the repo's sources, including the
+-- storage_key + content_type the builder needs to read the image
+-- bytes from the storage backend. The builder embeds bytes for
+-- storage-backed images (storage_key non-null AND url empty — PDF
+-- page renders + mirrored inline images); inline images with a
+-- remote url are included as metadata only (the importing repo
+-- re-fetches from the remote URL). Ordered by source_id, position
+-- for stable bundle output.
+SELECT si.id, si.source_id, si.kind, si.page_number, si.position,
+       si.url, si.width, si.height, si.bytes, si.alt_text,
+       si.storage_key, si.content_type
+FROM okt_repository.source_images si
+JOIN okt_repository.sources s ON si.source_id = s.id
+WHERE s.repository_id = $1
+ORDER BY si.source_id, si.position;

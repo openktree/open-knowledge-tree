@@ -84,11 +84,12 @@ type GraphImportEnqueuer interface {
 // ExportGraphArgs is the wire shape for POST /{repoID}/export-graph.
 // Mirrors tasks.ExportGraphArgs; the enqueuer adapter translates.
 type ExportGraphArgs struct {
-	RepositoryID string   `json:"repository_id"`
-	RegistryID   string   `json:"registry_id,omitempty"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
+	RepositoryID  string   `json:"repository_id"`
+	RegistryID    string   `json:"registry_id,omitempty"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	IncludeBodies bool     `json:"include_bodies,omitempty"`
 }
 
 // ImportGraphArgs is the wire shape for POST /repositories/import-graph
@@ -123,10 +124,11 @@ func (h *Graph) ExportGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
-		RegistryID  string   `json:"registry_id"`
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		Tags          []string `json:"tags"`
+		RegistryID    string   `json:"registry_id"`
+		IncludeBodies bool     `json:"include_bodies"`
 	}
 	if err := httputil.DecodeBody(r, &body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
@@ -144,11 +146,12 @@ func (h *Graph) ExportGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobID, err := h.exportEnqueuer.EnqueueExportGraph(r.Context(), ExportGraphArgs{
-		RepositoryID: repoID.String(),
-		RegistryID:   body.RegistryID,
-		Name:         body.Name,
-		Description:  body.Description,
-		Tags:         body.Tags,
+		RepositoryID:  repoID.String(),
+		RegistryID:    body.RegistryID,
+		Name:          body.Name,
+		Description:   body.Description,
+		Tags:          body.Tags,
+		IncludeBodies: body.IncludeBodies,
 	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -203,13 +206,18 @@ func (h *Graph) DownloadGraph(w http.ResponseWriter, r *http.Request) {
 
 	// Build the bundle. The builder reads the per-repo pool queries +
 	// the Qdrant store wired on Deps (nil-safe — the bundle's
-	// embeddings section is empty when Qdrant isn't configured).
+	// embeddings section is empty when Qdrant isn't configured) +
+	// the storage backend (nil-safe — source images + bodies are
+	// skipped when storage isn't configured).
+	includeBodies := r.URL.Query().Get("include_bodies") == "true"
 	builder := graph.NewBundleBuilder(
 		queries,
 		h.deps.Qdrant,
+		h.storageBackend,
 		repoID,
 		h.deps.Config.Providers.Embedding.Model,
 		h.deps.Config.Providers.Embedding.Dimensions,
+		includeBodies,
 	)
 	bundle, err := builder.Build(r.Context(), graph.BundleMetadata{
 		Name: name,

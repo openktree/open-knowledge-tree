@@ -172,12 +172,18 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 	}
 	queries := store.New(pool.Pool)
 
+	// Resolve the repo slug for image_url remapping on image facts.
+	repo, err := w.systemQueries.GetRepositoryByID(ctx, repoID)
+	if err != nil {
+		return fmt.Errorf("import_graph: resolving repository slug: %w", err)
+	}
+
 	// Import.
 	mode := graph.ImportModeNew
 	if args.Mode == "existing" {
 		mode = graph.ImportModeExisting
 	}
-	importer := graph.NewBundleImporter(queries, w.qdrant, repoID, w.embeddingModel)
+	importer := graph.NewBundleImporter(queries, w.qdrant, w.storageBackend, repoID, repo.Slug, w.embeddingModel)
 	result, err := importer.Import(ctx, bundle, mode)
 	if err != nil {
 		return fmt.Errorf("import_graph: applying bundle: %w", err)
