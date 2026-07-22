@@ -440,16 +440,16 @@ func (h *Graph) UploadGraphBundle(w http.ResponseWriter, r *http.Request) {
 
 // ListSharedGraphs proxies the registry's GET /api/v1/graphs so the
 // frontend can browse shared graphs without going direct to the
-// registry (CORS + auth). Gated by graph:import (read access to the
-// shared library; the wiring layer uses graph:write since browse is
-// the precursor to import). Returns the registry's paginated list.
+// registry (CORS + auth). This endpoint does NOT need a repo context
+// (the user browses the shared library before picking a repo to import
+// into), so it resolves the registry client from the configured
+// client map directly (defaulting to "default"). Gated by graph:write.
 func (h *Graph) ListSharedGraphs(w http.ResponseWriter, r *http.Request) {
-	client, regID, ok, msg := h.resolveClient(r)
+	client, ok, msg := h.resolveGlobalClient()
 	if !ok {
 		httputil.WriteError(w, http.StatusServiceUnavailable, msg)
 		return
 	}
-	_ = regID
 	limit, _ := atoiDefault(r.URL.Query().Get("limit"), 20)
 	offset, _ := atoiDefault(r.URL.Query().Get("offset"), 0)
 	q := r.URL.Query().Get("q")
@@ -464,9 +464,10 @@ func (h *Graph) ListSharedGraphs(w http.ResponseWriter, r *http.Request) {
 
 // GetSharedGraph proxies the registry's GET /api/v1/graphs/{id} so the
 // frontend can fetch a single graph's metadata + presigned download
-// URL. Gated by graph:write (wiring layer).
+// URL. No repo context needed (same as ListSharedGraphs). Gated by
+// graph:write.
 func (h *Graph) GetSharedGraph(w http.ResponseWriter, r *http.Request) {
-	client, _, ok, msg := h.resolveClient(r)
+	client, ok, msg := h.resolveGlobalClient()
 	if !ok {
 		httputil.WriteError(w, http.StatusServiceUnavailable, msg)
 		return
@@ -537,6 +538,28 @@ func (h *Graph) resolveClient(r *http.Request) (*registry.Client, string, bool, 
 		return nil, "", false, fmt.Sprintf("registry_id %q is not configured", regID)
 	}
 	return client, regID, true, ""
+}
+
+// resolveGlobalClient resolves a registry client without a repo
+// context. Used by the shared-graphs browse endpoints (ListSharedGraphs
+// / GetSharedGraph) which operate at the /repositories level (no
+// /{repoID} group, so no repo context on the request). Falls back to
+// the "default" registry id, then to the first configured registry.
+func (h *Graph) resolveGlobalClient() (*registry.Client, bool, string) {
+	if h.registryClients == nil || !h.registryClients.IsConfigured() {
+		return nil, false, "remote registry is not configured"
+	}
+	// Try "default" first (the common single-registry case).
+	if client, _, ok := h.registryClients.Client("default"); ok && client.IsConfigured() {
+		return client, true, ""
+	}
+	// Fall back to the first configured registry.
+	for _, id := range h.registryClients.IDs() {
+		if client, _, ok := h.registryClients.Client(id); ok && client.IsConfigured() {
+			return client, true, ""
+		}
+	}
+	return nil, false, "no registry client is configured"
 }
 
 // atoiDefault parses s as int, returning def on empty/invalid.
