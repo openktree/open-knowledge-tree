@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -228,18 +228,11 @@ func (h *Graph) DownloadGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Gzip the bundle. The bytes are the same shape the registry
-	// stores and the import path (UploadGraphBundle + import_graph
-	// task) accepts, so a downloaded file is directly re-importable
-	// on any OKT instance.
-	gz, err := graph.MarshalGzip(bundle)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "gzipping graph bundle: "+err.Error())
-		return
-	}
-
-	// Stream back as a downloadable attachment. The filename uses the
-	// repo's slug (already slug-safe) + .json.gz.
+	// Stream back as a downloadable gzipped JSON attachment. We write
+	// the gzip output directly to the ResponseWriter (instead of
+	// buffering the entire gzipped bundle in memory) so peak memory
+	// stays bounded for large repos with images + PDFs. The filename
+	// uses the repo's slug (already slug-safe) + .json.gz.
 	filename := repo.Slug
 	if filename == "" {
 		filename = "graph"
@@ -247,9 +240,13 @@ func (h *Graph) DownloadGraph(w http.ResponseWriter, r *http.Request) {
 	filename += ".json.gz"
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-	w.Header().Set("Content-Length", strconv.Itoa(len(gz)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(gz)
+	if err := graph.MarshalGzipTo(bundle, w); err != nil {
+		// The response has already started; the client will see a
+		// truncated download. Log so the operator knows.
+		log.Printf("download graph: streaming gzip for repo %s: %v", repoID, err)
+		return
+	}
 }
 
 // ── Import (existing repo) ───────────────────────────────────────────

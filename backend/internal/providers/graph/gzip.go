@@ -48,3 +48,18 @@ func UnmarshalGzip(data []byte) (*GraphBundle, error) {
 	}
 	return &b, nil
 }
+
+// MarshalGzipTo serializes a GraphBundle to gzipped JSON, writing
+// directly to the provided writer (instead of buffering in memory).
+// Used by the download endpoint so peak memory stays bounded for
+// large repos with images + PDFs — the gzip output flushes as it's
+// built instead of accumulating the entire gzipped bundle in a buffer.
+func MarshalGzipTo(b *GraphBundle, w io.Writer) error {
+	gz := gzip.NewWriter(w)
+	enc := json.NewEncoder(gz)
+	if err := enc.Encode(b); err != nil {
+		gz.Close()
+		return fmt.Errorf("marshaling graph bundle: %w", err)
+	}
+	return gz.Close()
+}
