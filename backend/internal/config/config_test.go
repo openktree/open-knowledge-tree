@@ -386,3 +386,87 @@ auth:
 		t.Fatal("expected error for `isolation.task.*` (misplaced task block); got nil — UnmarshalExact should reject it")
 	}
 }
+
+// TestTierFor_ScaleByFactCount is a table test for the
+// SummarizationConfig.TierFor curriculum resolver: it picks the
+// highest tier whose MinFacts <= factCount, derives max_tokens as
+// batch_size * TokensPerFact when the tier omits it, and falls back
+// to the top-level BatchSize/MaxTokens when Tiers is empty.
+func TestTierFor_ScaleByFactCount(t *testing.T) {
+	tiers := []SummaryCurriculumTier{
+		{MinFacts: 0, BatchSize: 20},
+		{MinFacts: 100, BatchSize: 50},
+		{MinFacts: 1000, BatchSize: 100},
+		{MinFacts: 10000, BatchSize: 200},
+	}
+	cases := []struct {
+		name        string
+		factCount   int
+		wantBatch   int
+		wantTokens  int
+	}{
+		{"tier1 below first boundary", 0, 20, 600},
+		{"tier1 edge", 99, 20, 600},
+		{"tier2 lower bound", 100, 50, 1500},
+		{"tier2 edge", 999, 50, 1500},
+		{"tier3 lower bound", 1000, 100, 3000},
+		{"tier3 edge", 9999, 100, 3000},
+		{"tier4 lower bound", 10000, 200, 6000},
+		{"tier4 well above", 99999, 200, 6000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := SummarizationConfig{BatchSize: 20, MaxTokens: 600, Tiers: tiers, TokensPerFact: 30}
+			b, m := s.TierFor(tc.factCount)
+			if b != tc.wantBatch {
+				t.Errorf("TierFor(%d) batch = %d, want %d", tc.factCount, b, tc.wantBatch)
+			}
+			if m != tc.wantTokens {
+				t.Errorf("TierFor(%d) tokens = %d, want %d", tc.factCount, m, tc.wantTokens)
+			}
+		})
+	}
+
+	// Explicit tier MaxTokens overrides the derived value.
+	t.Run("explicit tier max_tokens wins over derivation", func(t *testing.T) {
+		s := SummarizationConfig{TokensPerFact: 30, Tiers: []SummaryCurriculumTier{
+			{MinFacts: 0, BatchSize: 20, MaxTokens: 999},
+		}}
+		_, m := s.TierFor(5)
+		if m != 999 {
+			t.Errorf("explicit tier max_tokens = %d, want 999 (derivation skipped)", m)
+		}
+	})
+
+	// Empty tiers -> top-level fallback (backward compat).
+	t.Run("empty tiers falls back to top-level", func(t *testing.T) {
+		s := SummarizationConfig{BatchSize: 20, MaxTokens: 600}
+		b, m := s.TierFor(500)
+		if b != 20 || m != 600 {
+			t.Errorf("empty tiers TierFor(500) = %d/%d, want 20/600 (top-level fallback)", b, m)
+		}
+	})
+
+	// Empty tiers with no top-level -> documented defaults (20/600).
+	t.Run("empty tiers and no top-level uses defaults", func(t *testing.T) {
+		s := SummarizationConfig{}
+		b, m := s.TierFor(500)
+		if b != 20 || m != 600 {
+			t.Errorf("zero config TierFor(500) = %d/%d, want 20/600 (defaults)", b, m)
+		}
+	})
+
+	// A tier with BatchSize <= 0 is skipped by TierFor (Load()
+	// drops them, but TierFor defends in case a caller bypasses Load).
+	t.Run("invalid tier skipped", func(t *testing.T) {
+		s := SummarizationConfig{BatchSize: 20, MaxTokens: 600, TokensPerFact: 30,
+			Tiers: []SummaryCurriculumTier{
+				{MinFacts: 0, BatchSize: 0}, // invalid
+				{MinFacts: 0, BatchSize: 50},
+			}}
+		b, _ := s.TierFor(10)
+		if b != 50 {
+			t.Errorf("invalid-tier-skipped batch = %d, want 50 (valid tier wins)", b)
+		}
+	})
+}

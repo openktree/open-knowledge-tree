@@ -490,6 +490,22 @@ export const api = {
     });
   },
 
+  // recomputeRepoConceptGroups enqueues a full concept_groups summary
+  // recompute for the repo (the repair path; the ingest workers keep
+  // the summary live incrementally otherwise). Gated on
+  // repositories.*.manage. Returns { repository_id, enqueued_job_id,
+  // enqueued }.
+  recomputeRepoConceptGroups(repoID) {
+    return request(`/admin/repos/${repoID}/concepts/recompute`, { method: "POST" });
+  },
+
+  // previewRecomputeRepoConceptGroups fetches the current concept_groups
+  // row count + the repo's concept row count so the danger box can
+  // show "recomputing N groups from M concepts" before confirming.
+  previewRecomputeRepoConceptGroups(repoID) {
+    return request(`/admin/repos/${repoID}/concepts/recompute`, { method: "GET" });
+  },
+
   // reprocessSource re-runs source_decomposition for the FAILED
   // chunks of a source only (via RetryChunkIndices), so successful
   // chunks are not re-LLM'd and no duplicate fact rows are created.
@@ -735,6 +751,17 @@ export const api = {
     const qs = new URLSearchParams({ limit, offset });
     if (q) qs.set("q", q);
     return request(`/repositories/${slug}/concepts/${conceptID}/facts?${qs.toString()}`);
+  },
+
+  // Concept sources: the unique sources backing a concept context's
+  // facts, with a fact_count per source (provenance signal). Scoped
+  // per-context (the concept_id of the active context tab). The UI
+  // fetches a batch (limit 100) up front and shows the top 10 with a
+  // "show more" reveal; the MCP getConceptSources tool exposes the
+  // group-level aggregate to agents.
+  listConceptSources(slug, conceptID, { limit = 100, offset = 0 } = {}) {
+    const qs = new URLSearchParams({ limit, offset });
+    return request(`/repositories/${slug}/concepts/${conceptID}/sources?${qs.toString()}`);
   },
 
   // Concept summaries: the summarize_concepts worker's read surface.

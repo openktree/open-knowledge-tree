@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
+	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
@@ -1341,6 +1342,15 @@ func TestConcepts_GroupedListCollapsesContexts(t *testing.T) {
 				t.Fatalf("link fact→concept: %v", err)
 			}
 		}
+		// Mirror the ingest workers: recompute the concept_groups
+		// summary for the touched name key so the q="" list path
+		// (which reads from concept_groups) reflects this insert.
+		// The workers do this at the end of each mutating tx; direct
+		// store writes in tests must do the same or the summary stays
+		// empty and the q="" list returns no groups.
+		if err := concepts.RecomputeTouchedGroups(ctx, queries, pgRepo, []string{strings.ToLower(name)}); err != nil {
+			t.Fatalf("recompute concept_groups for %s: %v", name, err)
+		}
 		return c.ID
 	}
 
@@ -1885,5 +1895,177 @@ func TestConcepts_CanonicalNameCharsetAcceptsPunctuation(t *testing.T) {
 		}); err == nil {
 			t.Errorf("banned canonical_name %q accepted by CHECK (should be rejected)", name)
 		}
+	}
+}
+
+// conceptSourceRow is the JSON shape returned by
+// GET /concepts/{conceptID}/sources for one source. Mirrors the
+// store.ListSourcesByConceptRow fields the handler serializes.
+type conceptSourceRow struct {
+	ID           string `json:"id"`
+	URL          string `json:"url"`
+	DOI          string `json:"doi"`
+	ParsedTitle  string `json:"parsed_title"`
+	ParsedAuthor string `json:"parsed_author"`
+	FactCount    int64  `json:"fact_count"`
+}
+
+// TestConceptSources covers GET /concepts/{conceptID}/sources: the
+// per-context provenance view that lists the unique sources backing a
+// concept context's facts, with a fact_count per source. It asserts
+// the happy path (source appears with fact_count == number of linked
+// facts, DOI/parsed_author carried through), the empty case (concept
+// with no facts → data: [] total: 0), and the cross-repo isolation
+// case (a concept_id from repo A requested against repo B → 404).
+func TestConceptSources(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "conceptsrc@example.com")
+	const slug = "concept-sources-repo"
+	_, _, repoID := createRepositoryWithDB(t, admin, "Concept Sources", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	queries := store.New(env.DB)
+
+	// Two sources in the repo; source A carries a DOI + parsed
+	// author, source B does not (so we can assert the omitempty-ish
+	// nullable fields).
+	srcA := pgtype.UUID{}
+	if err := srcA.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scan srcA id: %v", err)
+	}
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: srcA, RepositoryID: pgRepo, Url: "https://example.com/source-a", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source A: %v", err)
+	}
+	doiA := "10.1234/concept-source-a"
+	authorA := "Jane Doe"
+	if _, err := env.DB.Exec(context.Background(),
+		`UPDATE okt_repository.sources SET doi = $2, parsed_title = $3, parsed_author = $4 WHERE id = $1`,
+		srcA, doiA, "Source A Title", authorA,
+	); err != nil {
+		t.Fatalf("update source A metadata: %v", err)
+	}
+
+	srcB := pgtype.UUID{}
+	if err := srcB.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scan srcB id: %v", err)
+	}
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: srcB, RepositoryID: pgRepo, Url: "https://example.com/source-b", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source B: %v", err)
+	}
+
+	// One concept context.
+	concept, err := queries.CreateConcept(context.Background(), store.CreateConceptParams{
+		RepositoryID: pgRepo, CanonicalName: "Photosynthesis", Context: "Biological Process",
+	})
+	if err != nil {
+		t.Fatalf("create concept: %v", err)
+	}
+	conceptIDStr := pgUUIDString(concept.ID)
+
+	// Two facts linked to source A, one fact linked to source B, all
+	// linked to the concept. So source A should have fact_count == 2
+	// and source B fact_count == 1.
+	for i := 0; i < 2; i++ {
+		fidStr := insertFactWithSource(t, env, pgRepo, srcA, "Photosynthesis converts light into energy.", int32(i))
+		fid := pgtype.UUID{}
+		if err := fid.Scan(fidStr); err != nil {
+			t.Fatalf("scan fact id: %v", err)
+		}
+		if _, err := queries.AddFactConcept(context.Background(), store.AddFactConceptParams{
+			FactID: fid, ConceptID: concept.ID,
+		}); err != nil {
+			t.Fatalf("link fact to concept: %v", err)
+		}
+	}
+	fidStrB := insertFactWithSource(t, env, pgRepo, srcB, "Chlorophyll absorbs red and blue light.", 0)
+	fidB := pgtype.UUID{}
+	if err := fidB.Scan(fidStrB); err != nil {
+		t.Fatalf("scan fact id B: %v", err)
+	}
+	if _, err := queries.AddFactConcept(context.Background(), store.AddFactConceptParams{
+		FactID: fidB, ConceptID: concept.ID,
+	}); err != nil {
+		t.Fatalf("link fact B to concept: %v", err)
+	}
+
+	// Happy path: GET /concepts/{conceptID}/sources returns both
+	// sources, ordered by fact_count DESC, so source A (2 facts)
+	// ranks first and source B (1 fact) second.
+	resp, raw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts/"+conceptIDStr+"/sources", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET concept sources: %d %s", resp.StatusCode, raw)
+	}
+	var list pageEnvelope
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatalf("decode sources envelope: %v", err)
+	}
+	if list.Total != 2 {
+		t.Fatalf("sources total = %d, want 2", list.Total)
+	}
+	if len(list.Data) != 2 {
+		t.Fatalf("sources data len = %d, want 2", len(list.Data))
+	}
+	var srcs [2]conceptSourceRow
+	for i, d := range list.Data {
+		if err := json.Unmarshal(d, &srcs[i]); err != nil {
+			t.Fatalf("decode source row %d: %v", i, err)
+		}
+	}
+	// Source A first (fact_count == 2), with DOI + parsed_author.
+	if srcs[0].URL != "https://example.com/source-a" {
+		t.Errorf("source[0].url = %q, want source-a (highest fact_count)", srcs[0].URL)
+	}
+	if srcs[0].FactCount != 2 {
+		t.Errorf("source[0].fact_count = %d, want 2", srcs[0].FactCount)
+	}
+	if srcs[0].DOI != doiA {
+		t.Errorf("source[0].doi = %q, want %q", srcs[0].DOI, doiA)
+	}
+	if srcs[0].ParsedAuthor != authorA {
+		t.Errorf("source[0].parsed_author = %q, want %q", srcs[0].ParsedAuthor, authorA)
+	}
+	// Source B second (fact_count == 1), no DOI.
+	if srcs[1].URL != "https://example.com/source-b" {
+		t.Errorf("source[1].url = %q, want source-b", srcs[1].URL)
+	}
+	if srcs[1].FactCount != 1 {
+		t.Errorf("source[1].fact_count = %d, want 1", srcs[1].FactCount)
+	}
+	if srcs[1].DOI != "" {
+		t.Errorf("source[1].doi = %q, want empty (no DOI set)", srcs[1].DOI)
+	}
+
+	// Empty case: a second concept with no facts → total 0, data [].
+	emptyConcept, err := queries.CreateConcept(context.Background(), store.CreateConceptParams{
+		RepositoryID: pgRepo, CanonicalName: "Empty Concept", Context: "Biological Process",
+	})
+	if err != nil {
+		t.Fatalf("create empty concept: %v", err)
+	}
+	emptyIDStr := pgUUIDString(emptyConcept.ID)
+	eResp, eRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts/"+emptyIDStr+"/sources", nil)
+	if eResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET empty concept sources: %d %s", eResp.StatusCode, eRaw)
+	}
+	var emptyList pageEnvelope
+	if err := json.Unmarshal(eRaw, &emptyList); err != nil {
+		t.Fatalf("decode empty sources: %v", err)
+	}
+	if emptyList.Total != 0 || len(emptyList.Data) != 0 {
+		t.Errorf("empty concept sources: total=%d data=%d, want 0/0", emptyList.Total, len(emptyList.Data))
+	}
+
+	// Cross-repo isolation: request repo A's concept against repo B
+	// → 404 (the handler verifies concept.RepositoryID == repoID).
+	const slugB = "concept-sources-repo-b"
+	createRepositoryWithDB(t, admin, "Concept Sources B", slugB, "desc", "")
+	bResp, _ := admin.do("GET", "/api/v1/repositories/"+slugB+"/concepts/"+conceptIDStr+"/sources", nil)
+	if bResp.StatusCode != http.StatusNotFound {
+		t.Errorf("cross-repo concept sources: status %d, want 404 (isolation)", bResp.StatusCode)
 	}
 }

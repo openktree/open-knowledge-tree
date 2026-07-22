@@ -768,6 +768,8 @@ func (h *Handler) adminRoutes(r chi.Router) {
 		//     created.
 		r.Post("/repos/{repoID}/concepts/reextract", h.perm("repositories", "manage", h.admin.ReextractRepoConcepts))
 		r.Get("/repos/{repoID}/concepts/reextract", h.perm("repositories", "manage", h.admin.PreviewReextractRepoConcepts))
+		r.Post("/repos/{repoID}/concepts/recompute", h.perm("repositories", "manage", h.admin.RecomputeRepoConceptGroups))
+		r.Get("/repos/{repoID}/concepts/recompute", h.perm("repositories", "manage", h.admin.PreviewRecomputeRepoConceptGroups))
 		r.Post("/repos/{repoID}/sources/{sourceID}/reprocess", h.perm("repositories", "manage", h.admin.ReprocessSource))
 		r.Get("/repos/{repoID}/sources/{sourceID}/reprocess", h.perm("repositories", "manage", h.admin.PreviewReprocessSource))
 	})
@@ -857,6 +859,7 @@ func (h *Handler) repoRoutes(r chi.Router) {
 	r.Get("/concepts/{conceptID}/relations/{otherConceptID}", h.repoPerm("concept", "read", h.concepts.GetConceptRelationDetails))
 	r.Get("/concepts/{conceptID}", h.repoPerm("concept", "read", h.concepts.GetConcept))
 	r.Get("/concepts/{conceptID}/facts", h.repoPerm("concept", "read", h.concepts.ListConceptFacts))
+	r.Get("/concepts/{conceptID}/sources", h.repoPerm("concept", "read", h.concepts.ListConceptSources))
 		r.Get("/concepts/{conceptID}/summaries", h.repoPerm("concept", "read", h.summaries.ListByConcept))
 		r.Get("/concepts/{conceptID}/definition", h.repoPerm("concept", "read", h.syntheses.GetDefinition))
 		r.Get("/facts/{factID}/concepts", h.repoPerm("fact", "read", h.concepts.ListFactConcepts))

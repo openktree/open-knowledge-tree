@@ -187,3 +187,14 @@ ORDER BY sequence_num;
 
 -- name: CountSummariesByConcept :one
 SELECT COUNT(*) FROM okt_repository.concept_summaries WHERE concept_id = $1;
+
+-- name: CountFactsForConceptSummary :one
+-- Total fact count for a concept (over fact_concepts), used by the
+-- summarize_concepts worker to select a fact-summary curriculum
+-- tier (SummarizationConfig.TierFor). The fact_concepts PRIMARY KEY
+-- index on concept_id makes this a fast index-only scan. Distinct
+-- from CountFactsByConcept (concepts.sql) which joins facts and
+-- accepts a search predicate; this one is the bare count the worker
+-- needs to pick a batch_size/max_tokens tier.
+SELECT COUNT(*) FROM okt_repository.fact_concepts fc
+WHERE fc.concept_id = $1;

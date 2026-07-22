@@ -30,16 +30,27 @@ import (
 // stubSummarizer is a test double for
 // summarization.SummarizationProvider that returns a fixed markdown
 // body built from the concept name + fact count. It records every
-// call so tests can assert how many slices were produced.
+// call so tests can assert how many slices were produced and what
+// batch_size/max_tokens the worker selected (the curriculum tests
+// assert on the recorded MaxTokens + fact count per call).
 type stubSummarizer struct {
 	mu    sync.Mutex
 	calls int
 	body  func(concept string, factIDs []string) string
+	// lastCall records the fact count + MaxTokens of the most
+	// recent Summarize call so curriculum tests can assert the
+	// worker picked the expected tier.
+	lastCall struct {
+		factCount int
+		maxTokens int
+	}
 }
 
 func (s *stubSummarizer) Summarize(_ context.Context, _ store.DBTX, req summarization.SummarizationRequest) (string, error) {
 	s.mu.Lock()
 	s.calls++
+	s.lastCall.factCount = len(req.Facts)
+	s.lastCall.maxTokens = req.MaxTokens
 	s.mu.Unlock()
 	ids := make([]string, 0, len(req.Facts))
 	for _, f := range req.Facts {
@@ -65,6 +76,15 @@ func (s *stubSummarizer) callCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+// lastCallSnapshot returns a copy of the most recent call's fact
+// count + MaxTokens so tests can assert the curriculum tier the
+// worker selected without racing the stub's mutex.
+func (s *stubSummarizer) lastCallSnapshot() (factCount, maxTokens int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastCall.factCount, s.lastCall.maxTokens
 }
 
 // itoa is a tiny strconv.Itoa wrapper kept local so the test file
@@ -730,6 +750,178 @@ func mustGetOpenSummary(t *testing.T, env *testutil.TestEnv, conceptID pgtype.UU
 		t.Fatalf("GetOpenSummary for concept %s: %v", pgUUIDString(conceptID), err)
 	}
 	return s
+}
+
+// curriculumTiers is the tier ladder the curriculum tests configure:
+// < 100 facts -> batch 20, 100-999 -> batch 50. TokensPerFact 30 so
+// max_tokens derives as batch_size * 30 (600 / 1500).
+func curriculumTiers() []config.SummaryCurriculumTier {
+	return []config.SummaryCurriculumTier{
+		{MinFacts: 0, BatchSize: 20},
+		{MinFacts: 100, BatchSize: 50},
+	}
+}
+
+// TestSummarizeConcepts_CurriculumTierScaling verifies the worker
+// selects the batch_size/max_tokens for a concept based on its total
+// fact count: a 120-fact concept (tier-2, >= 100) produces 50-fact
+// slices (not the tier-1 20), and the summarizer is called with
+// MaxTokens == 50 * 30 = 1500.
+func TestSummarizeConcepts_CurriculumTierScaling(t *testing.T) {
+	cfg := config.SummarizationConfig{
+		Enabled:      true,
+		Model:        "stub-model",
+		Tiers:        curriculumTiers(),
+		TokensPerFact: 30,
+	}
+	ste := newSummarizeTestEnv(t, cfg)
+	admin := bootstrapSysAdmin(t, ste.env, "tier@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "Tier", "tier", "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+
+	// 120 facts -> tier-2 (>= 100), batch_size 50, max_tokens 1500.
+	conceptID, _ := seedConceptWithFacts(t, ste.env, pgRepo, "BigHub", "Topic", 120)
+	res := runSummarizeJob(t, ste, tasks.SummarizeConceptsArgs{
+		RepositoryID: repoID, ConceptIDs: []string{pgUUIDString(conceptID)},
+	})
+
+	// Two complete 50-fact slices + a 20-fact open remainder.
+	if res.SummariesCreated == 0 {
+		t.Fatalf("expected slices created, got %d", res.SummariesCreated)
+	}
+	fc, mt := ste.stub.lastCallSnapshot()
+	if fc != 50 && fc != 20 {
+		t.Errorf("last summarizer call fact_count = %d, want 50 (complete slice) or 20 (open remainder)", fc)
+	}
+	if mt != 1500 {
+		t.Errorf("last summarizer call max_tokens = %d, want 1500 (50 * tokens_per_fact 30)", mt)
+	}
+
+	// Verify a frozen slice carries fact_count 50 (tier-2 batch).
+	var frozenCount, maxFactCount int
+	if err := ste.env.DB.QueryRow(context.Background(),
+		`SELECT count(*), COALESCE(max(fact_count), 0) FROM okt_repository.concept_summaries
+		 WHERE concept_id = $1 AND is_complete = TRUE`, conceptID,
+	).Scan(&frozenCount, &maxFactCount); err != nil {
+		t.Fatalf("query frozen slices: %v", err)
+	}
+	if frozenCount != 2 || maxFactCount != 50 {
+		t.Errorf("frozen slices: count=%d max_fact_count=%d, want 2 / 50 (tier-2 batch_size)", frozenCount, maxFactCount)
+	}
+}
+
+// TestSummarizeConcepts_CurriculumForwardOnly verifies that crossing
+// a tier boundary does NOT re-slice existing frozen slices: a 90-fact
+// concept (tier-1, batch 20) freezes slices at 20; after growing to
+// 130 facts (tier-2, batch 50), the existing 20-fact slices stay
+// frozen and only the NEW slice uses batch_size 50.
+func TestSummarizeConcepts_CurriculumForwardOnly(t *testing.T) {
+	cfg := config.SummarizationConfig{
+		Enabled:      true,
+		Model:        "stub-model",
+		Tiers:        curriculumTiers(),
+		TokensPerFact: 30,
+	}
+	ste := newSummarizeTestEnv(t, cfg)
+	admin := bootstrapSysAdmin(t, ste.env, "fwd@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "Fwd", "fwd", "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+
+	// 90 facts -> tier-1 (batch 20). Batch-only mode produces four
+	// complete 20-slices; the 10 leftover facts stay uncovered (no
+	// open remainder is emitted once a complete slice exists).
+	conceptID, _ := seedConceptWithFacts(t, ste.env, pgRepo, "Grower", "Topic", 90)
+	runSummarizeJob(t, ste, tasks.SummarizeConceptsArgs{
+		RepositoryID: repoID, ConceptIDs: []string{pgUUIDString(conceptID)},
+	})
+	var frozenBefore, maxFactBefore int
+	if err := ste.env.DB.QueryRow(context.Background(),
+		`SELECT count(*), COALESCE(max(fact_count), 0) FROM okt_repository.concept_summaries
+		 WHERE concept_id = $1 AND is_complete = TRUE`, conceptID,
+	).Scan(&frozenBefore, &maxFactBefore); err != nil {
+		t.Fatalf("query frozen before: %v", err)
+	}
+	if frozenBefore != 4 || maxFactBefore != 20 {
+		t.Fatalf("setup: frozen before = %d / max %d, want 4 / 20 (tier-1 batch)", frozenBefore, maxFactBefore)
+	}
+
+	// +40 facts -> 130 total (tier-2, batch 50). The 10 leftover
+	// uncovered + 40 new = 50 accumulated, which meets the new
+	// tier-2 batch_size 50, so one NEW complete 50-fact slice is
+	// created. The existing four 20-fact frozen slices are untouched
+	// (forward-only: no re-slicing).
+	seedExtraFacts(t, ste.env, pgRepo, conceptID, "Grower", 40, 90)
+	res := runSummarizeJob(t, ste, tasks.SummarizeConceptsArgs{
+		RepositoryID: repoID, ConceptIDs: []string{pgUUIDString(conceptID)},
+	})
+
+	// Five frozen slices now: the original four at 20 + one new at
+	// 50. max(fact_count) across frozen = 50 (the new tier-2 slice).
+	var frozenAfter, maxFactAfter int
+	if err := ste.env.DB.QueryRow(context.Background(),
+		`SELECT count(*), COALESCE(max(fact_count), 0) FROM okt_repository.concept_summaries
+		 WHERE concept_id = $1 AND is_complete = TRUE`, conceptID,
+	).Scan(&frozenAfter, &maxFactAfter); err != nil {
+		t.Fatalf("query frozen after: %v", err)
+	}
+	if frozenAfter != 5 {
+		t.Errorf("frozen after tier crossing: count=%d, want 5 (4 old @20 + 1 new @50)", frozenAfter)
+	}
+	if maxFactAfter != 50 {
+		t.Errorf("max frozen fact_count after = %d, want 50 (new tier-2 slice)", maxFactAfter)
+	}
+	// A 20-fact slice still exists (the old ones weren't re-sliced).
+	var twentyCount int
+	if err := ste.env.DB.QueryRow(context.Background(),
+		`SELECT count(*) FROM okt_repository.concept_summaries
+		 WHERE concept_id = $1 AND is_complete = TRUE AND fact_count = 20`, conceptID,
+	).Scan(&twentyCount); err != nil {
+		t.Fatalf("query 20-fact slices: %v", err)
+	}
+	if twentyCount != 4 {
+		t.Errorf("20-fact frozen slices after = %d, want 4 (forward-only: old slices untouched)", twentyCount)
+	}
+	if res.SummariesCreated != 1 || res.SummariesUpdated != 0 {
+		t.Errorf("forward-only pass: created=%d updated=%d, want 1 / 0 (one new 50-fact slice)",
+			res.SummariesCreated, res.SummariesUpdated)
+	}
+}
+
+// TestSummarizeConcepts_CurriculumDefaultsWhenNoTiers verifies
+// backward compat: when Tiers is nil, a 500-fact concept uses the
+// top-level batch_size (20) — the pre-curriculum behavior.
+func TestSummarizeConcepts_CurriculumDefaultsWhenNoTiers(t *testing.T) {
+	cfg := config.SummarizationConfig{
+		Enabled:   true,
+		Model:     "stub-model",
+		BatchSize: 20,
+		MaxTokens: 600,
+		// Tiers intentionally nil.
+	}
+	ste := newSummarizeTestEnv(t, cfg)
+	admin := bootstrapSysAdmin(t, ste.env, "notier@example.com")
+	_, _, repoID := createRepositoryWithDB(t, admin, "NoTier", "notier", "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+
+	// 500 facts -> with no tiers, top-level batch_size 20 applies.
+	conceptID, _ := seedConceptWithFacts(t, ste.env, pgRepo, "Plain", "Topic", 500)
+	runSummarizeJob(t, ste, tasks.SummarizeConceptsArgs{
+		RepositoryID: repoID, ConceptIDs: []string{pgUUIDString(conceptID)},
+	})
+	var maxFactCount int
+	if err := ste.env.DB.QueryRow(context.Background(),
+		`SELECT COALESCE(max(fact_count), 0) FROM okt_repository.concept_summaries
+		 WHERE concept_id = $1 AND is_complete = TRUE`, conceptID,
+	).Scan(&maxFactCount); err != nil {
+		t.Fatalf("query max fact_count: %v", err)
+	}
+	if maxFactCount != 20 {
+		t.Errorf("max frozen fact_count = %d, want 20 (top-level batch_size, no tiers)", maxFactCount)
+	}
+	_, mt := ste.stub.lastCallSnapshot()
+	if mt != 600 {
+		t.Errorf("last summarizer call max_tokens = %d, want 600 (top-level max_tokens, no tiers)", mt)
+	}
 }
 
 // guard against unused imports when the file is edited.

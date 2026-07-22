@@ -169,6 +169,86 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// q="" (the default list page) reads from the concept_groups
+	// summary table (migration 0061) — an O(page) index range scan
+	// regardless of repo size, paginated at the group level in SQL,
+	// replacing the prior load-every-row + group-in-Go + slice-in-Go
+	// path that scaled with the repo's total concept count. q != ""
+	// falls back to the live ListGroupedConceptsByRepo query below
+	// because the summary can't see alias matches (aliases live on
+	// concept_aliases, not in the summary).
+	if q == "" {
+		pageRows, err := queries.ListConceptGroupsByRepoPage(r.Context(), store.ListConceptGroupsByRepoPageParams{
+			RepositoryID: repoID,
+			Limit:        int32(limit),
+			Offset:       int32(offset),
+		})
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list concepts")
+			return
+		}
+		total, err := queries.CountConceptGroupsByRepo(r.Context(), repoID)
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to count concepts")
+			return
+		}
+		if len(pageRows) == 0 {
+			httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
+				Data:       []concepts.Group{},
+				Total:      total,
+				Limit:      limit,
+				Offset:     offset,
+				SearchMode: "lexical",
+			})
+			return
+		}
+		nameKeys := make([]string, 0, len(pageRows))
+		pageGroupRows := make([]concepts.PageGroupRow, 0, len(pageRows))
+		for _, p := range pageRows {
+			nameKeys = append(nameKeys, p.NameKey)
+			pageGroupRows = append(pageGroupRows, concepts.PageGroupRow{
+				NameKey:        p.NameKey,
+				CanonicalName:  p.CanonicalName,
+				ContextCount:   p.ContextCount,
+				TotalFactCount: p.TotalFactCount,
+			})
+		}
+		ctxRows, err := queries.ListConceptsByRepoNameKeys(r.Context(), store.ListConceptsByRepoNameKeysParams{
+			RepositoryID: repoID,
+			NameKeys:     nameKeys,
+		})
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to load concept contexts")
+			return
+		}
+		contextRows := make([]concepts.ContextSourceRow, 0, len(ctxRows))
+		for _, cr := range ctxRows {
+			contextRows = append(contextRows, concepts.ContextSourceRow{
+				ID:            cr.ID,
+				CanonicalName: cr.CanonicalName,
+				Context:       cr.Context,
+				Description:   cr.Description,
+				EmbeddedAt:    cr.EmbeddedAt,
+				EmbeddedModel: cr.EmbeddedModel,
+				CreatedAt:     cr.CreatedAt,
+				FactCount:     cr.FactCount,
+			})
+		}
+		groups := concepts.BuildGroupsFromPage(pageGroupRows, contextRows)
+		httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
+			Data:       groups,
+			Total:      total,
+			Limit:      limit,
+			Offset:     offset,
+			SearchMode: "lexical",
+		})
+		return
+	}
+
+	// q != "" (search) live path: the summary table can't see alias
+	// matches, so we load the full per-context rowset and group in Go
+	// as before. This path is bounded by the FTS result set, not the
+	// repo's total concept count.
 	rows, err := queries.ListGroupedConceptsByRepo(r.Context(), store.ListGroupedConceptsByRepoParams{
 		RepositoryID: repoID,
 		Q:            q,
@@ -364,11 +444,11 @@ func (c *Concepts) ListConceptFacts(w http.ResponseWriter, r *http.Request) {
 	sortParam := r.URL.Query().Get("sort")
 
 	facts, err := queries.ListFactsByConcept(r.Context(), store.ListFactsByConceptParams{
-		ConceptID: conceptID,
-		Column2:   search,
-		Column3:   sortParam,
-		Limit:     int32(limit),
-		Offset:    int32(offset),
+		ID:       conceptID,
+		Column2:  search,
+		Column3:  sortParam,
+		Limit:    int32(limit),
+		Offset:   int32(offset),
 	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to list facts for concept")
@@ -392,7 +472,82 @@ func (c *Concepts) ListConceptFacts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ListFactConcepts handles GET /{repoID}/facts/{factID}/concepts.
+// ListConceptSources handles GET /{repoID}/concepts/{conceptID}/sources.
+//
+// It lists the unique sources backing the facts linked to a single
+// concept context (per-context, scoped by the route's concept_id),
+// with the number of distinct facts each source supports
+// (fact_count) as a provenance signal. Sources are ordered by
+// fact_count DESC (most load-bearing source first). The concept's
+// ownership is verified the same way ListConceptFacts does it, so a
+// cross-repo id is a 404.
+//
+// This is the read-side counterpart to the facts view: facts answer
+// "what does this concept claim?", sources answer "where do those
+// claims come from?". The UI renders this section before the facts
+// on the concept detail page; the MCP getConceptSources tool exposes
+// the group-level aggregate (all contexts) to agents.
+func (c *Concepts) ListConceptSources(w http.ResponseWriter, r *http.Request) {
+	pool := appmw.PoolFromContext(r.Context())
+	if pool == nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "no per-repo pool on request context")
+		return
+	}
+	queries := store.New(pool)
+
+	repoID, err := repoIDFromURL(r)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	conceptID, err := conceptIDFromURL(r)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Verify the concept belongs to the repo so a cross-repo id is a
+	// 404, not a silent listing of another repo's sources.
+	concept, err := queries.GetConceptByID(r.Context(), conceptID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "concept not found")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get concept")
+		return
+	}
+	if concept.RepositoryID != repoID {
+		httputil.WriteError(w, http.StatusNotFound, "concept not found")
+		return
+	}
+
+	limit, offset := parsePaging(r)
+
+	sources, err := queries.ListSourcesByConcept(r.Context(), store.ListSourcesByConceptParams{
+		ConceptID: conceptID,
+		Limit:     int32(limit),
+		Offset:    int32(offset),
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list sources for concept")
+		return
+	}
+
+	total, err := queries.CountSourcesByConcept(r.Context(), conceptID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to count sources for concept")
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, pageEnvelope{
+		Data:   sources,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
+}
 // The inverse view: which concepts a fact links to. Used by the
 // fact detail page to show the concept tags attached to a fact.
 // Returns per-context rows (one row per (fact, concept) link), not

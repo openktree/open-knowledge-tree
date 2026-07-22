@@ -179,6 +179,21 @@ func (q *Queries) CountAliasesSinceRefinement(ctx context.Context, arg CountAlia
 	return count, err
 }
 
+const countConceptGroupsByRepo = `-- name: CountConceptGroupsByRepo :one
+SELECT COUNT(*)::bigint
+FROM okt_repository.concept_groups
+WHERE repository_id = $1
+`
+
+// Companion count for ListConceptGroupsByRepoPage. Index-only COUNT
+// on the PK prefix (repository_id).
+func (q *Queries) CountConceptGroupsByRepo(ctx context.Context, repositoryID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countConceptGroupsByRepo, repositoryID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countConceptRelationsByConceptName = `-- name: CountConceptRelationsByConceptName :one
 SELECT COUNT(*) FROM (
     SELECT cr.name_b AS other_name
@@ -354,6 +369,41 @@ func (q *Queries) CountRetryableSkipsByRepo(ctx context.Context, arg CountRetrya
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const countSourcesByConcept = `-- name: CountSourcesByConcept :one
+SELECT COUNT(DISTINCT s.id)
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = $1
+`
+
+// Companion count for ListSourcesByConcept. Same concept_id filter,
+// minus the ORDER BY / LIMIT / OFFSET, so the API envelope can report
+// `total` without a window function.
+func (q *Queries) CountSourcesByConcept(ctx context.Context, conceptID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSourcesByConcept, conceptID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countSourcesByConceptIDs = `-- name: CountSourcesByConceptIDs :one
+SELECT COUNT(DISTINCT s.id)
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = ANY($1::uuid[])
+`
+
+// Companion count for ListSourcesByConceptIDs. Same concept-id array
+// filter, minus the ORDER BY / LIMIT / OFFSET.
+func (q *Queries) CountSourcesByConceptIDs(ctx context.Context, dollar_1 []pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSourcesByConceptIDs, dollar_1)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countUnlinkedStableFactsByRepo = `-- name: CountUnlinkedStableFactsByRepo :one
@@ -572,6 +622,30 @@ WHERE candidate_id = $1
 // fact_concepts).
 func (q *Queries) DeleteFactCandidatesByCandidate(ctx context.Context, candidateID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteFactCandidatesByCandidate, candidateID)
+	return err
+}
+
+const deleteStaleConceptGroups = `-- name: DeleteStaleConceptGroups :exec
+DELETE FROM okt_repository.concept_groups g
+WHERE g.repository_id = $1
+  AND g.name_key = ANY($2::text[])
+  AND NOT EXISTS (
+      SELECT 1 FROM okt_repository.concepts c
+      WHERE c.repository_id = $1
+        AND lower(c.canonical_name) = g.name_key
+  )
+`
+
+type DeleteStaleConceptGroupsParams struct {
+	RepositoryID pgtype.UUID `json:"repository_id"`
+	NameKeys     []string    `json:"name_keys"`
+}
+
+// Remove group rows for touched name_keys that no longer have any
+// concepts (e.g. migrate_context deleted the last context of a name).
+// Called right after UpsertConceptGroups.
+func (q *Queries) DeleteStaleConceptGroups(ctx context.Context, arg DeleteStaleConceptGroupsParams) error {
+	_, err := q.db.Exec(ctx, deleteStaleConceptGroups, arg.RepositoryID, arg.NameKeys)
 	return err
 }
 
@@ -1043,6 +1117,96 @@ func (q *Queries) ListConceptAliasesByConceptIDs(ctx context.Context, dollar_1 [
 	return items, nil
 }
 
+const listConceptGroupsByRepoPage = `-- name: ListConceptGroupsByRepoPage :many
+SELECT repository_id,
+       name_key,
+       canonical_name,
+       context_count,
+       total_fact_count,
+       any_embedded
+FROM okt_repository.concept_groups
+WHERE repository_id = $1
+ORDER BY total_fact_count DESC NULLS LAST, canonical_name ASC
+LIMIT $3 OFFSET $2
+`
+
+type ListConceptGroupsByRepoPageParams struct {
+	RepositoryID pgtype.UUID `json:"repository_id"`
+	Offset       int32       `json:"offset"`
+	Limit        int32       `json:"limit"`
+}
+
+type ListConceptGroupsByRepoPageRow struct {
+	RepositoryID   pgtype.UUID `json:"repository_id"`
+	NameKey        string      `json:"name_key"`
+	CanonicalName  string      `json:"canonical_name"`
+	ContextCount   int32       `json:"context_count"`
+	TotalFactCount int64       `json:"total_fact_count"`
+	AnyEmbedded    bool        `json:"any_embedded"`
+}
+
+// Paginated group list for the q="" concept list endpoint. Reads
+// from concept_groups (the summary), O(page) via
+// idx_concept_groups_repo_count_name. q != "" does NOT use this
+// query (it needs alias visibility the summary lacks); the handler
+// falls back to the live ListGroupedConceptsByRepo for q != "".
+// @limit / @offset apply at the group level.
+func (q *Queries) ListConceptGroupsByRepoPage(ctx context.Context, arg ListConceptGroupsByRepoPageParams) ([]ListConceptGroupsByRepoPageRow, error) {
+	rows, err := q.db.Query(ctx, listConceptGroupsByRepoPage, arg.RepositoryID, arg.Offset, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListConceptGroupsByRepoPageRow
+	for rows.Next() {
+		var i ListConceptGroupsByRepoPageRow
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.NameKey,
+			&i.CanonicalName,
+			&i.ContextCount,
+			&i.TotalFactCount,
+			&i.AnyEmbedded,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConceptNameKeysByIDs = `-- name: ListConceptNameKeysByIDs :many
+SELECT DISTINCT lower(c.canonical_name) AS name_key
+FROM okt_repository.concepts c
+WHERE c.id = ANY($1::uuid[])
+`
+
+// Resolve concept ids to their lower(canonical_name) group keys. Used
+// by the ingest workers to collect the touched name_keys for a
+// concept_groups summary recompute after a batch of writes.
+func (q *Queries) ListConceptNameKeysByIDs(ctx context.Context, ids []pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listConceptNameKeysByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name_key string
+		if err := rows.Scan(&name_key); err != nil {
+			return nil, err
+		}
+		items = append(items, name_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConceptRelationDetailsByConceptName = `-- name: ListConceptRelationDetailsByConceptName :many
 SELECT ca.context,
        COUNT(DISTINCT fc1.fact_id) AS shared_fact_count,
@@ -1427,6 +1591,76 @@ func (q *Queries) ListConceptsByRepoName(ctx context.Context, arg ListConceptsBy
 	return items, nil
 }
 
+const listConceptsByRepoNameKeys = `-- name: ListConceptsByRepoNameKeys :many
+SELECT c.id,
+       c.repository_id,
+       c.canonical_name,
+       c.context,
+       c.description,
+       c.embedded_at,
+       c.embedded_model,
+       c.created_at,
+       (SELECT COUNT(*) FROM okt_repository.fact_concepts fc WHERE fc.concept_id = c.id) AS fact_count
+FROM okt_repository.concepts c
+WHERE c.repository_id = $1
+  AND lower(c.canonical_name) = ANY($2::text[])
+ORDER BY lower(c.canonical_name), fact_count DESC, c.context ASC
+`
+
+type ListConceptsByRepoNameKeysParams struct {
+	RepositoryID pgtype.UUID `json:"repository_id"`
+	NameKeys     []string    `json:"name_keys"`
+}
+
+type ListConceptsByRepoNameKeysRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	RepositoryID  pgtype.UUID        `json:"repository_id"`
+	CanonicalName string             `json:"canonical_name"`
+	Context       string             `json:"context"`
+	Description   *string            `json:"description"`
+	EmbeddedAt    pgtype.Timestamptz `json:"embedded_at"`
+	EmbeddedModel *string            `json:"embedded_model"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	FactCount     int64              `json:"fact_count"`
+}
+
+// Fetch every per-context concept row for the groups on the current
+// page (sibling contexts). Called after ListConceptGroupsByRepoPage
+// with the page's name_keys. Ordered by name_key then fact_count
+// DESC, context ASC so the group representative (first row) matches
+// the highest-fact_count context, mirroring BuildGroups. The
+// correlated fact_count subquery runs only on the page's rows
+// (bounded by page_size × avg contexts), so it's cheap.
+func (q *Queries) ListConceptsByRepoNameKeys(ctx context.Context, arg ListConceptsByRepoNameKeysParams) ([]ListConceptsByRepoNameKeysRow, error) {
+	rows, err := q.db.Query(ctx, listConceptsByRepoNameKeys, arg.RepositoryID, arg.NameKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListConceptsByRepoNameKeysRow
+	for rows.Next() {
+		var i ListConceptsByRepoNameKeysRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RepositoryID,
+			&i.CanonicalName,
+			&i.Context,
+			&i.Description,
+			&i.EmbeddedAt,
+			&i.EmbeddedModel,
+			&i.CreatedAt,
+			&i.FactCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFactConceptSkipsByRepo = `-- name: ListFactConceptSkipsByRepo :many
 SELECT DISTINCT sk.fact_id, sk.last_error, sk.skipped_at, sk.attempts, sk.last_attempt_at
 FROM okt_repository.fact_concept_skips sk
@@ -1505,9 +1739,12 @@ SELECT f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.
 FROM okt_repository.fact_concepts fc
 JOIN okt_repository.facts f ON f.id = fc.fact_id
 LEFT JOIN (
-    SELECT fact_id, COUNT(*) AS source_count
-    FROM okt_repository.fact_sources
-    GROUP BY fact_id
+    SELECT fs2.fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources fs2
+    JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
+    JOIN okt_repository.concepts c2 ON c2.id = $1
+    WHERE s2.repository_id = c2.repository_id
+    GROUP BY fs2.fact_id
 ) fs_count ON fs_count.fact_id = f.id
 WHERE fc.concept_id = $1
   AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2))
@@ -1528,11 +1765,11 @@ LIMIT $4 OFFSET $5
 `
 
 type ListFactsByConceptParams struct {
-	ConceptID pgtype.UUID `json:"concept_id"`
-	Column2   string      `json:"column_2"`
-	Column3   interface{} `json:"column_3"`
-	Limit     int32       `json:"limit"`
-	Offset    int32       `json:"offset"`
+	ID      pgtype.UUID `json:"id"`
+	Column2 string      `json:"column_2"`
+	Column3 interface{} `json:"column_3"`
+	Limit   int32       `json:"limit"`
+	Offset  int32       `json:"offset"`
 }
 
 type ListFactsByConceptRow struct {
@@ -1582,7 +1819,7 @@ type ListFactsByConceptRow struct {
 // fact_sources subquery (mirrors ListFactsByRepoWithSourceCount).
 func (q *Queries) ListFactsByConcept(ctx context.Context, arg ListFactsByConceptParams) ([]ListFactsByConceptRow, error) {
 	rows, err := q.db.Query(ctx, listFactsByConcept,
-		arg.ConceptID,
+		arg.ID,
 		arg.Column2,
 		arg.Column3,
 		arg.Limit,
@@ -1982,6 +2219,148 @@ func (q *Queries) ListNewConceptsForEmbeddingBySource(ctx context.Context, arg L
 	return items, nil
 }
 
+const listSourcesByConcept = `-- name: ListSourcesByConcept :many
+SELECT s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+       s.parsed_author, s.published_at,
+       COUNT(DISTINCT fs.fact_id) AS fact_count,
+       MIN(fs.first_seen_at)     AS src_first_seen_at
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = $1
+GROUP BY s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+         s.parsed_author, s.published_at
+ORDER BY fact_count DESC, src_first_seen_at DESC, s.id
+LIMIT $2 OFFSET $3
+`
+
+type ListSourcesByConceptParams struct {
+	ConceptID pgtype.UUID `json:"concept_id"`
+	Limit     int32       `json:"limit"`
+	Offset    int32       `json:"offset"`
+}
+
+type ListSourcesByConceptRow struct {
+	ID             pgtype.UUID `json:"id"`
+	Url            string      `json:"url"`
+	Doi            *string     `json:"doi"`
+	ParsedTitle    *string     `json:"parsed_title"`
+	ParsedSitename *string     `json:"parsed_sitename"`
+	ParsedAuthor   *string     `json:"parsed_author"`
+	PublishedAt    pgtype.Date `json:"published_at"`
+	FactCount      int64       `json:"fact_count"`
+	SrcFirstSeenAt interface{} `json:"src_first_seen_at"`
+}
+
+// Unique sources backing the facts linked to a single concept
+// context (per-context, scoped by concept_id), with the number of
+// distinct facts each source supports (fact_count) as a provenance
+// signal. Ordered by fact_count DESC (most load-bearing source
+// first), then first_seen_at DESC (most recent addition first) with
+// the source id as the final deterministic tiebreaker so pagination
+// stays stable across pages. Used by the REST endpoint
+// GET /concepts/{conceptID}/sources and the UI Sources section.
+func (q *Queries) ListSourcesByConcept(ctx context.Context, arg ListSourcesByConceptParams) ([]ListSourcesByConceptRow, error) {
+	rows, err := q.db.Query(ctx, listSourcesByConcept, arg.ConceptID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSourcesByConceptRow
+	for rows.Next() {
+		var i ListSourcesByConceptRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Url,
+			&i.Doi,
+			&i.ParsedTitle,
+			&i.ParsedSitename,
+			&i.ParsedAuthor,
+			&i.PublishedAt,
+			&i.FactCount,
+			&i.SrcFirstSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSourcesByConceptIDs = `-- name: ListSourcesByConceptIDs :many
+SELECT s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+       s.parsed_author, s.published_at,
+       COUNT(DISTINCT fs.fact_id) AS fact_count,
+       MIN(fs.first_seen_at)     AS src_first_seen_at
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = ANY($1::uuid[])
+GROUP BY s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+         s.parsed_author, s.published_at
+ORDER BY fact_count DESC, src_first_seen_at DESC, s.id
+LIMIT $2 OFFSET $3
+`
+
+type ListSourcesByConceptIDsParams struct {
+	Column1 []pgtype.UUID `json:"column_1"`
+	Limit   int32         `json:"limit"`
+	Offset  int32         `json:"offset"`
+}
+
+type ListSourcesByConceptIDsRow struct {
+	ID             pgtype.UUID `json:"id"`
+	Url            string      `json:"url"`
+	Doi            *string     `json:"doi"`
+	ParsedTitle    *string     `json:"parsed_title"`
+	ParsedSitename *string     `json:"parsed_sitename"`
+	ParsedAuthor   *string     `json:"parsed_author"`
+	PublishedAt    pgtype.Date `json:"published_at"`
+	FactCount      int64       `json:"fact_count"`
+	SrcFirstSeenAt interface{} `json:"src_first_seen_at"`
+}
+
+// Group-level variant of ListSourcesByConcept: accepts an array of
+// concept_ids (the whole group sharing a canonical name, optionally
+// narrowed by a context filter) and aggregates unique sources across
+// ALL of them, summing the fact_count across every matching context.
+// Used by the MCP getConceptSources tool so an agent can query the
+// overall provenance for a concept (UUID or canonical name) in one
+// call. Same select list, ordering, and pagination as the per-context
+// query.
+func (q *Queries) ListSourcesByConceptIDs(ctx context.Context, arg ListSourcesByConceptIDsParams) ([]ListSourcesByConceptIDsRow, error) {
+	rows, err := q.db.Query(ctx, listSourcesByConceptIDs, arg.Column1, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSourcesByConceptIDsRow
+	for rows.Next() {
+		var i ListSourcesByConceptIDsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Url,
+			&i.Doi,
+			&i.ParsedTitle,
+			&i.ParsedSitename,
+			&i.ParsedAuthor,
+			&i.PublishedAt,
+			&i.FactCount,
+			&i.SrcFirstSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSourcesWithUnlinkedFactsByRepo = `-- name: ListSourcesWithUnlinkedFactsByRepo :many
 SELECT DISTINCT s.id
 FROM okt_repository.facts f
@@ -2324,6 +2703,20 @@ func (q *Queries) ReassignFactConceptsToConcept(ctx context.Context, arg Reassig
 	return err
 }
 
+const recomputeAllConceptGroupsForRepo = `-- name: RecomputeAllConceptGroupsForRepo :exec
+DELETE FROM okt_repository.concept_groups WHERE repository_id = $1
+`
+
+// Full-repo recompute: delete every group row for the repo then
+// reinsert from live concepts + fact_concepts. The repair path used
+// by the recompute_concept_groups River job. Bounded by the repo's
+// concept count; runs in one tx so the table is never half-empty to
+// a concurrent reader (the DELETE + INSERT are atomic per repo).
+func (q *Queries) RecomputeAllConceptGroupsForRepo(ctx context.Context, repositoryID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, recomputeAllConceptGroupsForRepo, repositoryID)
+	return err
+}
+
 const recordFactConceptSkip = `-- name: RecordFactConceptSkip :one
 INSERT INTO okt_repository.fact_concept_skips (fact_id, last_error, attempts, last_attempt_at)
 VALUES ($1, $2, 1, now())
@@ -2496,5 +2889,53 @@ type UpdateConceptContextParams struct {
 // checked GetConceptByNameContext returned no rows.
 func (q *Queries) UpdateConceptContext(ctx context.Context, arg UpdateConceptContextParams) error {
 	_, err := q.db.Exec(ctx, updateConceptContext, arg.Context, arg.ID)
+	return err
+}
+
+const upsertConceptGroups = `-- name: UpsertConceptGroups :exec
+
+INSERT INTO okt_repository.concept_groups
+    (repository_id, name_key, canonical_name, context_count, total_fact_count, any_embedded, updated_at)
+SELECT c.repository_id,
+       lower(c.canonical_name),
+       min(c.canonical_name),
+       count(*)::int,
+       COALESCE(COUNT(fc.fact_id), 0)::bigint,
+       bool_or(c.embedded_at IS NOT NULL),
+       now()
+FROM okt_repository.concepts c
+LEFT JOIN okt_repository.fact_concepts fc ON fc.concept_id = c.id
+WHERE c.repository_id = $1
+  AND lower(c.canonical_name) = ANY($2::text[])
+GROUP BY c.repository_id, lower(c.canonical_name)
+ON CONFLICT (repository_id, name_key) DO UPDATE SET
+    canonical_name   = EXCLUDED.canonical_name,
+    context_count    = EXCLUDED.context_count,
+    total_fact_count = EXCLUDED.total_fact_count,
+    any_embedded     = EXCLUDED.any_embedded,
+    updated_at       = now()
+`
+
+type UpsertConceptGroupsParams struct {
+	RepositoryID pgtype.UUID `json:"repository_id"`
+	NameKeys     []string    `json:"name_keys"`
+}
+
+// ---------------------------------------------------------------------------
+// concept_groups summary table (migration 0061).
+// ---------------------------------------------------------------------------
+// The summary is maintained incrementally by the ingest workers + migrate_context
+// + registry imports: each mutating tx collects the lower(canonical_name) keys
+// it touched and calls UpsertConceptGroups + DeleteStaleConceptGroups at the
+// end. RecomputeAllConceptGroupsForRepo is the full-repo repair path used by the
+// recompute_concept_groups River job (admin "Recompute concept groups" button).
+// Reads are O(page) via idx_concept_groups_repo_count_name.
+// Recompute the summary rows for the touched name_keys from live
+// concepts + fact_concepts, upserting into concept_groups. Called at
+// the end of each mutating tx (extract_concepts, refine_concepts,
+// migrate_context, registry imports). Stale groups (a name_key whose
+// last concept was deleted) are left for DeleteStaleConceptGroups.
+func (q *Queries) UpsertConceptGroups(ctx context.Context, arg UpsertConceptGroupsParams) error {
+	_, err := q.db.Exec(ctx, upsertConceptGroups, arg.RepositoryID, arg.NameKeys)
 	return err
 }

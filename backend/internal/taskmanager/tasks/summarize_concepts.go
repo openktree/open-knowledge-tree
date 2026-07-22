@@ -193,9 +193,7 @@ func (w *SummarizeConceptsWorker) Work(ctx context.Context, job *river.Job[Summa
 		}
 	}
 
-	batchSize := w.cfg.BatchSizeOr(20)
 	staleness := w.cfg.LockStalenessOr(2 * time.Hour)
-	maxTokens := w.cfg.MaxTokensOr(600)
 	taskID := fmt.Sprintf("%d", job.ID)
 	result := SummarizeConceptsResult{RepositoryID: args.RepositoryID}
 
@@ -222,7 +220,7 @@ func (w *SummarizeConceptsWorker) Work(ctx context.Context, job *river.Job[Summa
 			result.Errors++
 			continue
 		}
-		w.summarizeOneConcept(ctx, pool.Pool, conceptID, batchSize, staleness, maxTokens, args.RepositoryID, args.SourceID, taskID, &result, summarizationModelOverride, summarizer)
+		w.summarizeOneConcept(ctx, pool.Pool, conceptID, staleness, args.RepositoryID, args.SourceID, taskID, &result, summarizationModelOverride, summarizer)
 	}
 
 	log.Printf("summarize_concepts: repo %s processed %d pairs (%d created, %d updated, %d skipped no-delta, %d skipped locked, %d errors)",
@@ -238,9 +236,7 @@ func (w *SummarizeConceptsWorker) summarizeOneConcept(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	conceptID pgtype.UUID,
-	batchSize int,
 	staleness time.Duration,
-	maxTokens int,
 	repoIDStr, sourceIDStr, taskID string,
 	result *SummarizeConceptsResult,
 	modelOverride string,
@@ -290,6 +286,23 @@ func (w *SummarizeConceptsWorker) summarizeOneConcept(
 		result.PairsSkippedNoDelta++
 		return
 	}
+
+	// 2b. Resolve the fact-summary curriculum tier for this concept.
+	// The worker counts the concept's total facts (over fact_concepts)
+	// and picks the (batch_size, max_tokens) pair from the configured
+	// tiers — larger hubs get bigger batches so they produce fewer,
+	// denser slices (fewer LLM calls for summarization AND the
+	// synthesis it chains). When no tiers are configured, TierFor
+	// falls back to the top-level BatchSize/MaxTokens — full backward
+	// compat. Forward-only: existing frozen slices keep their old
+	// batch_size; the tier applies only to FUTURE slices.
+	totalFacts, err := queries.CountFactsForConceptSummary(ctx, conceptID)
+	if err != nil {
+		log.Printf("summarize_concepts: counting facts for concept %s: %v", pgUUIDToString(conceptID), err)
+		result.Errors++
+		return
+	}
+	batchSize, maxTokens := w.cfg.TierFor(int(totalFacts))
 
 	// Check whether the concept already has at least one frozen
 	// (complete) summary slice. Once it does, the worker switches

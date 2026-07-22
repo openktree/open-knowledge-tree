@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -908,6 +909,46 @@ type SummarizationConfig struct {
 	// slice LLM call. Default 20m via LLMTimeoutOr. See
 	// DecompositionConceptConfig.LLMTimeout for the rationale.
 	LLMTimeout time.Duration `mapstructure:"llm_timeout"`
+
+	// Tiers is the fact-summary curriculum: a per-concept fact-
+	// count ladder that scales batch_size (and max_tokens) up as a
+	// concept grows. The summarize_concepts worker counts the
+	// concept's total facts (over fact_concepts) and picks the
+	// highest tier whose MinFacts <= that count. Larger hubs thus
+	// produce fewer, denser slices — fewer LLM calls for both
+	// summarization and the synthesis it chains (fewer slices =
+	// fewer synthesis triggers and a smaller fold). Existing
+	// frozen slices keep their old batch_size (forward-only); the
+	// tier's batch_size applies only to FUTURE slices, so a concept
+	// may end up with mixed-size slices, which synthesis already
+	// folds regardless of per-slice fact_count.
+	//
+	// When Tiers is empty/nil, TierFor falls back to the top-level
+	// BatchSize/MaxTokens — full backward compat. When a tier omits
+	// MaxTokens (0), TierFor derives it as BatchSize * TokensPerFact.
+	// Load() sorts Tiers by MinFacts ascending and drops invalid
+	// tiers (non-positive BatchSize) with a warning, so a partial
+	// config still runs.
+	Tiers []SummaryCurriculumTier `mapstructure:"tiers"`
+	// TokensPerFact is the per-fact output-token budget used when a
+	// tier omits MaxTokens. Default 30 (20 facts → 600 tokens,
+	// matching the original default). Applied as:
+	//   tier.MaxTokens = tier.BatchSize * TokensPerFact
+	// only when the tier's MaxTokens is 0. An explicit tier MaxTokens
+	// always wins.
+	TokensPerFact int `mapstructure:"tokens_per_fact"`
+}
+
+// SummaryCurriculumTier is one rung of the fact-summary curriculum.
+// MinFacts is the inclusive lower bound on concept fact count at
+// which this tier takes effect. BatchSize is the per-slice fact
+// count (facts per summary slice) for this tier. MaxTokens is the
+// per-slice LLM output cap; when 0, TierFor derives it as
+// BatchSize * TokensPerFact.
+type SummaryCurriculumTier struct {
+	MinFacts  int `mapstructure:"min_facts"`
+	BatchSize int `mapstructure:"batch_size"`
+	MaxTokens int `mapstructure:"max_tokens"`
 }
 
 // LLMTimeoutOr returns the configured per-call LLM timeout or the
@@ -960,6 +1001,60 @@ func (s SummarizationConfig) MaxTokensOr(def int) int {
 		return s.MaxTokens
 	}
 	return def
+}
+
+// TokensPerFactOr returns the configured per-fact token budget or
+// the default (30) when zero/negative. Used by TierFor to derive a
+// tier's MaxTokens when the tier leaves it at 0.
+func (s SummarizationConfig) TokensPerFactOr(def int) int {
+	if s.TokensPerFact > 0 {
+		return s.TokensPerFact
+	}
+	return def
+}
+
+// TierFor resolves the per-slice batch_size and max_tokens for a
+// concept with the given total fact count, using the configured
+// curriculum tiers. It picks the highest tier whose MinFacts <=
+// factCount.
+//
+// Resolution order (each step falls through to the next):
+//  1. matched tier BatchSize; 0 → top-level BatchSize; 0 → 20
+//  2. matched tier MaxTokens; 0 → batchSize * TokensPerFact
+//     (TokensPerFact default 30); if still 0 → top-level MaxTokens;
+//     0 → 600.
+//
+// When Tiers is empty/nil, TierFor returns the top-level
+// BatchSizeOr/MaxTokensOr defaults — full backward compat for
+// configs that predate the curriculum.
+func (s SummarizationConfig) TierFor(factCount int) (batchSize, maxTokens int) {
+	fallbackBatch := s.BatchSizeOr(20)
+	fallbackTokens := s.MaxTokensOr(600)
+	if len(s.Tiers) == 0 {
+		return fallbackBatch, fallbackTokens
+	}
+	chosen := SummaryCurriculumTier{}
+	found := false
+	for _, t := range s.Tiers {
+		if t.BatchSize <= 0 {
+			continue
+		}
+		if factCount >= t.MinFacts {
+			chosen = t
+			found = true
+		}
+	}
+	if !found {
+		return fallbackBatch, fallbackTokens
+	}
+	batchSize = chosen.BatchSize
+	if maxTokens = chosen.MaxTokens; maxTokens <= 0 {
+		maxTokens = batchSize * s.TokensPerFactOr(30)
+	}
+	if maxTokens <= 0 {
+		maxTokens = fallbackTokens
+	}
+	return batchSize, maxTokens
 }
 
 // SynthesisConfig configures the concept-synthesis provider. The
@@ -2119,6 +2214,28 @@ func Load(configPath string) (*Config, error) {
 	}
 	cfg.Providers.Synthesis.MaxRelatedConcepts = n1
 	cfg.Providers.Synthesis.MaxRelatedSyntheses = n2
+
+	// Summarization curriculum tiers: sort by MinFacts ascending
+	// and drop invalid tiers (non-positive BatchSize) so TierFor's
+	// "highest MinFacts <= factCount" scan is well-defined. A
+	// missing or empty Tiers slice is valid — TierFor falls back to
+	// the top-level BatchSize/MaxTokens (the pre-curriculum
+	// behavior). We log + drop rather than hard-fail to match the
+	// permissive posture of the rest of Load().
+	if len(cfg.Providers.Summarization.Tiers) > 0 {
+		sorted := make([]SummaryCurriculumTier, 0, len(cfg.Providers.Summarization.Tiers))
+		for _, t := range cfg.Providers.Summarization.Tiers {
+			if t.BatchSize <= 0 {
+				log.Printf("config: dropping summarization tier min_facts=%d with non-positive batch_size=%d", t.MinFacts, t.BatchSize)
+				continue
+			}
+			sorted = append(sorted, t)
+		}
+		sort.SliceStable(sorted, func(i, j int) bool {
+			return sorted[i].MinFacts < sorted[j].MinFacts
+		})
+		cfg.Providers.Summarization.Tiers = sorted
+	}
 
 	// Search hybrid defaults: when the operator doesn't set the
 	// search.hybrid block, Viper leaves the struct zero-valued

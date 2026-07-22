@@ -603,9 +603,12 @@ SELECT f.*, fc.first_seen_at,
 FROM okt_repository.fact_concepts fc
 JOIN okt_repository.facts f ON f.id = fc.fact_id
 LEFT JOIN (
-    SELECT fact_id, COUNT(*) AS source_count
-    FROM okt_repository.fact_sources
-    GROUP BY fact_id
+    SELECT fs2.fact_id, COUNT(*) AS source_count
+    FROM okt_repository.fact_sources fs2
+    JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
+    JOIN okt_repository.concepts c2 ON c2.id = $1
+    WHERE s2.repository_id = c2.repository_id
+    GROUP BY fs2.fact_id
 ) fs_count ON fs_count.fact_id = f.id
 WHERE fc.concept_id = $1
   AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2))
@@ -632,6 +635,69 @@ SELECT COUNT(*) FROM okt_repository.fact_concepts fc
 JOIN okt_repository.facts f ON f.id = fc.fact_id
 WHERE fc.concept_id = $1
   AND ($2::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $2));
+
+-- name: ListSourcesByConcept :many
+-- Unique sources backing the facts linked to a single concept
+-- context (per-context, scoped by concept_id), with the number of
+-- distinct facts each source supports (fact_count) as a provenance
+-- signal. Ordered by fact_count DESC (most load-bearing source
+-- first), then first_seen_at DESC (most recent addition first) with
+-- the source id as the final deterministic tiebreaker so pagination
+-- stays stable across pages. Used by the REST endpoint
+-- GET /concepts/{conceptID}/sources and the UI Sources section.
+SELECT s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+       s.parsed_author, s.published_at,
+       COUNT(DISTINCT fs.fact_id) AS fact_count,
+       MIN(fs.first_seen_at)     AS src_first_seen_at
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = $1
+GROUP BY s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+         s.parsed_author, s.published_at
+ORDER BY fact_count DESC, src_first_seen_at DESC, s.id
+LIMIT $2 OFFSET $3;
+
+-- name: CountSourcesByConcept :one
+-- Companion count for ListSourcesByConcept. Same concept_id filter,
+-- minus the ORDER BY / LIMIT / OFFSET, so the API envelope can report
+-- `total` without a window function.
+SELECT COUNT(DISTINCT s.id)
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = $1;
+
+-- name: ListSourcesByConceptIDs :many
+-- Group-level variant of ListSourcesByConcept: accepts an array of
+-- concept_ids (the whole group sharing a canonical name, optionally
+-- narrowed by a context filter) and aggregates unique sources across
+-- ALL of them, summing the fact_count across every matching context.
+-- Used by the MCP getConceptSources tool so an agent can query the
+-- overall provenance for a concept (UUID or canonical name) in one
+-- call. Same select list, ordering, and pagination as the per-context
+-- query.
+SELECT s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+       s.parsed_author, s.published_at,
+       COUNT(DISTINCT fs.fact_id) AS fact_count,
+       MIN(fs.first_seen_at)     AS src_first_seen_at
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = ANY($1::uuid[])
+GROUP BY s.id, s.url, s.doi, s.parsed_title, s.parsed_sitename,
+         s.parsed_author, s.published_at
+ORDER BY fact_count DESC, src_first_seen_at DESC, s.id
+LIMIT $2 OFFSET $3;
+
+-- name: CountSourcesByConceptIDs :one
+-- Companion count for ListSourcesByConceptIDs. Same concept-id array
+-- filter, minus the ORDER BY / LIMIT / OFFSET.
+SELECT COUNT(DISTINCT s.id)
+FROM okt_repository.fact_concepts fc
+JOIN okt_repository.fact_sources fs ON fs.fact_id = fc.fact_id
+JOIN okt_repository.sources s      ON s.id = fs.source_id
+WHERE fc.concept_id = ANY($1::uuid[]);
 
 -- name: ListConceptsByFact :many
 -- The inverse view: which concepts a fact links to. Used by the
@@ -1003,3 +1069,128 @@ UPDATE okt_repository.concept_candidates
 SET resolved_concept_id = @resolved_concept_id,
     resolved_at = now()
 WHERE id = @id;
+-- ---------------------------------------------------------------------------
+-- concept_groups summary table (migration 0061).
+-- ---------------------------------------------------------------------------
+-- The summary is maintained incrementally by the ingest workers + migrate_context
+-- + registry imports: each mutating tx collects the lower(canonical_name) keys
+-- it touched and calls UpsertConceptGroups + DeleteStaleConceptGroups at the
+-- end. RecomputeAllConceptGroupsForRepo is the full-repo repair path used by the
+-- recompute_concept_groups River job (admin "Recompute concept groups" button).
+-- Reads are O(page) via idx_concept_groups_repo_count_name.
+
+-- name: UpsertConceptGroups :exec
+-- Recompute the summary rows for the touched name_keys from live
+-- concepts + fact_concepts, upserting into concept_groups. Called at
+-- the end of each mutating tx (extract_concepts, refine_concepts,
+-- migrate_context, registry imports). Stale groups (a name_key whose
+-- last concept was deleted) are left for DeleteStaleConceptGroups.
+INSERT INTO okt_repository.concept_groups
+    (repository_id, name_key, canonical_name, context_count, total_fact_count, any_embedded, updated_at)
+SELECT c.repository_id,
+       lower(c.canonical_name),
+       min(c.canonical_name),
+       count(*)::int,
+       COALESCE(COUNT(fc.fact_id), 0)::bigint,
+       bool_or(c.embedded_at IS NOT NULL),
+       now()
+FROM okt_repository.concepts c
+LEFT JOIN okt_repository.fact_concepts fc ON fc.concept_id = c.id
+WHERE c.repository_id = sqlc.arg('repository_id')
+  AND lower(c.canonical_name) = ANY(sqlc.arg('name_keys')::text[])
+GROUP BY c.repository_id, lower(c.canonical_name)
+ON CONFLICT (repository_id, name_key) DO UPDATE SET
+    canonical_name   = EXCLUDED.canonical_name,
+    context_count    = EXCLUDED.context_count,
+    total_fact_count = EXCLUDED.total_fact_count,
+    any_embedded     = EXCLUDED.any_embedded,
+    updated_at       = now();
+
+-- name: DeleteStaleConceptGroups :exec
+-- Remove group rows for touched name_keys that no longer have any
+-- concepts (e.g. migrate_context deleted the last context of a name).
+-- Called right after UpsertConceptGroups.
+DELETE FROM okt_repository.concept_groups g
+WHERE g.repository_id = sqlc.arg('repository_id')
+  AND g.name_key = ANY(sqlc.arg('name_keys')::text[])
+  AND NOT EXISTS (
+      SELECT 1 FROM okt_repository.concepts c
+      WHERE c.repository_id = sqlc.arg('repository_id')
+        AND lower(c.canonical_name) = g.name_key
+  );
+
+-- name: RecomputeAllConceptGroupsForRepo :exec
+-- Full-repo recompute: delete every group row for the repo then
+-- reinsert from live concepts + fact_concepts. The repair path used
+-- by the recompute_concept_groups River job. Bounded by the repo's
+-- concept count; runs in one tx so the table is never half-empty to
+-- a concurrent reader (the DELETE + INSERT are atomic per repo).
+DELETE FROM okt_repository.concept_groups WHERE repository_id = sqlc.arg('repository_id');
+INSERT INTO okt_repository.concept_groups
+    (repository_id, name_key, canonical_name, context_count, total_fact_count, any_embedded, updated_at)
+SELECT c.repository_id,
+       lower(c.canonical_name),
+       min(c.canonical_name),
+       count(*)::int,
+       COALESCE(COUNT(fc.fact_id), 0)::bigint,
+       bool_or(c.embedded_at IS NOT NULL),
+       now()
+FROM okt_repository.concepts c
+LEFT JOIN okt_repository.fact_concepts fc ON fc.concept_id = c.id
+WHERE c.repository_id = sqlc.arg('repository_id')
+GROUP BY c.repository_id, lower(c.canonical_name);
+
+-- name: ListConceptGroupsByRepoPage :many
+-- Paginated group list for the q="" concept list endpoint. Reads
+-- from concept_groups (the summary), O(page) via
+-- idx_concept_groups_repo_count_name. q != "" does NOT use this
+-- query (it needs alias visibility the summary lacks); the handler
+-- falls back to the live ListGroupedConceptsByRepo for q != "".
+-- @limit / @offset apply at the group level.
+SELECT repository_id,
+       name_key,
+       canonical_name,
+       context_count,
+       total_fact_count,
+       any_embedded
+FROM okt_repository.concept_groups
+WHERE repository_id = @repository_id
+ORDER BY total_fact_count DESC NULLS LAST, canonical_name ASC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: CountConceptGroupsByRepo :one
+-- Companion count for ListConceptGroupsByRepoPage. Index-only COUNT
+-- on the PK prefix (repository_id).
+SELECT COUNT(*)::bigint
+FROM okt_repository.concept_groups
+WHERE repository_id = @repository_id;
+
+-- name: ListConceptsByRepoNameKeys :many
+-- Fetch every per-context concept row for the groups on the current
+-- page (sibling contexts). Called after ListConceptGroupsByRepoPage
+-- with the page's name_keys. Ordered by name_key then fact_count
+-- DESC, context ASC so the group representative (first row) matches
+-- the highest-fact_count context, mirroring BuildGroups. The
+-- correlated fact_count subquery runs only on the page's rows
+-- (bounded by page_size × avg contexts), so it's cheap.
+SELECT c.id,
+       c.repository_id,
+       c.canonical_name,
+       c.context,
+       c.description,
+       c.embedded_at,
+       c.embedded_model,
+       c.created_at,
+       (SELECT COUNT(*) FROM okt_repository.fact_concepts fc WHERE fc.concept_id = c.id) AS fact_count
+FROM okt_repository.concepts c
+WHERE c.repository_id = @repository_id
+  AND lower(c.canonical_name) = ANY(@name_keys::text[])
+ORDER BY lower(c.canonical_name), fact_count DESC, c.context ASC;
+
+-- name: ListConceptNameKeysByIDs :many
+-- Resolve concept ids to their lower(canonical_name) group keys. Used
+-- by the ingest workers to collect the touched name_keys for a
+-- concept_groups summary recompute after a batch of writes.
+SELECT DISTINCT lower(c.canonical_name) AS name_key
+FROM okt_repository.concepts c
+WHERE c.id = ANY(@ids::uuid[]);

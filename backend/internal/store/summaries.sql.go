@@ -38,6 +38,25 @@ func (q *Queries) ClaimConceptForSummary(ctx context.Context, arg ClaimConceptFo
 	return id, err
 }
 
+const countFactsForConceptSummary = `-- name: CountFactsForConceptSummary :one
+SELECT COUNT(*) FROM okt_repository.fact_concepts fc
+WHERE fc.concept_id = $1
+`
+
+// Total fact count for a concept (over fact_concepts), used by the
+// summarize_concepts worker to select a fact-summary curriculum
+// tier (SummarizationConfig.TierFor). The fact_concepts PRIMARY KEY
+// index on concept_id makes this a fast index-only scan. Distinct
+// from CountFactsByConcept (concepts.sql) which joins facts and
+// accepts a search predicate; this one is the bare count the worker
+// needs to pick a batch_size/max_tokens tier.
+func (q *Queries) CountFactsForConceptSummary(ctx context.Context, conceptID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countFactsForConceptSummary, conceptID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSummariesByConcept = `-- name: CountSummariesByConcept :one
 SELECT COUNT(*) FROM okt_repository.concept_summaries WHERE concept_id = $1
 `

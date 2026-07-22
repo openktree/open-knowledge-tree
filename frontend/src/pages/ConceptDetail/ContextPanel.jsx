@@ -7,6 +7,7 @@ import Pagination from "../../components/Pagination";
 import SearchInput from "../../components/SearchInput";
 import { api } from "../../services/api";
 import FactRow from "../Facts/FactRow";
+import ConceptSources from "./ConceptSources";
 import { PAGE_SIZE } from "./constants";
 import FactSourceBadge from "./FactSourceBadge";
 import SummaryPanel from "./SummaryPanel";
@@ -67,6 +68,7 @@ export default function ContextPanel(props) {
   return (
     <div class="space-y-6">
       <SummaryPanel slug={slug()} conceptID={conceptID()} />
+      <ConceptSources slug={slug()} conceptID={conceptID()} />
 
       <Card>
         <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">

@@ -197,6 +197,14 @@ task:
     # far more than the number of databases that will refresh in
     # parallel, but harmless because the dedup collapses the rest.
     refresh_concept_relations: 50
+    # concept_groups summary recompute (operator-driven repair, no
+    # periodic tick). A full-repo DELETE+INSERT on concept_groups,
+    # bounded by the repo's concept count; serializing within a
+    # database avoids two big txs racing on the same table. 2 lets a
+    # second database recompute while one is busy without stacking
+    # within a database (per-database unique-key dedup collapses the
+    # rest).
+    recompute_concept_groups: 2
     # Report autofact annotation. Each job makes N embedding calls
     # (one per sentence) then a Qdrant search per sentence. 50 lets
     # several reports annotate in parallel.
@@ -216,6 +224,18 @@ task:
     # Each job does one GET per source + potentially imports facts/
     # concepts/embeddings, which can be intensive.
     pull_all_from_registry: 50
+    # Graph export: builds a whole-repository bundle (sources, facts,
+    # concepts, summaries, syntheses, investigations, reports,
+    # embeddings) and pushes it to the shared knowledge registry.
+    # Memory-bound (the bundle is built in memory then gzipped); 2
+    # workers keeps concurrent exports bounded.
+    export_graph: 2
+    # Graph import: pulls a shared graph bundle from the registry (or
+    # reads an uploaded one) and re-inserts every entity into a fresh
+    # or existing repository in a single task. One INSERT per entity
+    # (batched for the high-volume junctions); 2 workers keeps the
+    # memory footprint bounded.
+    import_graph: 2
     # Audit log retention. Daily sweep that deletes
     # okt_system.permission_audit rows older than
     # audit.retention_days (default 30). One job per day, single
@@ -773,6 +793,28 @@ providers:
     # slice LLM call. Default 20m. See decomposition.concept_extraction
     # .llm_timeout for the rationale.
     llm_timeout: 20m
+    # Fact-summary curriculum: a per-concept fact-count ladder that
+    # scales batch_size (and max_tokens) up as a concept grows. The
+    # summarize_concepts worker counts the concept's total facts and
+    # picks the highest tier whose min_facts <= that count. Larger
+    # hubs thus produce fewer, denser slices — fewer LLM calls for
+    # both summarization and the synthesis it chains (fewer slices =
+    # fewer synthesis triggers + a smaller fold). Existing frozen
+    # slices keep their old batch_size (forward-only); a concept may
+    # end up with mixed-size slices, which synthesis folds fine.
+    # When tiers is empty, the worker falls back to the top-level
+    # batch_size/max_tokens above (full backward compat). A tier with
+    # max_tokens: 0 derives it as batch_size * tokens_per_fact.
+    tokens_per_fact: 30
+    tiers:
+      - min_facts: 0      # < 100 facts: 20-fact slices (default behavior)
+        batch_size: 20
+      - min_facts: 100     # 100-999: 50-fact slices
+        batch_size: 50
+      - min_facts: 1000    # 1000-9999: 100-fact slices
+        batch_size: 100
+      - min_facts: 10000   # 10000+: 200-fact slices
+        batch_size: 200
   # Concept refinement: a chat model that resolves unresolved concept
   # candidates — proposes the full formal canonical name, known
   # aliases to add, and aliases to prune. Runs once per unresolved

@@ -369,6 +369,35 @@ func (m *MCP) registerTools() {
 		m.handleGetRelatedConcepts,
 	)
 
+	// getConceptSources: the unique sources backing a concept's
+	// facts, with a fact_count per source (provenance signal). By
+	// default the whole group (all contexts sharing the canonical
+	// name) is aggregated; pass `context` to narrow to one context's
+	// concept_id.
+	m.mcpServer.AddTool(
+		mcp.NewTool("getConceptSources",
+			mcp.WithDescription("List the unique sources backing a concept's facts, with a fact_count per source as a provenance signal. The `concept` argument accepts a concept UUID or a canonical name; when a canonical name is given, ALL contexts sharing that name are aggregated by default. The repository argument accepts a UUID or slug. Use the optional `context` filter to narrow to a single context's concept_id when you need per-context provenance."),
+			mcp.WithString("repository",
+				mcp.Required(),
+				mcp.Description("Repository UUID or slug."),
+			),
+			mcp.WithString("concept",
+				mcp.Required(),
+				mcp.Description("Concept UUID or canonical name."),
+			),
+			mcp.WithString("context",
+				mcp.Description("Optional context filter when `concept` is a canonical name; narrows to one context's concept_id for per-context provenance."),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("Maximum sources to return (1-200, default 50)."),
+			),
+			mcp.WithNumber("offset",
+				mcp.Description("Number of sources to skip for pagination (default 0)."),
+			),
+		),
+		m.handleGetConceptSources,
+	)
+
 	// getInvestigation: an investigation's metadata + the sources
 	// it collects.
 	m.mcpServer.AddTool(
@@ -1319,6 +1348,72 @@ func (m *MCP) handleSearchConcepts(ctx context.Context, req mcp.CallToolRequest)
 			"search_mode": res.SearchMode,
 		})
 	}
+	// q="" reads from the concept_groups summary table (migration
+	// 0061) — O(page) index range scan, paginated at the group level
+	// in SQL. q != "" falls back to the live ListGroupedConceptsByRepo
+	// query below (the summary can't see alias matches).
+	if q == "" {
+		pageRows, err := queries.ListConceptGroupsByRepoPage(ctx, store.ListConceptGroupsByRepoPageParams{
+			RepositoryID: repoID,
+			Limit:        int32(limit),
+			Offset:       int32(offset),
+		})
+		if err != nil {
+			return mcp.NewToolResultError("failed to list concepts"), nil
+		}
+		total, err := queries.CountConceptGroupsByRepo(ctx, repoID)
+		if err != nil {
+			return mcp.NewToolResultError("failed to count concepts"), nil
+		}
+		if len(pageRows) == 0 {
+			return structuredResult(map[string]any{
+				"concepts":    []concepts.Group{},
+				"total":       total,
+				"limit":       limit,
+				"offset":      offset,
+				"search_mode": "lexical",
+			})
+		}
+		nameKeys := make([]string, 0, len(pageRows))
+		pageGroupRows := make([]concepts.PageGroupRow, 0, len(pageRows))
+		for _, p := range pageRows {
+			nameKeys = append(nameKeys, p.NameKey)
+			pageGroupRows = append(pageGroupRows, concepts.PageGroupRow{
+				NameKey:        p.NameKey,
+				CanonicalName:  p.CanonicalName,
+				ContextCount:   p.ContextCount,
+				TotalFactCount: p.TotalFactCount,
+			})
+		}
+		ctxRows, err := queries.ListConceptsByRepoNameKeys(ctx, store.ListConceptsByRepoNameKeysParams{
+			RepositoryID: repoID,
+			NameKeys:     nameKeys,
+		})
+		if err != nil {
+			return mcp.NewToolResultError("failed to load concept contexts"), nil
+		}
+		contextRows := make([]concepts.ContextSourceRow, 0, len(ctxRows))
+		for _, cr := range ctxRows {
+			contextRows = append(contextRows, concepts.ContextSourceRow{
+				ID:            cr.ID,
+				CanonicalName: cr.CanonicalName,
+				Context:       cr.Context,
+				Description:   cr.Description,
+				EmbeddedAt:    cr.EmbeddedAt,
+				EmbeddedModel: cr.EmbeddedModel,
+				CreatedAt:     cr.CreatedAt,
+				FactCount:     cr.FactCount,
+			})
+		}
+		groups := concepts.BuildGroupsFromPage(pageGroupRows, contextRows)
+		return structuredResult(map[string]any{
+			"concepts":    groups,
+			"total":       total,
+			"limit":       limit,
+			"offset":      offset,
+			"search_mode": "lexical",
+		})
+	}
 	rows, err := queries.ListGroupedConceptsByRepo(ctx, store.ListGroupedConceptsByRepoParams{
 		RepositoryID: repoID,
 		Q:            q,
@@ -1554,6 +1649,88 @@ func (m *MCP) handleGetRelatedConcepts(ctx context.Context, req mcp.CallToolRequ
 		"total":    total,
 		"limit":    limit,
 		"offset":    offset,
+	})
+}
+
+// handleGetConceptSources is the getConceptSources tool handler. It
+// resolves the concept (UUID or canonical name), optionally narrowed
+// by a `context` filter to a single context's concept_id, then lists
+// the unique sources backing the concept's facts with a fact_count
+// per source as a provenance signal. By default (no `context`) the
+// whole group sharing the canonical name is aggregated; this gives an
+// agent the overall provenance for a concept in one call. With
+// `context` set, only the matching context's concept_id is used,
+// mirroring the per-context REST endpoint.
+func (m *MCP) handleGetConceptSources(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	uid := httputil.RequestUserID(ctx)
+	if !uid.Valid {
+		return mcp.NewToolResultError("no authenticated user on context"), nil
+	}
+	repoArg, err := req.RequireString("repository")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	concept, err := req.RequireString("concept")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	conceptCtx := req.GetString("context", "")
+	limit := req.GetInt("limit", 50)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > MCPMCPMaxFactsCap {
+		limit = MCPMCPMaxFactsCap
+	}
+	offset := req.GetInt("offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+
+	repoID, pool, err := m.resolveRepoPool(ctx, repoArg)
+	if err != nil {
+		return mcp.NewToolResultError("repository not found: " + err.Error()), nil
+	}
+	if ok, err := m.deps.RBAC.Enforce(uid.String(), repoID.String(), rbac.Objects.Concepts, rbac.Actions.Read); err != nil {
+		return mcp.NewToolResultError("rbac check failed: " + err.Error()), nil
+	} else if !ok {
+		return mcp.NewToolResultError("you do not have permission to read concepts in this repository"), nil
+	}
+
+	queries := store.New(pool)
+	conceptIDs, err := m.resolveConceptIDs(ctx, queries, repoID, concept, conceptCtx)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	rows, err := queries.ListSourcesByConceptIDs(ctx, store.ListSourcesByConceptIDsParams{
+		Column1: conceptIDs,
+		Limit:   int32(limit),
+		Offset:  int32(offset),
+	})
+	if err != nil {
+		return mcp.NewToolResultError("failed to list sources for concept"), nil
+	}
+	total, err := queries.CountSourcesByConceptIDs(ctx, conceptIDs)
+	if err != nil {
+		return mcp.NewToolResultError("failed to count sources for concept"), nil
+	}
+	out := make([]conceptSourceOut, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, conceptSourceOut{
+			ID:           uuidFromPgtype(r.ID),
+			URL:          r.Url,
+			DOI:          ptrStr(r.Doi),
+			ParsedTitle:  ptrStr(r.ParsedTitle),
+			ParsedAuthor: ptrStr(r.ParsedAuthor),
+			FactCount:    r.FactCount,
+		})
+	}
+	return structuredResult(map[string]any{
+		"sources": out,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
 	})
 }
 
@@ -3359,6 +3536,20 @@ type relationOut struct {
 	ConceptID       string `json:"concept_id"`
 	CanonicalName   string `json:"canonical_name"`
 	SharedFactCount int64  `json:"shared_fact_count"`
+}
+
+// conceptSourceOut is the wire shape for one source returned by
+// getConceptSources. It carries the provenance signal (fact_count =
+// how many of the concept's facts this source supports) alongside the
+// source's URL, DOI, and parsed metadata so an agent can assess where
+// a concept's claims come from and how load-bearing each source is.
+type conceptSourceOut struct {
+	ID           string `json:"id"`
+	URL          string `json:"url"`
+	DOI          string `json:"doi,omitempty"`
+	ParsedTitle  string `json:"parsed_title,omitempty"`
+	ParsedAuthor string `json:"parsed_author,omitempty"`
+	FactCount    int64  `json:"fact_count"`
 }
 
 // ptrStr dereferences a *string, returning "" for nil.
