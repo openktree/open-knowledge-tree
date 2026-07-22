@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.2.0...registry-v1.3.0) (2026-07-22)
+
+
+### Features
+
+* **synthesis:** retry synthesize_concept on LLM/write failures + per-concept resynthesize endpoint ([3fa0d28](https://github.com/openktree/open-knowledge-tree/commit/3fa0d28d34c5b2418846309f081fe04bca6d8253))
+
 ## [1.2.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.1.0...registry-v1.2.0) (2026-07-19)
 
 
