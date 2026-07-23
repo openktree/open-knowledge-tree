@@ -91,6 +91,7 @@ export default function SourceBody(props) {
             markdown={markdown()}
             highlightIndices={props.highlightIndices?.()}
             factCounts={props.factCounts?.()}
+            slug={props.slug}
             onSentenceClick={props.onSentenceClick}
           />
         </Show>

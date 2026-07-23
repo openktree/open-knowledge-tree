@@ -350,7 +350,7 @@ func (m *MCP) registerTools() {
 	// concept group, ranked by shared_fact_count.
 	m.mcpServer.AddTool(
 		mcp.NewTool("getRelatedConcepts",
-			mcp.WithDescription("List concepts related to the given concept group, ranked by the number of shared facts. Each entry carries the related concept's canonical_name, a representative concept_id, and shared_fact_count. The `concept` argument accepts a concept UUID or a canonical name. The repository argument accepts a UUID or slug."),
+			mcp.WithDescription("List concepts related to the given concept group, ranked by the number of shared facts. Each entry carries the related concept's canonical_name, a representative concept_id, shared_fact_count, and relation_kind. The `concept` argument accepts a concept UUID or a canonical name. The repository argument accepts a UUID or slug.\n\nRelations are classified into three bands by shared_fact_count based on the OKT research team's graph-analysis experiments: \"insignificant\" (below the configured min_shared_fact_count, default < 3 — low statistical significance), \"weak\" (default 3..5), and \"stable\" (default >= 6, statistically significant). By default only relations at or above the floor (default >= 3) are returned. Pass show_insignificant=true to lower the floor to 1 and surface the \"insignificant\" band; it does not change labels or hide the weak band."),
 			mcp.WithString("repository",
 				mcp.Required(),
 				mcp.Description("Repository UUID or slug."),
@@ -364,6 +364,9 @@ func (m *MCP) registerTools() {
 			),
 			mcp.WithNumber("offset",
 				mcp.Description("Number of entries to skip for pagination (default 0)."),
+			),
+			mcp.WithBoolean("show_insignificant",
+				mcp.Description("When true, also return relations with shared_fact_count below the configured floor (default < 3), labeled \"insignificant\". Default false returns only relations at or above the floor (labeled \"weak\" or \"stable\")."),
 			),
 		),
 		m.handleGetRelatedConcepts,
@@ -1605,6 +1608,26 @@ func (m *MCP) handleGetRelatedConcepts(ctx context.Context, req mcp.CallToolRequ
 		offset = 0
 	}
 
+	// Read-surface band filter: by default the floor is the configured
+	// min_shared_fact_count (default 3); show_insignificant=true
+	// lowers it to 1 to surface the "insignificant" band. The stable
+	// boundary (stable_shared_fact_count, default 6) only labels
+	// rows; it does not gate visibility.
+	showInsignificant := req.GetBool("show_insignificant", false)
+	cfg := m.deps.Config
+	minShared := int64(cfg.Concepts.MinSharedFactCount)
+	if minShared <= 0 {
+		minShared = 3
+	}
+	floor := minShared
+	if showInsignificant {
+		floor = 1
+	}
+	stableShared := int64(cfg.Concepts.StableSharedFactCount)
+	if stableShared <= 0 {
+		stableShared = 6
+	}
+
 	repoID, pool, err := m.resolveRepoPool(ctx, repoArg)
 	if err != nil {
 		return mcp.NewToolResultError("repository not found: " + err.Error()), nil
@@ -1621,17 +1644,19 @@ func (m *MCP) handleGetRelatedConcepts(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	rows, err := queries.ListConceptRelationsByConceptName(ctx, store.ListConceptRelationsByConceptNameParams{
-		RepositoryID: repoID,
-		Lower:        canonicalName,
-		Limit:        int32(limit),
-		Offset:       int32(offset),
+		RepositoryID:    repoID,
+		Lower:           canonicalName,
+		SharedFactCount: floor,
+		Limit:           int32(limit),
+		Offset:          int32(offset),
 	})
 	if err != nil {
 		return mcp.NewToolResultError("failed to list related concepts"), nil
 	}
 	total, err := queries.CountConceptRelationsByConceptName(ctx, store.CountConceptRelationsByConceptNameParams{
-		RepositoryID: repoID,
-		Lower:        canonicalName,
+		RepositoryID:    repoID,
+		Lower:           canonicalName,
+		SharedFactCount: floor,
 	})
 	if err != nil {
 		return mcp.NewToolResultError("failed to count related concepts"), nil
@@ -1642,13 +1667,14 @@ func (m *MCP) handleGetRelatedConcepts(ctx context.Context, req mcp.CallToolRequ
 			ConceptID:       pgUUIDInterfaceToString(r.ConceptID),
 			CanonicalName:   pgUUIDInterfaceToString(r.CanonicalName),
 			SharedFactCount: r.SharedFactCount,
+			RelationKind:    relationKindFor(r.SharedFactCount, minShared, stableShared),
 		})
 	}
 	return structuredResult(map[string]any{
 		"related":  out,
 		"total":    total,
 		"limit":    limit,
-		"offset":    offset,
+		"offset":   offset,
 	})
 }
 
@@ -3536,6 +3562,7 @@ type relationOut struct {
 	ConceptID       string `json:"concept_id"`
 	CanonicalName   string `json:"canonical_name"`
 	SharedFactCount int64  `json:"shared_fact_count"`
+	RelationKind    string `json:"relation_kind"`
 }
 
 // conceptSourceOut is the wire shape for one source returned by

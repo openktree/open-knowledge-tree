@@ -1,8 +1,41 @@
+import { useNavigate } from "@solidjs/router";
 import { createEffect, createMemo } from "solid-js";
 import { renderMarkdown } from "../lib/markdown";
+import { normalizeCitations, normalizeImageCitations } from "../lib/normalizeCitations";
 import { wrapSentencesHtml } from "../lib/wrapSentences";
 
+// CitedView renders a cited markdown body (a report's body_md or a
+// source's parsed_markdown) with two transformations applied BEFORE
+// micromark:
+//
+//   1. normalizeImageCitations — rewrites ![alt](<fact:uuid>) image
+//      embeds. When an imageMap prop is supplied (fact_id -> renderable
+//      url), the embed becomes ![alt](url); without one the embed is
+//      replaced with an italic *alt* placeholder rather than a broken
+//      <img> (micromark treats <fact:uuid> as an invalid URL and would
+//      otherwise emit a dead image).
+//   2. normalizeCitations — rewrites [text](<fact:uuid>) and
+//      [name](<concept:uuid>) (and the doubled ([fact:short](<fact:full>))
+//      form the agentic synthesizer emits) into real markdown links to
+//      /{slug}/facts/{id} or /{slug}/concepts/{id}. Without this step
+//      every citation renders as <a href="">text</a> — a dead link —
+//      because plain micromark rejects the angle-bracketed <fact:uuid>
+//      destination as an invalid URL.
+//
+// The SAME normalized string is fed to both renderMarkdown and
+// wrapSentencesHtml so the sentence-offset map (computed from the raw
+// markdown) lines up with the rendered HTML.
+//
+// Props:
+//   - markdown:      the raw cited markdown
+//   - slug:          repo slug, used to build fact/concept detail hrefs
+//   - imageMap:      optional Map<fact_id, renderableUrl> for image embeds
+//   - annotations / highlightIndices / factCounts / onSentenceClick:
+//     sentence-highlight wiring (see original CitedView).
 export default function CitedView(props) {
+  const navigate = useNavigate();
+  const slug = () => props.slug || "";
+
   const hi = createMemo(() => {
     if (props.highlightIndices) return props.highlightIndices;
     if (!props.annotations?.length) return null;
@@ -24,8 +57,15 @@ export default function CitedView(props) {
   const wrappedHtml = createMemo(() => {
     const md = props.markdown || "";
     if (!md.trim()) return "";
-    const html = renderMarkdown(md);
-    return wrapSentencesHtml(md, html, hi(), fc());
+    // Normalize image embeds first (with an empty map the embed becomes
+    // a visible *alt* placeholder; with a real map it becomes a link).
+    const imageMap = props.imageMap instanceof Map ? props.imageMap : new Map();
+    let normalized = normalizeImageCitations(md, imageMap);
+    normalized = normalizeCitations(normalized, slug());
+    const html = renderMarkdown(normalized);
+    // Sentence offsets must key off the same normalized string the
+    // renderer saw, otherwise the reconcile walker misaligns.
+    return wrapSentencesHtml(normalized, html, hi(), fc());
   });
 
   let bodyEl;
@@ -35,6 +75,22 @@ export default function CitedView(props) {
   });
 
   const handleClick = (e) => {
+    // Intercept internal fact/concept detail links for SPA navigation
+    // (mirrors DefinitionPanel.onDefinitionClick). A real <a href> is
+    // present after normalization; without this the browser does a
+    // full page reload.
+    const a = e.target.closest("a");
+    if (a) {
+      const href = a.getAttribute("href") || "";
+      if (
+        href.startsWith("/") &&
+        (/\/facts\/[0-9a-fA-F-]{36}/.test(href) || /\/concepts\/[0-9a-fA-F-]{36}/.test(href))
+      ) {
+        e.preventDefault();
+        navigate(href);
+        return;
+      }
+    }
     const span = e.target.closest("span.okt-sentence--has-facts");
     if (!span) return;
     const idx = Number(span.dataset.sentenceIndex);

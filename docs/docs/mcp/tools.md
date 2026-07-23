@@ -129,14 +129,25 @@ Get the per-context summary slices for a concept group.
 
 List concepts related to a concept group, ranked by shared fact count.
 
+Relations are classified into three bands by `shared_fact_count`, based on the OKT research team's graph-analysis experiments:
+
+| band | `shared_fact_count` | default | `show_insignificant=true` |
+|------|---------------------|---------|--------------------------|
+| `insignificant` | < 3 (configured `min_shared_fact_count`) | hidden | shown |
+| `weak` | 3..5 (between floor and `stable_shared_fact_count`) | shown | shown |
+| `stable` | >= 6 (configured `stable_shared_fact_count`) | shown | shown |
+
+Below the floor (`shared_fact_count < 3`) a relation has low statistical significance; relations become statistically significant above 5 shared facts. By default only relations at or above the floor are returned, each labeled `weak` or `stable`. Pass `show_insignificant=true` to lower the floor to 1 and surface the `insignificant` band; it does not change labels and does not hide the `weak` band.
+
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `repository` | string | yes | Repository UUID or slug |
 | `concept` | string | yes | Concept UUID or canonical name |
 | `limit` | number | no | Max entries (1-200, default 50) |
 | `offset` | number | no | Pagination offset (default 0) |
+| `show_insignificant` | boolean | no | When true, also return relations below the floor (labeled `insignificant`). Default false. |
 
-**Returns:** array of `{canonical_name, concept_id, shared_fact_count}`.
+**Returns:** array of `{canonical_name, concept_id, shared_fact_count, relation_kind}`.
 
 ---
 

@@ -102,3 +102,82 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 PREDICTIONS_PATH = os.path.join(RESULTS_DIR, "predictions.jsonl")
 QA_METRICS_PATH = os.path.join(RESULTS_DIR, "qa_metrics.json")
 SUMMARY_PATH = os.path.join(RESULTS_DIR, "summary.txt")
+
+# ---------------------------------------------------------------------------
+# Baseline (Dense X + Traditional RAG) configuration
+# ---------------------------------------------------------------------------
+# The baselines live in scripts/experiments/multihop_rag/baselines/. They use
+# the SAME embedding model OKT uses (google/gemini-embedding-2, 3072-dim) so
+# the comparison isolates chunking + retrieval strategy, not embedding model.
+# The embedding calls go directly to OpenRouter's /v1/embeddings endpoint
+# (the same endpoint OKT's OpenRouterProvider.Embed calls), reusing
+# OPENROUTER_API_KEY from the env.
+#
+# The baselines store vectors in STANDALONE Qdrant collections on the already
+# running Qdrant instance (default localhost:6334). Two collections:
+#   - multihoprag_passages      (Traditional RAG: fixed-size passage chunks)
+#   - multihoprag_propositions  (Dense X: proposition units)
+# These are separate from OKT's okt_facts collection; no OKT backend changes
+# are needed. The baselines retrieve dense-only (cosine, no lexical/RRF).
+
+# Qdrant connection for the baselines. Defaults to the REST port (6333)
+# of the same Qdrant instance OKT uses (config.default.yaml qdrant.host).
+# OKT talks to Qdrant over gRPC on 6334, but the baseline Python client
+# uses the REST API (search/upsert are HTTP calls), so we point at 6333.
+# Override via env if your Qdrant is elsewhere.
+BASELINE_QDRANT_HOST = _env("BASELINE_QDRANT_HOST", "localhost")
+BASELINE_QDRANT_PORT = _env_int("BASELINE_QDRANT_PORT", 6333)
+BASELINE_QDRANT_API_KEY = _env("BASELINE_QDRANT_API_KEY", "")
+
+# Collection names. Prefixed with multihoprag_ so they're easy to find and
+# drop. Must NOT collide with OKT's okt_facts / okt_concepts collections.
+BASELINE_PASSAGE_COLLECTION = _env(
+    "BASELINE_PASSAGE_COLLECTION", "multihoprag_passages"
+)
+BASELINE_PROPOSITION_COLLECTION = _env(
+    "BASELINE_PROPOSITION_COLLECTION", "multihoprag_propositions"
+)
+
+# Embedding model + dimensions. MUST match OKT's config (config.default.yaml
+# ai.embedding) so the baseline's dense retrieval is comparable to OKT's
+# hybrid semantic channel. The baselines call OpenRouter /v1/embeddings
+# directly (no OKT proxy), reusing OPENROUTER_API_KEY + OPENROUTER_BASE.
+BASELINE_EMBEDDING_MODEL = _env(
+    "BASELINE_EMBEDDING_MODEL", "google/gemini-embedding-2"
+)
+BASELINE_EMBEDDING_DIMENSIONS = _env_int("BASELINE_EMBEDDING_DIMENSIONS", 3072)
+
+# Embedding batch size for the index-build step. OpenRouter returns an empty
+# data array when a batch exceeds the underlying model's input-count or
+# total-token limit; we auto-halve on that signal (mirroring OKT's
+# embedBatchRecursive). 32 matches OKT's defaultOpenRouterEmbedBatchSize.
+BASELINE_EMBED_BATCH_SIZE = _env_int("BASELINE_EMBED_BATCH_SIZE", 32)
+
+# Traditional-RAG chunking. Fixed-size passage chunks with overlap. 512 tokens
+# is the canonical RAG default; 50-token overlap preserves cross-chunk
+# context. Tokenized by whitespace (news articles are English; a simple
+# whitespace split is sufficient and avoids a tokenizer dependency).
+BASELINE_PASSAGE_TOKENS = _env_int("BASELINE_PASSAGE_TOKENS", 512)
+BASELINE_PASSAGE_OVERLAP = _env_int("BASELINE_PASSAGE_OVERLAP", 50)
+
+# Dense X proposition extraction. The Dense X paper releases a propositionizer
+# model (chentong00/propositionizer-windows on HuggingFace). Two modes:
+#   - "model": run the released propositionizer (requires transformers +
+#     torch; slow on CPU but faithful to the paper). Downloaded once.
+#   - "llm":   fall back to an LLM-based proposition extractor using the
+#     configured synthesis LLM (gemma). Faster, no torch dep, slightly less
+#     faithful but still produces atomic self-contained propositions.
+# Default "llm" for portability; set BASELINE_PROPOSITIONIZER=model for the
+# faithful paper reproduction.
+BASELINE_PROPOSITIONIZER = _env("BASELINE_PROPOSITIONIZER", "llm")
+
+# Retrieval: dense-only cosine. min_score is the cosine similarity floor
+# (Qdrant returns similarity as score; 0.0 = orthogonal, 1.0 = identical).
+# 0.0 keeps all top-k matches; raising it prunes weak matches. We keep 0.0
+# so the baseline always returns k chunks (matching OKT's behavior of
+# always returning k facts when available).
+BASELINE_MIN_SCORE = float(_env("BASELINE_MIN_SCORE", "0.0"))
+
+# Concurrency for the index-build embedding step (independent of the
+# per-question run concurrency, which is set via run_baseline.py --concurrency).
+BASELINE_INDEX_CONCURRENCY = _env_int("BASELINE_INDEX_CONCURRENCY", 8)

@@ -46,10 +46,18 @@ export default function DefinitionPanel(props) {
   const [renderedHtml, setRenderedHtml] = createSignal("");
   const [resynthesizing, setResynthesizing] = createSignal(false);
   const [resynthResult, setResynthResult] = createSignal(null);
+  const [copied, setCopied] = createSignal(false);
   let defEl = null;
 
   async function handleResynthesize() {
     if (!slug() || !conceptID()) return;
+    if (
+      !window.confirm(
+        "Regenerate this concept's definition? This enqueues a synthesize_concept job that re-runs the LLM over all the concept's summary slices — it can be slow and consume model quota. Continue?",
+      )
+    ) {
+      return;
+    }
     setResynthesizing(true);
     setResynthResult(null);
     try {
@@ -126,6 +134,18 @@ export default function DefinitionPanel(props) {
 
   const toggleCollapse = () => setCollapsed((c) => !c);
 
+  async function handleCopy() {
+    const syn = synthesis();
+    if (!syn || !syn.content) return;
+    try {
+      await navigator.clipboard.writeText(syn.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      setCopied(false);
+    }
+  }
+
   // Keep the DOM in sync with renderedHtml: the ref-based approach
   // only fires once on mount, so we update innerHTML reactively here
   // whenever the rendered HTML changes (e.g. after async image
@@ -159,15 +179,26 @@ export default function DefinitionPanel(props) {
         <div class="flex items-center gap-2">
           <Show when={canResynthesize()}>
             <Button
-              variant="secondary"
+              variant="danger"
               class="text-xs px-2 py-1"
               onClick={handleResynthesize}
               loading={resynthesizing()}
               loadingText="Enqueuing..."
-              title="Regenerate this concept's definition by enqueuing a synthesize_concept job"
+              title="Regenerate this concept's definition by enqueuing a synthesize_concept job (costly)"
             >
               Resynthesize
             </Button>
+          </Show>
+          <Show when={synthesis()}>
+            <button
+              type="button"
+              class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+              onClick={handleCopy}
+              disabled={!synthesis()?.content}
+              title="Copy the definition markdown to the clipboard"
+            >
+              {copied() ? "Copied!" : "Copy"}
+            </button>
           </Show>
           <button
             type="button"

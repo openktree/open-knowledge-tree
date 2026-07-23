@@ -101,9 +101,19 @@ export function normalizeCitations(md, slug) {
     `\\[([^\\]]*?)\\]\\(<\\s*(fact|concept)\\s*:\\s*(${UUID})\\s*>\\)`,
     "g",
   );
+  // A label is "id-style" when it is itself a kind-prefixed short id
+  // (e.g. "fact:03bbda2f" or "concept:5cd9e0e7") — the doubled form the
+  // agentic synthesizer emits as in `([fact:short](<fact:full>))`. Such
+  // labels are not human-readable prose and leak the internal kind word
+  // into the rendered text, so they are replaced with a numeric
+  // reference ([1], [2], …) matching the academic-citation convention
+  // already used for the bare-uuid forms below. Descriptive human text
+  // (e.g. "Relation Extraction", "note") is preserved as the label.
+  const idLabelRe = /^(fact|concept)\s*:/i;
   out = out.replace(prefixedLinkRe, (_m, text, kind, id) => {
-    numFor(kind, id);
-    const label = text && text.trim() ? text.trim() : String(numFor(kind, id));
+    const n = numFor(kind, id);
+    const t = text && text.trim();
+    const label = !t || idLabelRe.test(t) ? String(n) : t;
     return `[${label}](${kindHref(slug, kind, id)})`;
   });
 

@@ -27,12 +27,15 @@ to learn the slug/UUID to pass as the `repository` argument everywhere else.
 Full-text search across ALL facts in a repository. Each result includes fact
 id, text, status, source_count, and created_at. Use `getFact` to drill into a
 fact's sources and linked concepts. Key for finding cross-cutting patterns and
-structural hub facts.
+structural hub facts. This is the right tool for specific-claim verification
+(MultiHop-RAG: facts 0.92 vs 0.52 for concept-first retrieval on targeted QA).
 - **searchConcepts(repository, query?, limit?, offset?)** — CONCEPT DISCOVERY.
 List concept groups in a repository, optionally filtered by canonical-name
 substring. Each group carries its canonical name, total fact_count, and a
 contexts array (concept_id, context, fact_count, aliases). Use 4-6 different
-query terms and synonyms for broad coverage.
+query terms and synonyms for broad coverage. Discovery/exploration substrate,
+not a targeted-QA path (MultiHop-RAG: concepts 0.52 on specific questions vs
+0.92 for facts).
 - **getConcept(repository, concept, ?)** — CONCEPT DETAIL. Accepts a concept UUID
 or canonical name. Returns the concept's full group (all contexts sharing the
 canonical name, with per-context aliases and fact_count) plus the authoritative
@@ -541,15 +544,24 @@ bar — the reader must be able to click through to verify every claim.
 
 Embed links in markdown using the kind-prefixed angle-bracket UUID form. OKT
 stores facts and concepts in two separate UUID tables that share the v4 UUID
-space, so the `fact:` / `concept:` prefix is what tells the frontend which
-detail route to resolve a citation to.
+space; the `fact:` / `concept:` prefix tells the frontend which detail route
+to resolve a citation to. The prefix is advisory — the system resolves each
+UUID to its record kind by lookup, so a wrong prefix (a `concept:` on a fact
+UUID) is automatically corrected — but you should still use the correct
+prefix when you know it, and you MAY omit it and write `[text](<uuid>)` if
+you are unsure which kind an id is. Always wrap the target in angle brackets:
+`[text](<uuid>)`, never `[text](uuid)`.
 
 - **Fact links**: `[description](<fact:factID>)` for key evidence — routes to
-`/:slug/facts/<factID>`. Use one on EVERY specific attributed claim.
+  `/:slug/facts/<factID>`. Use one on EVERY specific attributed claim.
 - **Concept links**: `[concept name](<concept:conceptID>)` on first mention of
-a related concept — routes to `/:slug/concepts/<conceptID>`.
+  a related concept — routes to `/:slug/concepts/<conceptID>`.
 - **Image links** (image facts only): `![alt text](<fact:factID>)` — the
-frontend resolves the fact's image_url.
+  frontend resolves the fact's image_url. Give every embedded image a
+  descriptive alt text of at least one short sentence, and place it adjacent
+  to a sentence that contextualizes it — do not drop a bare image embed with
+  no surrounding prose. Do NOT mix fact and concept ids in a single
+  `[<fact:..>, <concept:..>]` group; use separate links.
 
 Use the UUIDs returned by `searchConcepts`/`getConcept` (for `concept:`) and
 `searchFacts`/`getFact` (for `fact:`). The frontend normalizes these into

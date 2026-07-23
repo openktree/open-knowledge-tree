@@ -477,6 +477,22 @@ discussing its subject in another part of the synthesis. Not every fact needs
 to be cited; cite the ones that are load-bearing for the definition. A fact
 may be cited more than once.
 
+CITATION FIDELITY (MANDATORY): before reusing a fact's citation, re-read the
+fact's text in the slice and confirm the prose you are about to write actually
+says what the fact says. A [text](<fact:fact_id>) link is not a checkbox —
+the fact it points to must genuinely support the claim. If you paraphrase a
+fact, re-check that your paraphrase does not drift from the original. If a
+fact does not support the claim, do not cite it — find a fact that does, or
+hedge the claim.
+
+The "fact:" / "concept:" kind prefix is advisory: the system resolves each
+UUID to its record kind by lookup, so a wrong prefix (a "concept:" on a fact
+UUID) is automatically corrected. You MAY omit the prefix and write
+[text](<uuid>) — the system routes it correctly. When you do use a prefix,
+make sure it matches the record: "fact:" for a fact UUID, "concept:" for a
+concept UUID. Always wrap the target in angle brackets: [text](<uuid>), not
+[text](uuid).
+
 When you reference a RELATED CONCEPT (from the relations block below) by name
 rather than by a specific fact, link it with the concept citation form
 [name](<concept:concept_id>) — the "concept:" prefix routes the reader to the
@@ -491,8 +507,12 @@ the markdown image syntax ![alt text](<fact:fact_id>) where fact_id is the UUID 
 an image fact from the candidates. Choose images that illustrate or reinforce
 the definition content; you may embed anywhere from 0 to the stated maximum
 number of images. Do NOT invent fact_ids; only use ids from the candidate
-list. Place images where they best support the prose. If no candidate list is
-provided, embed no images.
+list. Place images where they best support the prose, adjacent to a sentence
+that contextualizes them — do not drop a bare image embed with no surrounding
+prose, as the annotation pipeline treats orphaned image embeds as low-priority
+sentences. Give every embedded image a descriptive alt text of at least one
+short sentence so a reader (and screen readers) understand the image without
+seeing it. If no candidate list is provided, embed no images.
 
 ## Response Structure
 
@@ -577,12 +597,22 @@ unattributed assertion.
 
 CITATION SYNTAX: Cite central and key facts using markdown links of
 the form [text](<fact:fact_id>) where fact_id is the UUID shown
-before each fact (the "fact:" prefix identifies the citation kind —
-facts and concepts share the UUID space but live in separate
-tables). Use citations to support and strengthen your summary —
-anchor important claims to the facts that establish them. Not every
-fact needs to be cited; cite the ones that are load-bearing for the
+before each fact. The "fact:" kind prefix is advisory — the system
+resolves each UUID to its record kind by lookup — so a wrong prefix
+is automatically corrected; you may omit the prefix and write
+[text](<uuid>) and the system will still route it correctly. Always
+wrap the target in angle brackets: [text](<uuid>), not [text](uuid).
+Use citations to support and strengthen your summary — anchor
+important claims to the facts that establish them. Not every fact
+needs to be cited; cite the ones that are load-bearing for the
 summary. A fact may be cited more than once.
+
+CITATION FIDELITY (MANDATORY): before citing a fact, re-read its
+text and confirm your prose actually says what the fact says. A
+[text](<fact:fact_id>) link is not a checkbox — the fact it points
+to must genuinely support the claim. If your paraphrase drifts from
+the original, fix the paraphrase or hedge the claim; do not keep a
+citation that no longer matches.
 
 Return ONLY the markdown summary. No JSON, no preamble. Remember:
 stay within %d words — finish the summary, do not trail off.`

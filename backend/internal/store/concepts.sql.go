@@ -198,26 +198,29 @@ const countConceptRelationsByConceptName = `-- name: CountConceptRelationsByConc
 SELECT COUNT(*) FROM (
     SELECT cr.name_b AS other_name
     FROM okt_repository.concept_relations cr
-    WHERE cr.repository_id = $1 AND cr.name_a = lower($2)
+    WHERE cr.repository_id = $1 AND cr.name_a = lower($2) AND cr.shared_fact_count >= $3
     UNION
     SELECT cr.name_a AS other_name
     FROM okt_repository.concept_relations cr
-    WHERE cr.repository_id = $1 AND cr.name_b = lower($2)
+    WHERE cr.repository_id = $1 AND cr.name_b = lower($2) AND cr.shared_fact_count >= $3
 ) r
 `
 
 type CountConceptRelationsByConceptNameParams struct {
-	RepositoryID pgtype.UUID `json:"repository_id"`
-	Lower        string      `json:"lower"`
+	RepositoryID    pgtype.UUID `json:"repository_id"`
+	Lower           string      `json:"lower"`
+	SharedFactCount int64       `json:"shared_fact_count"`
 }
 
 // Companion count for ListConceptRelationsByConceptName: the number of
 // distinct related names for the given concept group, regardless of
 // which column of the matview the pair sits in. Pure index count on
 // the matview (no join to concepts), so it's cheap even for a concept
-// with thousands of relations.
+// with thousands of relations. min_shared_fact_count must match the
+// value passed to ListConceptRelationsByConceptName so the count and
+// the page stay consistent.
 func (q *Queries) CountConceptRelationsByConceptName(ctx context.Context, arg CountConceptRelationsByConceptNameParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countConceptRelationsByConceptName, arg.RepositoryID, arg.Lower)
+	row := q.db.QueryRow(ctx, countConceptRelationsByConceptName, arg.RepositoryID, arg.Lower, arg.SharedFactCount)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -1279,24 +1282,25 @@ SELECT other_name,
 FROM (
     SELECT cr.name_b AS other_name, cr.shared_fact_count AS shared_fact_count
     FROM okt_repository.concept_relations cr
-    WHERE cr.repository_id = $1 AND cr.name_a = lower($2)
+    WHERE cr.repository_id = $1 AND cr.name_a = lower($2) AND cr.shared_fact_count >= $3
     UNION ALL
     SELECT cr.name_a AS other_name, cr.shared_fact_count AS shared_fact_count
     FROM okt_repository.concept_relations cr
-    WHERE cr.repository_id = $1 AND cr.name_b = lower($2)
+    WHERE cr.repository_id = $1 AND cr.name_b = lower($2) AND cr.shared_fact_count >= $3
 ) r
 JOIN okt_repository.concepts c
   ON c.repository_id = $1 AND lower(c.canonical_name) = r.other_name
 GROUP BY other_name, shared_fact_count
 ORDER BY shared_fact_count DESC, other_name ASC
-LIMIT $3 OFFSET $4
+LIMIT $4 OFFSET $5
 `
 
 type ListConceptRelationsByConceptNameParams struct {
-	RepositoryID pgtype.UUID `json:"repository_id"`
-	Lower        string      `json:"lower"`
-	Limit        int32       `json:"limit"`
-	Offset       int32       `json:"offset"`
+	RepositoryID    pgtype.UUID `json:"repository_id"`
+	Lower           string      `json:"lower"`
+	SharedFactCount int64       `json:"shared_fact_count"`
+	Limit           int32       `json:"limit"`
+	Offset          int32       `json:"offset"`
 }
 
 type ListConceptRelationsByConceptNameRow struct {
@@ -1323,6 +1327,17 @@ type ListConceptRelationsByConceptNameRow struct {
 // periodic schedule), so reads are a single index range scan immune
 // to parallel load.
 //
+// min_shared_fact_count is the hard floor applied to BOTH matview
+// branches before the UNION ALL. The read API (REST + MCP) sets it to
+// the configured concepts.min_shared_fact_count (default 3) for the
+// default response, or to 1 when the client passes
+// show_insignificant=true (surfacing the "insignificant" band). The
+// synthesis worker passes 0 to keep its existing top-N1 behavior
+// (it already prunes via LIMIT n1), so this param defaults to 0 when
+// unused. Filtering in SQL (rather than Go) keeps LIMIT/OFFSET/COUNT
+// consistent with the matview's shared_fact_count DESC ordering: the
+// floor prunes the tail of the index range scan.
+//
 // canonical_name is joined from concepts (the related name groups one
 // or more per-context rows; MAX(canonical_name) picks a stable
 // representative — casing may vary across sibling rows, e.g. "Trump"
@@ -1335,6 +1350,7 @@ func (q *Queries) ListConceptRelationsByConceptName(ctx context.Context, arg Lis
 	rows, err := q.db.Query(ctx, listConceptRelationsByConceptName,
 		arg.RepositoryID,
 		arg.Lower,
+		arg.SharedFactCount,
 		arg.Limit,
 		arg.Offset,
 	)

@@ -165,6 +165,7 @@ export default function ReportDetailContent(props) {
           <CitedView
             markdown={report().body_md}
             annotations={props.annotations()}
+            slug={props.slug}
             onSentenceClick={props.onSentenceClick}
           />
         </Card>

@@ -135,6 +135,14 @@ def download_queries() -> int:
                 "query": row.get("query") or "",
                 "question_type": row.get("question_type") or "",
                 "gold_answer": row.get("answer") or "",
+                # Persist the gold evidence document list so score.py can
+                # compute retrieval recall@k (matches retrieved source
+                # articles to the gold set by title/source/published_at).
+                # The dataset ships one evidence_list per question: a list
+                # of {author, source, title, published_at, fact} dicts
+                # pointing at the gold articles. Empty list = null_query
+                # (unanswerable; gold answer is "Insufficient information.").
+                "evidence_list": row.get("evidence_list") or [],
             }
             fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
             written += 1

@@ -201,17 +201,16 @@ func (q *Queries) GetReportByID(ctx context.Context, id pgtype.UUID) (OktReposit
 const listReportAnnotationsByReport = `-- name: ListReportAnnotationsByReport :many
 SELECT ra.report_id, ra.sentence_index, ra.sentence_text, ra.fact_id, ra.score, ra.posture, ra.created_at,
        f.text, f.status, f.fact_kind, f.image_url, f.created_at AS fact_created_at,
-       COALESCE(fs_count.source_count, 0) AS source_count
+       COALESCE((
+           SELECT COUNT(*)::bigint
+           FROM okt_repository.fact_sources fs2
+           JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
+           WHERE fs2.fact_id = f.id
+             AND s2.repository_id = rep.repository_id
+       ), 0)::bigint AS source_count
 FROM okt_repository.report_annotations ra
 JOIN okt_repository.reports rep ON rep.id = ra.report_id
 JOIN okt_repository.facts f ON f.id = ra.fact_id
-LEFT JOIN LATERAL (
-    SELECT fs2.fact_id, COUNT(*) AS source_count
-    FROM okt_repository.fact_sources fs2
-    JOIN okt_repository.sources s2 ON s2.id = fs2.source_id
-    WHERE s2.repository_id = rep.repository_id
-    GROUP BY fs2.fact_id
-) fs_count ON fs_count.fact_id = f.id
 WHERE ra.report_id = $1
 ORDER BY ra.sentence_index, ra.score DESC
 `
@@ -236,6 +235,14 @@ type ListReportAnnotationsByReportRow struct {
 // row so the frontend can group facts by sentence_index and render
 // the autocitation view. Ordered by sentence_index then score DESC
 // so the best match surfaces first within each sentence.
+//
+// The source_count is computed with a correlated subquery over
+// fact_sources scoped to the specific fact ids referenced by THIS
+// report (not the whole repository). The previous LATERAL form
+// grouped every fact in the repository for each annotation row,
+// which made the query O(annotations × repo_facts) and timed out on
+// large repos. This form uses idx_fact_sources_fact per-fact_id and
+// is O(annotations × sources_per_fact).
 func (q *Queries) ListReportAnnotationsByReport(ctx context.Context, reportID pgtype.UUID) ([]ListReportAnnotationsByReportRow, error) {
 	rows, err := q.db.Query(ctx, listReportAnnotationsByReport, reportID)
 	if err != nil {

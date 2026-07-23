@@ -187,11 +187,11 @@ task:
     embed_concepts: 50
     cleanup_facts: 50
     # summarize_concepts is fanned out from extract_concepts in
-    # parallel with embed_concepts. 50 workers lets a large repo's
+    # parallel with embed_concepts. 100 workers lets a large repo's
     # concept chunks drain concurrently; the per-concept advisory
     # lock (ClaimConceptForSummary) keeps two workers from
     # summarizing the same concept at once.
-    summarize_concepts: 50
+    summarize_concepts: 100
     # Concept synthesis ("definition") is chained from
     # summarize_concepts: every time a slice is written/updated, one
     # synthesize_concept job is enqueued. 50 workers lets synthesis
@@ -324,6 +324,26 @@ search:
     # returns up to 3x limit candidates, the fused ranking
     # reorders them, and pagination slices the final limit.
     over_fetch_multiplier: 3
+
+# concepts configures the concept-relations read surface (REST
+# /concepts/{id}/relations and the MCP getRelatedConcepts tool). It
+# classifies each relation by shared_fact_count into three bands:
+#
+#   - insignificant: shared_fact_count < min_shared_fact_count. Never
+#     returned by default; the client passes show_insignificant=true
+#     to lower the floor to 1 and surface them (labeled
+#     "insignificant").
+#   - weak: min_shared_fact_count <= shared_fact_count <
+#     stable_shared_fact_count. Returned by default, labeled "weak".
+#   - stable: shared_fact_count >= stable_shared_fact_count. Returned
+#     by default, labeled "stable".
+#
+# Based on the OKT research team's graph-analysis experiments: below
+# 3 shared facts a relation has low statistical significance; relations
+# become statistically significant above 5 shared facts.
+concepts:
+  min_shared_fact_count: 3
+  stable_shared_fact_count: 6
 
 providers:
   # promptset_default is the global default promptset hash a

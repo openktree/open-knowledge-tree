@@ -79,12 +79,13 @@ synthesizer missed — that is a revision or new synthesis job, not an audit.
 
 | # | Category | What you check | How |
 |---|----------|----------------|-----|
-| 1 | **Citation reality** | Every `<fact:ID>` and `<concept:ID>` in the doc resolves to a real fact/concept in the graph. | Regex-extract every `<fact:...>` and `<concept:...>` UUID from the markdown. Batch `getFact` / `getConcept`. Flag 404s, wrong-kind IDs (a `concept:` ID that is actually a fact UUID), malformed links. |
+| 1 | **Citation reality** | Every `<fact:ID>` and `<concept:ID>` (and bare `<uuid>`) in the doc resolves to a real fact/concept in the graph. | Regex-extract every UUID from the markdown — prefixed (`fact:`, `concept:`), bare (`<uuid>`), and image (`![alt](<fact:uuid>)`). Batch `getFact` / `getConcept`. Flag 404s, wrong-kind IDs (a `concept:` ID that is actually a fact UUID — note the system auto-corrects this but it signals prompt-following failure), malformed links, and hallucinated UUIDs. |
 | 2 | **Citation fidelity (drift)** | For every cited fact, the fact's text actually says what the synthesis's paraphrase claims it says. | For each cited fact, compare the fact's `text` field to the synthesis's prose around the link. Flag drift (synthesis says X, fact says Y), overstatement (synthesis says "clearly shows", fact says "may suggest"), understatement, contradiction. |
 | 3 | **Agent hypothesis grounding** | Every paragraph/sentence explicitly labeled "Agent hypothesis" cites specific originating facts; those facts exist and plausibly inspire the hypothesis. | Find every "Agent hypothesis" / "this synthesis's own analysis" / "not stated by any source" label. Verify it cites specific `<fact:ID>`/`<concept:ID>` links. Verify those facts exist (item 1) and plausibly support the inference. Flag untethered hypotheses (no originating facts cited) and hypotheses whose cited facts do not plausibly inspire the inference. |
 | 4 | **Neutrality / anti-asymmetry** | The synthesizer's own anti-asymmetry rules were followed: both scenarios built at full strength, symmetric skepticism, no one-directional falsifiability, no loaded labels, no consensus-prior framing, parallel-scenario structure for contested claims. | Scan for: Scenario A vs B length/rigor parity; one-directional falsifiability ("the suppression claim is unfalsifiable" without noting the counter is equally unfalsifiable); loaded labels (fringe, pseudoscience, debunked, believer); confident register for one side and hedged for the other; pre-deciding opening framing. |
 | 5 | **Missing inline fact cites** | Attributed prose ("According to X...", "Measurements show...", "Studies funded by Y...") without an adjacent `<fact:ID>` link violates the synthesizer's own MANDATORY linking rule. | Scan every paragraph for attribution language. Flag any attribution without an adjacent `fact:` link. For each, run `searchFacts` with the claim's keywords; if a supporting fact exists, suggest its ID and the exact insertion point in the feedback. If none exists, report it as unsupported (do NOT fabricate a cite). |
 | 6 | **Confidence register** | The synthesis's confidence language matches the underlying fact's strength — not overstated. | For each "clearly shows" / "demonstrates" / "establishes" in the synthesis, verify the cited fact's text supports that register. Flag mismatches (fact says "may suggest", synthesis says "clearly shows"). |
+| 7 | **Image citation audit** | Every `![alt](<fact:ID>)` embed resolves to an `image`-kind fact with a non-null `image_url`, and the alt text is meaningful (not empty, not just the UUID, at least one descriptive word). | Regex-extract every `![...](<fact:...>)` embed. Batch `getFact`. For each: (a) flag 404s; (b) flag `fact_kind != "image"` (a text-fact id embedded as an image renders as a broken placeholder); (c) flag empty/UUID-only alt text; (d) flag bare image embeds with no adjacent prose (orphaned images are dropped by the annotation pipeline's min-sentence filter). |
 
 ### CRITICAL: AI claims and ideas are accepted — transparency is the only bar (MANDATORY)
 
@@ -348,12 +349,18 @@ positive form of that mandate, applied to the hypothesis audit.
    meta-synthesis was built from (paths in the task prompt). These are
    additional ground truth — a meta-synthesis claim that contradicts its
    source sub-syntheses is drift even before you check facts.
-4. **Extract citations** — regex-extract every `<fact:ID>` and `<concept:ID>`
-   UUID from the markdown.
-5. **Verify citation reality** — batch `getFact` / `getConcept` for every
-   extracted UUID. Flag 404s, wrong-kind, malformed.
-6. **Verify citation fidelity** — for each cited fact, compare its `text` to
-   the synthesis's paraphrase. Flag drift, overstatement, contradiction.
+ 4. **Extract citations** — regex-extract every UUID from the markdown:
+    prefixed (`<fact:ID>`, `<concept:ID>`), bare (`<uuid>`), and image embeds
+    (`![alt](<fact:ID>)`). Dedup the UUID set.
+ 5. **Verify citation reality** — batch `getFact` / `getConcept` for every
+    extracted UUID. Flag 404s, wrong-kind (a `concept:` prefix on a fact
+    UUID — note the system auto-corrects but flag as prompt-following
+    failure), malformed, hallucinated. For image embeds, verify the
+    resolved fact has `fact_kind: "image"` and a non-null `image_url`;
+    flag text-fact ids embedded as images (they render as broken
+    placeholders) and empty/UUID-only alt text.
+ 6. **Verify citation fidelity** — for each cited fact, compare its `text` to
+    the synthesis's paraphrase. Flag drift, overstatement, contradiction.
 7. **Verify agent hypothesis grounding** — find every hypothesis label, check
    it cites real originating facts and those facts plausibly inspire it.
 8. **Verify neutrality / anti-asymmetry** — scan for both-scenarios parity,

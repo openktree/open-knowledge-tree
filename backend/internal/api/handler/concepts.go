@@ -625,10 +625,25 @@ func factOwnedByRepo(factSources []store.OktRepositoryFactSource, repoID pgtype.
 // display representative of the related group; `shared_fact_count`
 // is the number of distinct facts linked to BOTH the queried concept
 // and the related one (deduped per fact, not per source).
+// `relation_kind` classifies the strength of the relation into three
+// bands driven by config.ConceptsConfig:
+//
+//   - "insignificant": shared_fact_count below the configured
+//     min_shared_fact_count (default < 3). Only returned when the
+//     caller passes show_insignificant=true (which lowers the floor
+//     to 1).
+//   - "weak": between the floor and stable_shared_fact_count
+//     (default 3..5).
+//   - "stable": at or above stable_shared_fact_count (default >= 6).
+//
+// The bands come from the OKT research team's graph-analysis
+// experiments: below 3 shared facts a relation has low statistical
+// significance; relations become statistically significant above 5.
 type conceptRelationRow struct {
 	ConceptID       string `json:"concept_id"`
 	CanonicalName   string `json:"canonical_name"`
 	SharedFactCount int64  `json:"shared_fact_count"`
+	RelationKind    string `json:"relation_kind"`
 }
 
 // ListConceptRelations handles GET
@@ -690,11 +705,35 @@ func (c *Concepts) ListConceptRelations(w http.ResponseWriter, r *http.Request) 
 
 	limit, offset := parsePaging(r)
 
+	// The read surface classifies relations into three bands by
+	// shared_fact_count (see conceptRelationRow doc). By default
+	// (show_insignificant=false/omitted) the floor is the configured
+	// min_shared_fact_count (default 3): relations below it are not
+	// returned. show_insignificant=true lowers the floor to 1 to
+	// surface the "insignificant" band. The stable boundary
+	// (stable_shared_fact_count, default 6) labels rows as "stable"
+	// vs "weak" — it does not gate visibility, only the label.
+	showInsignificant := r.URL.Query().Get("show_insignificant") == "true"
+	cfg := c.deps.Config
+	minShared := int64(cfg.Concepts.MinSharedFactCount)
+	if minShared <= 0 {
+		minShared = 3
+	}
+	floor := minShared
+	if showInsignificant {
+		floor = 1
+	}
+	stableShared := int64(cfg.Concepts.StableSharedFactCount)
+	if stableShared <= 0 {
+		stableShared = 6
+	}
+
 	rows, err := queries.ListConceptRelationsByConceptName(r.Context(), store.ListConceptRelationsByConceptNameParams{
-		RepositoryID: repoID,
-		Lower:        concept.CanonicalName,
-		Limit:        int32(limit),
-		Offset:       int32(offset),
+		RepositoryID:    repoID,
+		Lower:           concept.CanonicalName,
+		SharedFactCount: floor,
+		Limit:           int32(limit),
+		Offset:          int32(offset),
 	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to list concept relations")
@@ -702,8 +741,9 @@ func (c *Concepts) ListConceptRelations(w http.ResponseWriter, r *http.Request) 
 	}
 
 	total, err := queries.CountConceptRelationsByConceptName(r.Context(), store.CountConceptRelationsByConceptNameParams{
-		RepositoryID: repoID,
-		Lower:        concept.CanonicalName,
+		RepositoryID:    repoID,
+		Lower:           concept.CanonicalName,
+		SharedFactCount: floor,
 	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to count concept relations")
@@ -726,6 +766,7 @@ func (c *Concepts) ListConceptRelations(w http.ResponseWriter, r *http.Request) 
 			ConceptID:       pgUUIDInterfaceToString(row.ConceptID),
 			CanonicalName:   name,
 			SharedFactCount: row.SharedFactCount,
+			RelationKind:    relationKindFor(row.SharedFactCount, minShared, stableShared),
 		})
 	}
 
@@ -897,6 +938,29 @@ func pgUUIDInterfaceToString(v interface{}) string {
 		return string(id)
 	}
 	return ""
+}
+
+// relationKindFor classifies a relation's shared_fact_count into the
+// three band labels surfaced to clients. The bands come from the OKT
+// research team's graph-analysis experiments (see config.ConceptsConfig):
+//
+//   - "insignificant": below the configured min_shared_fact_count
+//     (default < 3). Only reachable when the caller passes
+//     show_insignificant=true, which lowers the SQL floor to 1.
+//   - "weak": between the floor and the stable boundary
+//     (default 3..5).
+//   - "stable": at or above the stable boundary (default >= 6).
+//
+// min and stable are the resolved (non-zero) config values; the
+// caller is responsible for coercing them before calling.
+func relationKindFor(shared, min, stable int64) string {
+	if shared < min {
+		return "insignificant"
+	}
+	if shared >= stable {
+		return "stable"
+	}
+	return "weak"
 }
 
 var _ = uuid.New

@@ -25,6 +25,7 @@ type relationRow struct {
 	ConceptID      string `json:"concept_id"`
 	CanonicalName  string `json:"canonical_name"`
 	SharedFactCount int64 `json:"shared_fact_count"`
+	RelationKind   string `json:"relation_kind"`
 }
 
 // relationDetailRow is the minimal decode of one entry in the
@@ -167,6 +168,11 @@ func TestConceptRelations_ListAndDetails(t *testing.T) {
 	if rows[0].SharedFactCount != 3 {
 		t.Errorf("first relation shared_fact_count = %d, want 3", rows[0].SharedFactCount)
 	}
+	// 3 shared facts lands in the "weak" band (min_shared_fact_count=3
+	// <= 3 < stable_shared_fact_count=6) and is returned by default.
+	if rows[0].RelationKind != "weak" {
+		t.Errorf("first relation relation_kind = %q, want \"weak\" (3 shared, default bands)", rows[0].RelationKind)
+	}
 
 	// Musk's relations list must include Trump (symmetric) with the
 	// same shared_fact_count.
@@ -181,6 +187,9 @@ func TestConceptRelations_ListAndDetails(t *testing.T) {
 	mRows := decodeRelationRows(t, mList.Data)
 	if len(mRows) != 1 || mRows[0].CanonicalName != "Trump" || mRows[0].SharedFactCount != 3 {
 		t.Errorf("musk relations = %+v, want one row {Trump, 3}", mRows)
+	}
+	if mRows[0].RelationKind != "weak" {
+		t.Errorf("musk relation relation_kind = %q, want \"weak\"", mRows[0].RelationKind)
 	}
 
 	// Pagination: limit=1 returns the top relation (Musk).
@@ -258,6 +267,157 @@ func TestConceptRelations_ListAndDetails(t *testing.T) {
 	if selfResp.StatusCode != http.StatusBadRequest {
 		t.Errorf("GET relation details self-pair: status %d, want 400", selfResp.StatusCode)
 	}
+}
+
+// TestConceptRelations_Bands verifies the shared_fact_count band
+// classification and the show_insignificant gate. The read surface
+// classifies relations into three bands (from the OKT research
+// team's graph-analysis experiments):
+//   - "insignificant": shared_fact_count < min_shared_fact_count
+//     (default < 3). Not returned by default; show_insignificant=true
+//     lowers the floor to 1 and surfaces them.
+//   - "weak": min_shared_fact_count <= count < stable_shared_fact_count
+//     (default 3..5). Returned by default.
+//   - "stable": count >= stable_shared_fact_count (default >= 6).
+//     Returned by default.
+//
+// Seeds an anchor concept with three neighbors at shared counts 2
+// (insignificant), 4 (weak), and 6 (stable) and asserts:
+//   - default: only weak + stable returned (2 rows), labeled.
+//   - show_insignificant=true: all three returned, labeled.
+//   - the 2-shared neighbor is never returned without the flag.
+func TestConceptRelations_Bands(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "relbands@example.com")
+	const slug = "relbands-repo"
+	_, _, repoID := createRepositoryWithDB(t, admin, "RelBands", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	queries := store.New(env.DB)
+
+	srcID := pgtype.UUID{}
+	srcID.Scan(uuid.NewString())
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: srcID, RepositoryID: pgRepo, Url: "https://example.com/bands", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	mkConcept := func(name, ctx string) pgtype.UUID {
+		c, err := queries.CreateConcept(context.Background(), store.CreateConceptParams{
+			RepositoryID: pgRepo, CanonicalName: name, Context: ctx,
+		})
+		if err != nil {
+			t.Fatalf("create concept %s/%s: %v", name, ctx, err)
+		}
+		return c.ID
+	}
+	linkFact := func(conceptID pgtype.UUID, chunk int32) pgtype.UUID {
+		fidStr := insertFactWithSource(t, env, pgRepo, srcID, "band fact", chunk)
+		var fid pgtype.UUID
+		fid.Scan(fidStr)
+		queries.AddFactConcept(context.Background(), store.AddFactConceptParams{FactID: fid, ConceptID: conceptID})
+		return fid
+	}
+	linkExisting := func(fid, conceptID pgtype.UUID) {
+		queries.AddFactConcept(context.Background(), store.AddFactConceptParams{FactID: fid, ConceptID: conceptID})
+	}
+
+	// Anchor "Anchor" + three neighbors sharing 2 / 4 / 6 facts.
+	anchor := mkConcept("Anchor", "Thing")
+	insig := mkConcept("Insig", "Thing") // 2 shared → insignificant
+	weak := mkConcept("Weak", "Thing")  // 4 shared → weak
+	stable := mkConcept("Stable", "Thing") // 6 shared → stable
+
+	// 2 insignificant shared facts.
+	for i := int32(0); i < 2; i++ {
+		f := linkFact(anchor, i)
+		linkExisting(f, insig)
+	}
+	// 4 weak shared facts.
+	for i := int32(0); i < 4; i++ {
+		f := linkFact(anchor, 10+i)
+		linkExisting(f, weak)
+	}
+	// 6 stable shared facts.
+	for i := int32(0); i < 6; i++ {
+		f := linkFact(anchor, 20+i)
+		linkExisting(f, stable)
+	}
+
+	if _, err := env.DB.Exec(context.Background(),
+		`REFRESH MATERIALIZED VIEW okt_repository.concept_relations`); err != nil {
+		t.Fatalf("refresh matview: %v", err)
+	}
+	anchorIDStr := pgUUIDString(anchor)
+
+	// Default (no show_insignificant): floor = min (3), so the 2-shared
+	// "Insig" neighbor is excluded. Only Weak (4) and Stable (6) return.
+	resp, raw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts/"+anchorIDStr+"/relations", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET relations: %d %s", resp.StatusCode, raw)
+	}
+	var list pageEnvelope
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if list.Total != 2 {
+		t.Fatalf("default total = %d, want 2 (Insig filtered out)", list.Total)
+	}
+	rows := decodeRelationRows(t, list.Data)
+	byName := map[string]relationRow{}
+	for _, r := range rows {
+		byName[r.CanonicalName] = r
+	}
+	if _, ok := byName["Insig"]; ok {
+		t.Errorf("default response must not include the insignificant 2-shared neighbor")
+	}
+	if r, ok := byName["Weak"]; !ok {
+		t.Errorf("default response missing Weak neighbor")
+	} else if r.RelationKind != "weak" {
+		t.Errorf("Weak relation_kind = %q, want \"weak\"", r.RelationKind)
+	}
+	if r, ok := byName["Stable"]; !ok {
+		t.Errorf("default response missing Stable neighbor")
+	} else if r.RelationKind != "stable" {
+		t.Errorf("Stable relation_kind = %q, want \"stable\"", r.RelationKind)
+	}
+
+	// show_insignificant=true: floor lowered to 1, all three return.
+	insigResp, insigRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts/"+anchorIDStr+"/relations?show_insignificant=true", nil)
+	if insigResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET relations show_insignificant: %d %s", insigResp.StatusCode, insigRaw)
+	}
+	var insigList pageEnvelope
+	if err := json.Unmarshal(insigRaw, &insigList); err != nil {
+		t.Fatalf("decode insig: %v", err)
+	}
+	if insigList.Total != 3 {
+		t.Fatalf("show_insignificant total = %d, want 3", insigList.Total)
+	}
+	insigRows := decodeRelationRows(t, insigList.Data)
+	insigByCount := map[int64]string{}
+	for _, r := range insigRows {
+		insigByCount[r.SharedFactCount] = r.RelationKind
+	}
+	if got := insigByCount[2]; got != "insignificant" {
+		t.Errorf("2-shared relation_kind = %q, want \"insignificant\"", got)
+	}
+	if got := insigByCount[4]; got != "weak" {
+		t.Errorf("4-shared relation_kind = %q, want \"weak\"", got)
+	}
+	if got := insigByCount[6]; got != "stable" {
+		t.Errorf("6-shared relation_kind = %q, want \"stable\"", got)
+	}
+
+	// show_insignificant=false (explicit): same as default — Insig excluded.
+	noResp, _ := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts/"+anchorIDStr+"/relations?show_insignificant=false", nil)
+	if noResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET relations show_insignificant=false: %d", noResp.StatusCode)
+	}
+	var noList pageEnvelope
+	json.Unmarshal(raw, &noList)
 }
 
 // TestConceptRelations_Unauthenticated verifies the relations

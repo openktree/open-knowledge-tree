@@ -1040,6 +1040,7 @@ func TestMCP_GetRelatedConcepts(t *testing.T) {
 				Related []struct {
 					CanonicalName   string `json:"canonical_name"`
 					SharedFactCount int64  `json:"shared_fact_count"`
+					RelationKind    string `json:"relation_kind"`
 				} `json:"related"`
 				Total int `json:"total"`
 			} `json:"structuredContent"`
@@ -1059,6 +1060,146 @@ func TestMCP_GetRelatedConcepts(t *testing.T) {
 	}
 	if resp.Result.StructuredContent.Related[0].SharedFactCount != 3 {
 		t.Fatalf("getRelatedConcepts: expected shared=3, got %d", resp.Result.StructuredContent.Related[0].SharedFactCount)
+	}
+	// 3 shared facts lands in the "weak" band (3 <= 3 < 6) and is
+	// returned by default.
+	if resp.Result.StructuredContent.Related[0].RelationKind != "weak" {
+		t.Errorf("getRelatedConcepts: expected relation_kind=\"weak\", got %q", resp.Result.StructuredContent.Related[0].RelationKind)
+	}
+}
+
+// TestMCP_GetRelatedConcepts_Bands verifies the show_insignificant
+// gate and the insignificant/weak/stable band labels over MCP.
+func TestMCP_GetRelatedConcepts_Bands(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "mcp-grc-bands@example.com")
+	const slug = "mcp-grc-bands"
+	_, _, repoID := createRepositoryWithDB(t, admin, "MCP GRC Bands", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	ctx := context.Background()
+	queries := store.New(env.DB)
+
+	srcID := pgtype.UUID{}
+	srcID.Scan(uuid.NewString())
+	queries.CreateSource(ctx, store.CreateSourceParams{
+		ID: srcID, RepositoryID: pgRepo, Url: "https://example.com/grc-bands", Kind: "homepage", Status: "fetched",
+	})
+	mkConcept := func(name, ctxLabel string) pgtype.UUID {
+		c, err := queries.CreateConcept(ctx, store.CreateConceptParams{
+			RepositoryID: pgRepo, CanonicalName: name, Context: ctxLabel,
+		})
+		if err != nil {
+			t.Fatalf("create concept: %v", err)
+		}
+		return c.ID
+	}
+	linkFact := func(conceptID pgtype.UUID, chunk int32) pgtype.UUID {
+		fidStr := insertFactWithSource(t, env, pgRepo, srcID, "shared fact", chunk)
+		var fid pgtype.UUID
+		fid.Scan(fidStr)
+		queries.MarkFactStatus(ctx, store.MarkFactStatusParams{ID: fid, Status: "stable"})
+		queries.AddFactConcept(ctx, store.AddFactConceptParams{FactID: fid, ConceptID: conceptID})
+		return fid
+	}
+	linkExisting := func(fid, conceptID pgtype.UUID) {
+		queries.AddFactConcept(ctx, store.AddFactConceptParams{FactID: fid, ConceptID: conceptID})
+	}
+
+	anchor := mkConcept("Anchor", "Thing")
+	insig := mkConcept("Insig", "Thing")
+	weak := mkConcept("Weak", "Thing")
+	stable := mkConcept("Stable", "Thing")
+	for i := int32(0); i < 2; i++ {
+		f := linkFact(anchor, i)
+		linkExisting(f, insig)
+	}
+	for i := int32(0); i < 4; i++ {
+		f := linkFact(anchor, 10+i)
+		linkExisting(f, weak)
+	}
+	for i := int32(0); i < 6; i++ {
+		f := linkFact(anchor, 20+i)
+		linkExisting(f, stable)
+	}
+	if _, err := env.DB.Exec(ctx, `REFRESH MATERIALIZED VIEW okt_repository.concept_relations`); err != nil {
+		t.Fatalf("refresh matview: %v", err)
+	}
+
+	uid := resolveUserID(t, env, "mcp-grc-bands@example.com")
+	tok := mintAccessToken(t, env, uid, "mcp-grc-bands@example.com", "test-client")
+
+	callGRC := func(t *testing.T, args map[string]any) (int, []byte) {
+		return mcpCall(t, env.BaseURL, tok, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{
+				"name":      "getRelatedConcepts",
+				"arguments": args,
+			},
+		})
+	}
+
+	var resp struct {
+		Result struct {
+			StructuredContent struct {
+				Related []struct {
+					CanonicalName   string `json:"canonical_name"`
+					SharedFactCount int64  `json:"shared_fact_count"`
+					RelationKind    string `json:"relation_kind"`
+				} `json:"related"`
+				Total int `json:"total"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+
+	// Default: floor = 3, so Insig (2) excluded.
+	status, body := callGRC(t, map[string]any{
+		"repository": repoID,
+		"concept":    "Anchor",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("default: expected 200, got %d: %s", status, body)
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("default unmarshal: %v: %s", err, body)
+	}
+	if resp.Result.StructuredContent.Total != 2 {
+		t.Fatalf("default total = %d, want 2 (Insig filtered)", resp.Result.StructuredContent.Total)
+	}
+	for _, r := range resp.Result.StructuredContent.Related {
+		if r.CanonicalName == "Insig" {
+			t.Errorf("default response must not include Insig (2 shared)")
+		}
+	}
+
+	// show_insignificant=true: floor lowered to 1, all three return.
+	status, body = callGRC(t, map[string]any{
+		"repository":         repoID,
+		"concept":            "Anchor",
+		"show_insignificant": true,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("show_insignificant: expected 200, got %d: %s", status, body)
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("show_insignificant unmarshal: %v: %s", err, body)
+	}
+	if resp.Result.StructuredContent.Total != 3 {
+		t.Fatalf("show_insignificant total = %d, want 3", resp.Result.StructuredContent.Total)
+	}
+	byCount := map[int64]string{}
+	for _, r := range resp.Result.StructuredContent.Related {
+		byCount[r.SharedFactCount] = r.RelationKind
+	}
+	if got := byCount[2]; got != "insignificant" {
+		t.Errorf("2-shared relation_kind = %q, want \"insignificant\"", got)
+	}
+	if got := byCount[4]; got != "weak" {
+		t.Errorf("4-shared relation_kind = %q, want \"weak\"", got)
+	}
+	if got := byCount[6]; got != "stable" {
+		t.Errorf("6-shared relation_kind = %q, want \"stable\"", got)
 	}
 }
 

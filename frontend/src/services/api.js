@@ -734,12 +734,20 @@ export const api = {
   // Concept relations: a first-class read surface showing which other
   // concepts share facts with this one. `shared_fact_count` is the
   // number of distinct facts linked to BOTH concepts (deduped per
-  // fact, not per source). The list reads the concept_relations
-  // materialized view (refreshed after each extract_concepts batch +
-  // periodically); the details endpoint is a live per-context
-  // breakdown for a specific pair. Both keyed by concept_id.
-  listConceptRelations(slug, conceptID, { limit = 10, offset = 0 } = {}) {
-    const qs = new URLSearchParams({ limit, offset });
+  // fact, not per source). `relation_kind` classifies strength into
+  // "insignificant" (below the configured floor, default < 3), "weak"
+  // (default 3..5), and "stable" (default >= 6), based on the OKT
+  // research team's graph-analysis experiments. The list reads the
+  // concept_relations materialized view (refreshed after each
+  // extract_concepts batch + periodically); the details endpoint is a
+  // live per-context breakdown for a specific pair. Both keyed by
+  // concept_id.
+  //
+  // The frontend passes show_insignificant=true so the UI surfaces all
+  // bands (insignificant + weak + stable) with the relation_kind badge;
+  // omitting it would hide the insignificant band by default.
+  listConceptRelations(slug, conceptID, { limit = 10, offset = 0, showInsignificant = true } = {}) {
+    const qs = new URLSearchParams({ limit, offset, show_insignificant: showInsignificant });
     return request(`/repositories/${slug}/concepts/${conceptID}/relations?${qs.toString()}`);
   },
 

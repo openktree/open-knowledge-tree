@@ -46,6 +46,17 @@ type Config struct {
 	// vs hybrid fusion with the Qdrant embedding index).
 	Search    SearchConfig              `mapstructure:"search"`
 
+	// Concepts configures the concept-relations read surface
+	// (REST /concepts/{id}/relations and the MCP getRelatedConcepts
+	// tool). It sets the hard floor below which relations are never
+	// returned by default and the band boundary above which a
+	// relation is labeled "stable" rather than "weak" (or
+	// "insignificant" for those below the floor, surfaced only when
+	// the client passes show_insignificant=true). Based on the OKT
+	// research team's graph-analysis experiments: below 3 shared
+	// facts a relation has low statistical significance.
+	Concepts  ConceptsConfig            `mapstructure:"concepts"`
+
 	// RepositoryPresets is the catalog of repository "types" the
 	// create-repository UI offers (e.g. Scientific, General,
 	// Enterprise). Each preset carries a curated set of providers to
@@ -1194,6 +1205,58 @@ func (s SynthesisConfig) MaxRelatedSynthesesOr(def int) int {
 	return def
 }
 
+// ConceptsConfig configures the concept-relations read surface
+// shared by the REST /concepts/{id}/relations endpoint and the MCP
+// getRelatedConcepts tool.
+//
+// The read surface classifies each relation by its shared_fact_count
+// into three bands:
+//
+//   - insignificant: shared_fact_count < MinSharedFactCount (default
+//     < 3). These are never returned by default; the client must pass
+//     show_insignificant=true to lower the floor to 1 and surface them.
+//   - weak: MinSharedFactCount <= shared_fact_count <
+//     StableSharedFactCount (default 3..5). Returned by default,
+//     labeled "weak".
+//   - stable: shared_fact_count >= StableSharedFactCount (default
+//     >= 6). Returned by default, labeled "stable".
+//
+// The bands come from the OKT research team's graph-analysis
+// experiments: relations below 3 shared facts have low statistical
+// significance; relations become statistically significant above 5
+// shared facts. show_insignificant only toggles whether the
+// insignificant band is returned; it does not change labels and does
+// not hide the weak band.
+type ConceptsConfig struct {
+	// MinSharedFactCount is the hard floor for the default response:
+	// relations with fewer shared facts are not returned unless the
+	// client passes show_insignificant=true (which lowers the floor
+	// to 1). Default 3.
+	MinSharedFactCount int `mapstructure:"min_shared_fact_count"`
+	// StableSharedFactCount is the boundary above which a relation is
+	// labeled "stable" (vs "weak" below it, down to the floor).
+	// Default 6.
+	StableSharedFactCount int `mapstructure:"stable_shared_fact_count"`
+}
+
+// MinSharedFactCountOr returns the configured MinSharedFactCount or
+// the default (3) when zero/negative.
+func (c ConceptsConfig) MinSharedFactCountOr(def int) int {
+	if c.MinSharedFactCount > 0 {
+		return c.MinSharedFactCount
+	}
+	return def
+}
+
+// StableSharedFactCountOr returns the configured
+// StableSharedFactCount or the default (6) when zero/negative.
+func (c ConceptsConfig) StableSharedFactCountOr(def int) int {
+	if c.StableSharedFactCount > 0 {
+		return c.StableSharedFactCount
+	}
+	return def
+}
+
 // ReportsConfig configures the report autofact-annotation pipeline.
 // The annotate_report worker chunks an uploaded report into sentences,
 // embeds each with the same ai.EmbeddingProvider the facts use, and
@@ -2214,6 +2277,22 @@ func Load(configPath string) (*Config, error) {
 	}
 	cfg.Providers.Synthesis.MaxRelatedConcepts = n1
 	cfg.Providers.Synthesis.MaxRelatedSyntheses = n2
+
+	// Concepts relations read-surface defaults. The hard floor
+	// (MinSharedFactCount) gates the default response; the stable
+	// boundary (StableSharedFactCount) labels relations as
+	// "weak" vs "stable". show_insignificant=true lowers the floor
+	// to 1 to surface the "insignificant" band. If an operator sets
+	// the stable boundary below the floor, coerce it up so the
+	// band order (insignificant < weak < stable) stays well-defined.
+	minF := cfg.Concepts.MinSharedFactCountOr(3)
+	stableF := cfg.Concepts.StableSharedFactCountOr(6)
+	if stableF < minF {
+		log.Printf("config: concepts.stable_shared_fact_count=%d < min_shared_fact_count=%d; coercing stable up to %d", stableF, minF, minF)
+		stableF = minF
+	}
+	cfg.Concepts.MinSharedFactCount = minF
+	cfg.Concepts.StableSharedFactCount = stableF
 
 	// Summarization curriculum tiers: sort by MinFacts ascending
 	// and drop invalid tiers (non-positive BatchSize) so TierFor's

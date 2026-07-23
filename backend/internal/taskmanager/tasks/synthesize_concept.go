@@ -517,7 +517,13 @@ func imageRowsToInputs(rows []store.ListGroupImageFactsRow) []synthesis.ImageInp
 // resolvePickedImages filters the picker's returned ids to those
 // actually present in the candidate set (defensive against
 // hallucinated ids), resolves them back to ImageInputs, and caps at
-// maxImages.
+// maxImages. Because the candidate set is loaded via
+// ListGroupImageFacts (which filters fact_kind='image'), any id the
+// picker returns that is NOT in the candidate set is either
+// hallucinated or a text-fact UUID — both are silently dropped here.
+// A dropped id is logged at debug level so a missing-image
+// investigation can trace whether the picker hallucinated or the
+// candidate fetch missed it.
 func resolvePickedImages(picked []string, candidates []synthesis.ImageInput, maxImages int) []synthesis.ImageInput {
 	if len(picked) == 0 {
 		return nil
@@ -533,11 +539,18 @@ func resolvePickedImages(picked []string, candidates []synthesis.ImageInput, max
 			continue
 		}
 		seen[id] = true
-		if c, ok := byID[id]; ok {
-			out = append(out, c)
-			if maxImages > 0 && len(out) >= maxImages {
-				break
-			}
+		c, ok := byID[id]
+		if !ok {
+			// The picker returned an id that is not in the image
+			// candidate set — either a hallucinated UUID or a
+			// text-fact id. Drop it; the synthesizer will not see
+			// it and cannot embed a broken image for it.
+			log.Printf("synthesize_concept: picker returned non-image id %s (dropped)", id)
+			continue
+		}
+		out = append(out, c)
+		if maxImages > 0 && len(out) >= maxImages {
+			break
 		}
 	}
 	return out
@@ -570,10 +583,20 @@ func coversAll(covered []pgtype.UUID, slices []store.OktRepositoryConceptSummary
 
 // embeddedImageIDRe matches ![alt](<fact:uuid>) markdown image
 // citations the synthesis is prompted to emit, and tolerates the
-// legacy bare-<uuid> form produced by older summaries before the
-// "fact:" kind prefix was introduced. The uuid is captured so the
-// worker can store embedded_image_ids for the read path.
-var embeddedImageIDRe = regexp.MustCompile(`!\[[^\]]*\]\(<(?:fact:)?([0-9a-fA-F-]{36})>\)`)
+// variants the LLM occasionally produces:
+//   - the legacy bare-<uuid> form (no "fact:" prefix) from older
+//     summaries before the kind prefix was introduced;
+//   - missing angle brackets ![alt](fact:uuid) or ![alt](uuid),
+//     which the prompt forbids but the model sometimes emits —
+//     without this tolerance the image would not be extracted to
+//     embedded_image_ids and the read path would render it as a
+//     broken *alt* placeholder.
+// The uuid is captured so the worker can store embedded_image_ids
+// for the read path. The angle brackets are optional (the canonical
+// form uses them; the tolerant form accepts their absence).
+var embeddedImageIDRe = regexp.MustCompile(
+	`!\[[^\]]*][(](?:<\s*)?(?:fact:)?([0-9a-fA-F-]{36})\s*(?:>\s*)?[)]`,
+)
 
 // extractEmbeddedImageIDs returns the deduplicated list of image
 // fact_ids the synthesis embeds via ![alt](<fact:fact_id>). The worker
@@ -645,10 +668,11 @@ func (w *SynthesizeConceptsWorker) loadRelatedConcepts(
 	}
 
 	rows, err := queries.ListConceptRelationsByConceptName(ctx, store.ListConceptRelationsByConceptNameParams{
-		RepositoryID: repoID,
-		Lower:        canonicalName,
-		Limit:        int32(n1),
-		Offset:       0,
+		RepositoryID:    repoID,
+		Lower:           canonicalName,
+		SharedFactCount: 0, // synthesis already prunes via LIMIT n1; no read-API floor
+		Limit:           int32(n1),
+		Offset:          0,
 	})
 	if err != nil {
 		log.Printf("synthesize_concept: listing related concepts for %s: %v (proceeding without)", groupKey, err)

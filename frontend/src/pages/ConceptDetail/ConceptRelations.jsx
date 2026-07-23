@@ -8,6 +8,21 @@ import { api } from "../../services/api";
 
 const PAGE_SIZE = 10;
 
+// Maps relation_kind (from the backend band classifier) to a Badge
+// variant + tooltip explaining the statistical significance. The bands
+// come from the OKT research team's graph-analysis experiments:
+// relations below 3 shared facts have low statistical significance;
+// relations become statistically significant above 5 shared facts.
+const KIND_META = {
+  stable: { variant: "blue", label: "stable" },
+  weak: { variant: "yellow", label: "weak" },
+  insignificant: { variant: "gray", label: "insignificant" },
+};
+
+function kindTooltip(count) {
+  return `${count} shared fact${count === 1 ? "" : "s"} has low statistical significance; relations become statistically significant above 5 shared facts (based on OKT research team experiments).`;
+}
+
 // ConceptRelations renders the "Related concepts" card on the concept
 // detail page. A relation between two concepts is the set of facts
 // linked to BOTH; shared_fact_count is the distinct count of those
@@ -23,6 +38,11 @@ const PAGE_SIZE = 10;
 // page; default page size 10. Each row links to the related concept's
 // detail page (by its representative concept_id) so the user can
 // navigate the relation graph.
+//
+// Each row carries a relation_kind badge (stable / weak /
+// insignificant) with a hover tooltip explaining the significance
+// bands. The frontend passes show_insignificant=true so all bands
+// are surfaced (see api.listConceptRelations).
 export default function ConceptRelations(props) {
   const slug = () => props.slug;
   const conceptID = () => props.conceptID;
@@ -79,16 +99,24 @@ export default function ConceptRelations(props) {
       >
         <div class="space-y-2 xl:flex-1 xl:overflow-y-auto">
           <For each={relations()}>
-            {(rel) => (
-              <A
-                href={`/${slug()}/concepts/${rel.concept_id}`}
-                class="flex items-center justify-between gap-2 p-3 border rounded dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors text-sm"
-                title={`View ${rel.canonical_name} detail`}
-              >
-                <span class="font-medium dark:text-white truncate">{rel.canonical_name}</span>
-                <Badge variant="blue">{rel.shared_fact_count.toLocaleString()} shared</Badge>
-              </A>
-            )}
+            {(rel) => {
+              const meta = KIND_META[rel.relation_kind] || KIND_META.weak;
+              return (
+                <A
+                  href={`/${slug()}/concepts/${rel.concept_id}`}
+                  class="flex items-center justify-between gap-2 p-3 border rounded dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors text-sm"
+                  title={`View ${rel.canonical_name} detail`}
+                >
+                  <span class="font-medium dark:text-white truncate">{rel.canonical_name}</span>
+                  <span class="flex items-center gap-1.5 shrink-0">
+                    <Badge variant={meta.variant}>
+                      <span title={kindTooltip(rel.shared_fact_count)}>{meta.label}</span>
+                    </Badge>
+                    <Badge variant="blue">{rel.shared_fact_count.toLocaleString()} shared</Badge>
+                  </span>
+                </A>
+              );
+            }}
           </For>
         </div>
 

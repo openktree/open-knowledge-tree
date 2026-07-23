@@ -264,6 +264,16 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 	for _, s := range sentences {
 		if len([]rune(s.Text)) >= minRunes {
 			candidates = append(candidates, s)
+		} else if bareImageCitationRe.MatchString(s.Text) {
+			// A standalone image embed (e.g. "![alt](<fact:uuid>)")
+			// shorter than minRunes is still a citable unit: the
+			// author explicitly cited a fact by embedding the
+			// image. Keep it as a candidate so its direct citation
+			// is not lost (the image itself renders via the
+			// frontend, but the annotation linkage — the <sup>
+			// count badge + CitedFactModal entry — would be dropped
+			// without this exemption).
+			candidates = append(candidates, s)
 		}
 	}
 	if len(candidates) == 0 {
@@ -327,45 +337,71 @@ func (w *AnnotateReportWorker) Work(ctx context.Context, job *river.Job[Annotate
 
 	// Phase 0: extract direct inline citations from each candidate
 	// sentence's text. The synthesis convention is
-	//   [text](<fact:uuid>)   (text citation)
-	//   ![alt](<fact:uuid>)   (image citation)
+	//   [text](<fact:uuid>)     text citation
+	//   [text](<concept:uuid>)  concept citation
+	//   ![alt](<fact:uuid>)     image citation
+	//   [text](<uuid>)          legacy bare-uuid citation
 	// An author who placed one of these in the report body is
 	// explicitly asserting "this fact verifies this sentence" — the
-	// worker persists each as an annotation with posture="supports"
-	// and score=1.0, OUTSIDE the maxFacts cap and WITHOUT going
-	// through the posture classifier (the author's judgment
-	// overrides the LLM). Non-existent fact_ids are dropped silently
-	// (the author may have referenced a fact that was since
-	// deleted).
-	directCitations := extractDirectCitations(candidates)
+	// worker persists each FACT-kind citation as an annotation with
+	// posture="supports" and score=1.0, OUTSIDE the maxFacts cap and
+	// WITHOUT going through the posture classifier (the author's
+	// judgment overrides the LLM). Concept citations are not
+	// persisted as annotations (the annotation table's fact_id
+	// references okt_repository.facts), but they still render as
+	// links via the frontend's normalizeCitations. Non-existent ids
+	// are dropped silently (the author may have referenced a fact
+	// that was since deleted, or the synthesizer hallucinated the
+	// UUID).
+	//
+	// Kind resolution: collect every citation UUID across the
+	// candidate sentences, batch-resolve their real kinds via
+	// ResolveUUIDKinds (so a wrong "concept:" prefix on a fact UUID
+	// is flipped to fact, and vice versa), then filter to fact-kind
+	// only for annotation persistence.
+	citationIDs := collectCitationUUIDs(candidates)
+	citationPgIDs := make([]pgtype.UUID, 0, len(citationIDs))
+	for _, id := range citationIDs {
+		citationPgIDs = append(citationPgIDs, uuidToPg(id))
+	}
+	kindMap := resolveKinds(ctx, queries, citationPgIDs)
+	// Fallback: if ResolveUUIDKinds failed (returned an empty map
+	// despite non-empty input — e.g. a transient DB error), fall
+	// back to the legacy GetFactsByIDs validation so direct
+	// citations are not silently dropped. This treats every
+	// surviving id as a fact, which matches the pre-kind-resolution
+	// behavior.
+	if len(kindMap) == 0 && len(citationIDs) > 0 {
+		validRows, vErr := queries.GetFactsByIDs(ctx, citationPgIDs)
+		if vErr != nil {
+			log.Printf("annotate_report: fallback GetFactsByIDs for report %s failed: %v (will persist best-effort)", args.ReportID, vErr)
+			for _, id := range citationIDs {
+				kindMap[id] = "fact"
+			}
+		} else {
+			for _, f := range validRows {
+				if f.ID.Valid {
+					u, _ := uuid.FromBytes(f.ID.Bytes[:])
+					kindMap[u] = "fact"
+				}
+			}
+		}
+	}
+	directCitations := extractDirectCitations(candidates, kindMap)
 	directCitationIDs := make([]pgtype.UUID, 0)
 	for _, ids := range directCitations {
 		for _, id := range ids {
 			directCitationIDs = append(directCitationIDs, uuidToPg(id))
 		}
 	}
+	// directCitationValid is now implied by extractDirectCitations
+	// (it only returns fact-kind ids that exist in the kindMap), but
+	// the downstream persistence loop still checks it, so build the
+	// set from the filtered ids.
 	directCitationValid := make(map[uuid.UUID]bool, len(directCitationIDs))
-	if len(directCitationIDs) > 0 {
-		// Batch-validate so we don't issue one query per fact. The
-		// result is a set of valid fact_ids; non-valid ids are
-		// silently dropped from the directCitations map.
-		validRows, vErr := queries.GetFactsByIDs(ctx, directCitationIDs)
-		if vErr != nil {
-			log.Printf("annotate_report: validating direct citations for report %s failed: %v (will still persist best-effort)", args.ReportID, vErr)
-			// Be lenient: if the validation query fails, assume
-			// every direct citation is valid so we don't silently
-			// drop the author's explicit citations.
-			for _, ids := range directCitations {
-				for _, id := range ids {
-					directCitationValid[id] = true
-				}
-			}
-		} else {
-			for _, f := range validRows {
-				if f.ID.Valid {
-					directCitationValid[f.ID.Bytes] = true
-				}
-			}
+	for _, ids := range directCitations {
+		for _, id := range ids {
+			directCitationValid[id] = true
 		}
 	}
 	// Build a per-sentence set of valid direct-citation fact_ids so
@@ -1268,47 +1304,104 @@ func contextWindowAfter(sentences map[int]string, sentenceIndex, n int) []string
 }
 
 // directCitationPattern matches the synthesis convention for
-// inline fact citations:
-//   [text](<fact:uuid>)   (text citation)
-//   ![alt](<fact:uuid>)   (image citation)
-// The link target is the literal string "fact:" followed by a
-// canonical UUID. The angle brackets are part of the markdown link
-// target delimiters (the synthesizer emits them so a UUID
-// containing no special markdown chars still parses as one link
-// target). The pattern is permissive about the surrounding
+// inline citations, regardless of kind prefix:
+//
+//	[text](<fact:uuid>)     text citation, fact
+//	[text](<concept:uuid>)  text citation, concept
+//	![alt](<fact:uuid>)     image citation
+//	[text](<uuid>)          legacy bare-uuid citation (treated as fact)
+//
+// The angle brackets are part of the markdown link target
+// delimiters. The pattern is permissive about the surrounding
 // markdown link syntax so it catches both the canonical form and
-// minor variants (no angle brackets, extra whitespace); the UUID
-// is the load-bearing part.
-var directCitationPattern = regexp.MustCompile(`fact:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`)
+// minor variants (no angle brackets, extra whitespace); the UUID is
+// the load-bearing part. The kind prefix (fact:/concept:) is
+// captured so the caller can detect kind-swap (a "concept:" prefix
+// on a UUID that is actually a fact) and flip it via ResolveUUIDKinds.
+//
+// A bare UUID inside a markdown link target (no kind prefix) is also
+// captured as kind="" so the legacy [text](<uuid>) form is routed by
+// lookup rather than silently assumed to be a fact.
+var directCitationPattern = regexp.MustCompile(
+	`(?:fact|concept)\s*:\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})` +
+		`|<\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s*>`,
+)
+
+// fencedCodeRe matches ``` fenced code blocks so citation extraction
+// can skip their content. A fact:/concept: UUID inside a code fence
+// is illustrative (e.g. a documentation example), not a real
+// citation, and persisting it would create a spurious annotation.
+var fencedCodeRe = regexp.MustCompile("(?s)```.*?```")
+
+// bareImageCitationRe matches a standalone image embed
+// ![alt](<fact:uuid>) or ![alt](<uuid>) sentence so the candidate
+// filter can exempt it from the minRunes floor. A bare image embed
+// with short alt text is still a citable unit (the author explicitly
+// cited the image fact by embedding it).
+var bareImageCitationRe = regexp.MustCompile(
+	`^\s*!\[[^\]]*\]\(<\s*(?:fact\s*:\s*)?[0-9a-fA-F-]{36}\s*>\)\s*$`,
+)
+
+// stripFencedCode removes fenced code blocks from a sentence's text
+// before citation extraction so a UUID mentioned inside a code
+// example is not mistaken for an inline citation. Indented
+// (4-space) code blocks are not stripped because the chunker rarely
+// surfaces them as standalone sentences and the risk of a false
+// positive there is low.
+func stripFencedCode(s string) string {
+	return fencedCodeRe.ReplaceAllString(s, "")
+}
 
 // extractDirectCitations scans each candidate sentence's text for
-// inline fact:uuid citations and returns a map sentence_index ->
-// []fact_id. A sentence may carry multiple direct citations (the
-// synthesis convention allows several [text](<fact:uuid>) links in
-// one sentence). Duplicate fact_ids within a sentence are deduped
-// (the same fact cited twice in one sentence is one annotation).
-// The ids are returned in the order they appear in the text so the
-// persistence step writes them in a stable, reader-facing order.
+// inline citations and returns a map sentence_index -> []fact_id
+// (only fact-kind ids; concept citations are validated as concepts
+// but NOT persisted as report_annotations because the annotation
+// table's fact_id references okt_repository.facts, not concepts).
 //
-// The caller is responsible for validating that each id refers to
-// an existing fact in the repository (the author may have
-// referenced a fact that was since deleted); invalid ids are
-// dropped at persistence time.
-func extractDirectCitations(candidates []decomposition.Chunk) map[int][]uuid.UUID {
+// A sentence may carry multiple citations. Duplicate fact_ids within
+// a sentence are deduped. The ids are returned in first-appearance
+// order so persistence writes them in a stable, reader-facing order.
+//
+// Kind resolution: the caller passes a kindMap (uuid.UUID -> "fact"
+// | "concept" | "missing", built by ResolveUUIDKinds) so a wrong
+// kind prefix (e.g. "concept:" on a fact UUID) is corrected by
+// lookup rather than trusted. Ids absent from the map (missing) are
+// dropped — the author may have referenced a fact that was since
+// deleted, or the synthesizer hallucinated the UUID.
+func extractDirectCitations(candidates []decomposition.Chunk, kindMap map[uuid.UUID]string) map[int][]uuid.UUID {
 	out := make(map[int][]uuid.UUID)
 	for _, c := range candidates {
-		matches := directCitationPattern.FindAllStringSubmatch(c.Text, -1)
+		cleaned := stripFencedCode(c.Text)
+		matches := directCitationPattern.FindAllStringSubmatch(cleaned, -1)
 		if len(matches) == 0 {
 			continue
 		}
 		seen := make(map[uuid.UUID]bool, len(matches))
 		var ids []uuid.UUID
 		for _, m := range matches {
-			id, err := uuid.Parse(m[1])
+			// m[1] is the prefixed-uuid capture (fact:/concept:);
+			// m[2] is the bare-<uuid> capture. Exactly one is set.
+			raw := m[1]
+			if raw == "" {
+				raw = m[2]
+			}
+			id, err := uuid.Parse(raw)
 			if err != nil {
 				continue
 			}
 			if seen[id] {
+				continue
+			}
+			// Resolve the real kind by lookup. A wrong prefix is
+			// flipped to the record's kind; a missing id is dropped.
+			kind, ok := kindMap[id]
+			if !ok || kind == "missing" {
+				continue
+			}
+			if kind != "fact" {
+				// concept citations are not fact annotations; skip.
+				// (A future report_concept_annotations table could
+				// persist them; for now they render as links only.)
 				continue
 			}
 			seen[id] = true
@@ -1316,6 +1409,69 @@ func extractDirectCitations(candidates []decomposition.Chunk) map[int][]uuid.UUI
 		}
 		if len(ids) > 0 {
 			out[c.Index] = ids
+		}
+	}
+	return out
+}
+
+// collectCitationUUIDs scans the candidate sentences for citation
+// UUIDs (fact:, concept:, or bare <uuid>) and returns the deduped
+// set so the caller can batch-resolve their kinds via ResolveUUIDKinds
+// before extractDirectCitations filters to fact-kind only. Fenced
+// code blocks are stripped first so a UUID inside a code example is
+// not mistaken for a real citation.
+func collectCitationUUIDs(candidates []decomposition.Chunk) []uuid.UUID {
+	seen := make(map[uuid.UUID]bool)
+	var out []uuid.UUID
+	for _, c := range candidates {
+		cleaned := stripFencedCode(c.Text)
+		matches := directCitationPattern.FindAllStringSubmatch(cleaned, -1)
+		for _, m := range matches {
+			raw := m[1]
+			if raw == "" {
+				raw = m[2]
+			}
+			id, err := uuid.Parse(raw)
+			if err != nil || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// resolveKinds classifies a set of UUIDs as "fact", "concept", or
+// "missing" via the ResolveUUIDKinds query, returning a map keyed by
+// the parsed uuid.UUID. An id present in BOTH tables (should never
+// happen — facts and concepts use independent UUIDv4 generation) is
+// resolved as "fact" first, preserving the legacy bare-uuid-as-fact
+// convention. On query error the map is returned empty and the caller
+// falls back to the legacy GetFactsByIDs validation path so direct
+// citations are not silently dropped due to a transient DB failure.
+func resolveKinds(ctx context.Context, queries *store.Queries, ids []pgtype.UUID) map[uuid.UUID]string {
+	out := make(map[uuid.UUID]string, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	rows, err := queries.ResolveUUIDKinds(ctx, ids)
+	if err != nil {
+		log.Printf("annotate_report: ResolveUUIDKinds failed (falling back to fact-only validation): %v", err)
+		return out
+	}
+	for _, r := range rows {
+		if !r.ID.Valid {
+			continue
+		}
+		u, err := uuid.FromBytes(r.ID.Bytes[:])
+		if err != nil {
+			continue
+		}
+		// First-write wins so "fact" takes precedence over "concept"
+		// for an id (impossibly) present in both tables.
+		if _, exists := out[u]; !exists {
+			out[u] = r.Kind
 		}
 	}
 	return out

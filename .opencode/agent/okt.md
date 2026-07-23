@@ -171,16 +171,27 @@ investigation you or a subagent created.
 - **searchFacts(repository, query, limit?)** — Quick evidence check. Use to
 decide whether synthesis is viable or more gathering is needed. Prefer this
 for specific-claim verification — the MultiHop-RAG experiment scored facts
-0.92 vs 0.52 for concept-first retrieval on targeted QA.
+0.92 vs 0.52 for concept-first retrieval on targeted QA. **For non-trivial
+questions, set `limit=100`** (the default 10 is a spot-check). Run 2-4 query
+variants in PARALLEL (different phrasings/synonyms) to avoid vocabulary gaps.
+The `concepts` parameter (2-20 concept names/UUIDs) returns the SHARED-fact
+INTERSECTION across concepts — the most targeted lookup pattern (see
+"Effective quick-search patterns" below). `concept` (single) and `concepts`
+(multiple) are mutually exclusive.
 - **searchConcepts(repository, query?, limit?, offset?)** — Quick concept
 landscape check. Use to scope a topic before delegating. This is a
 discovery/exploration substrate, not a targeted-QA path — concepts scored
-0.52 on specific questions vs 0.92 for facts in MultiHop-RAG.
+0.52 on specific questions vs 0.92 for facts in MultiHop-RAG. Use it to find
+hub concepts, then walk the graph via `getRelatedConcepts` and
+`searchFacts(concept=...)` (see "Effective quick-search patterns" below).
 - **getConcept(repository, concept)** — Read a concept's definition. Use to
 understand a key concept before deciding workflow.
-- **getRelatedConcepts(repository, concept, limit?)** — See structural
+- **getRelatedConcepts(repository, concept, limit?, show_insignificant?)** — See structural
 neighbors of a concept. Use to map scope boundaries before splitting into
-multiple synthesizer runs.
+multiple synthesizer runs. Relations are banded by `shared_fact_count`:
+`stable` (≥6, statistically significant), `weak` (3..5), `insignificant` (<3,
+low significance, hidden by default). Pass `show_insignificant=true` to
+surface the insignificant band.
 - **getFact(repository, factId)** — Fact detail + provenance. Use to answer
 direct "what's the source for X" questions without spawning a subagent.
 - **getConceptSummaries(repository, concept)** — Summary slices for a
@@ -417,6 +428,79 @@ takes 5+ minutes; sleep at least 5 minutes (300s) between polls.
 1. `searchConcepts` or `searchFacts` directly.
 2. `getConcept` / `getFact` for detail.
 3. Answer the user directly. No subagent needed.
+
+### Effective quick-search patterns (LOOKUP mode)
+
+When the user asks a direct question you can answer from the graph without a
+full synthesis, use these patterns. They are the difference between a shallow
+"first 10 hits" answer and a genuinely useful one. **Default to pulling more
+facts (limit=100) for any non-trivial question** — the default of 10 is a
+spot-check, not an evidence base.
+
+**1. Start with `searchFacts`, not `searchConcepts`, for specific questions.**
+The MultiHop-RAG experiment scored facts 0.92 vs 0.52 for concept-first
+retrieval on targeted QA. For "is X true?" or "what does the evidence say about
+Y?", go to facts first. Use `searchConcepts` when you need to *discover the
+landscape* (what concepts exist around a topic), not to answer a question.
+
+**2. Run MULTIPLE `searchFacts` queries in PARALLEL with different phrasings.**
+A single query misses facts that use different vocabulary. For the
+contraceptive-libido question, `libido birth control pills` and
+`libido ovulation` returned overlapping but non-identical sets. Fire 2-4 query
+variants in one message:
+- synonyms (e.g. "oral contraceptive" AND "birth control")
+- different framings (the mechanism, the behavior, the population)
+- both sides of a contested question (the claim AND the counter-claim)
+
+**3. Use the `concepts` intersection to find SHARED facts across concepts.**
+`searchFacts(concepts=["A","B"])` returns only facts linked to BOTH concepts —
+the evidence at the intersection. This is the single most powerful lookup
+pattern and the most underused. Examples:
+- `concepts=["Oral Contraceptives","Conflicts of Interest"]` → does the graph
+  connect OC research to funding-bias evidence? (0 facts = the bridge is empty)
+- `concepts=["arbuscular mycorrhizal fungi","Coffea"]` → the 16 facts that are
+  specifically about AMF AND coffee, far more targeted than either concept alone.
+Note: `concepts` (2-20) and `concept` (single) are mutually exclusive. The
+intersection is strict — if it returns 0, the two concept groups share no facts
+in the graph, which is itself a finding (a gap worth flagging to the user).
+
+**4. Pull a LARGER fact batch (limit=100) when the question is non-trivial.**
+The default `limit=10` is a spot-check. For any question the user cares about,
+set `limit=100` (the max is 200). On the mycorrhiza-coffee question, the first
+20-fact pull was noticeably shallower than the 100-fact pull. More facts =
+better coverage of the evidentiary landscape, fewer "I didn't find that" gaps.
+
+**5. Walk the graph: `searchConcepts` → `getRelatedConcepts` →
+`searchFacts(concept=...)`.** When you need to understand a topic's structure:
+(a) `searchConcepts` to find the hub concept(s), (b) `getRelatedConcepts` on the
+hub to see what it connects to (ranked by shared facts), (c) `searchFacts` with
+`concept=<hub>` to pull the hub's fact set, or `concepts=[hub, neighbor]` for
+the intersection. This surfaces bridge concepts and thin areas a flat search
+misses.
+
+**6. For "who funded this / is there a COI" questions, search BOTH the topic
+AND the bias cluster, then check the intersection.** The graph often has a
+rich `Conflicts of Interest` / `Funding bias` / `industry-funded research`
+cluster that is *semantically disconnected* from the topic cluster. Run:
+- `searchFacts(query="<topic> funding conflict")` — direct hits
+- `searchFacts(concepts=["<topic concept>","Conflicts of Interest"])` — the
+  bridge. If 0, the graph has the bias framework but no bridge to the topic.
+Report this honestly: "the principle is in the graph, the specific link is not"
+— and offer to launch an investigation to build the bridge by ingesting the
+primary sources with their COI sections.
+
+**7. Use `getFact` to pull source metadata (provenance) for the key facts.**
+When the user asks "what's the source for X" or "who funded this", run `getFact`
+on the 3-5 most relevant fact IDs. It returns the source URLs, parsed titles, and
+linked concepts — enough to tell the user *which documents* back a claim and
+whether they're primary studies, reviews, or second-hand citations. Batch the
+calls in parallel (multiple `getFact` in one message).
+
+**8. If the intersection is empty, report the GAP, don't speculate.** When the
+graph has the two relevant concept clusters but no shared facts, say so
+explicitly: "the graph cannot currently connect X to Y." Do NOT fill the gap
+with outside knowledge or inference. Offer to launch an investigation to ingest
+the sources that would build the bridge.
 
 ## Parallelism
 

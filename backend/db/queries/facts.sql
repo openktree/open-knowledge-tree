@@ -527,3 +527,30 @@ WHERE s.repository_id = $1
   AND ($2::text = '' OR f.status = $2)
   AND ($3::text = '' OR f.search_tsv @@ websearch_to_tsquery('english', $3))
   AND cov.covered_groups = (SELECT COUNT(DISTINCT g) FROM unnest($5::int4[]) AS t(g));
+-- name: ResolveUUIDKinds :many
+-- Given an arbitrary set of UUIDs, classify each as a fact, a concept,
+-- or missing. Facts and concepts share the v4 UUID space (independent
+-- generation, collision probability negligible), so a bare UUID
+-- citation is ambiguous to a renderer without a lookup. This query
+-- returns one row per resolved id with its kind:
+--   'fact'    -> the id exists in okt_repository.facts
+--   'concept' -> the id exists in okt_repository.concepts
+--   (absent)  -> not found in either table (the caller treats absence
+--                as 'missing')
+-- Used by the annotate_report Phase 0 direct-citation validator (to
+-- flip a wrong "concept:" prefix on a fact UUID and vice versa, and to
+-- drop hallucinated ids) and by the read paths (GetDefinition /
+-- GetReport) to build a citation_kinds map the frontend uses to route
+-- bare-UUID citations. A UNION ALL is used so an id present in both
+-- tables (should never happen in practice) surfaces both rows; the
+-- caller dedups preferring 'fact' first for backward compatibility
+-- with the legacy bare-uuid-as-fact convention. The join against
+-- unnest (rather than selecting unnest directly) lets sqlc infer the
+-- id column type as uuid instead of interface{}.
+SELECT u.id::uuid AS id, 'fact'::text AS kind
+FROM unnest(@ids::uuid[]) AS u(id)
+JOIN okt_repository.facts f ON f.id = u.id
+UNION ALL
+SELECT u.id::uuid AS id, 'concept'::text AS kind
+FROM unnest(@ids::uuid[]) AS u(id)
+JOIN okt_repository.concepts c ON c.id = u.id;

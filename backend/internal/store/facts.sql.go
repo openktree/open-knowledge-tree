@@ -1421,6 +1421,62 @@ func (q *Queries) ResetFactEmbeddingForReembed(ctx context.Context, dollar_1 []p
 	return err
 }
 
+const resolveUUIDKinds = `-- name: ResolveUUIDKinds :many
+SELECT u.id::uuid AS id, 'fact'::text AS kind
+FROM unnest($1::uuid[]) AS u(id)
+JOIN okt_repository.facts f ON f.id = u.id
+UNION ALL
+SELECT u.id::uuid AS id, 'concept'::text AS kind
+FROM unnest($1::uuid[]) AS u(id)
+JOIN okt_repository.concepts c ON c.id = u.id
+`
+
+type ResolveUUIDKindsRow struct {
+	ID   pgtype.UUID `json:"id"`
+	Kind string      `json:"kind"`
+}
+
+// Given an arbitrary set of UUIDs, classify each as a fact, a concept,
+// or missing. Facts and concepts share the v4 UUID space (independent
+// generation, collision probability negligible), so a bare UUID
+// citation is ambiguous to a renderer without a lookup. This query
+// returns one row per resolved id with its kind:
+//
+//	'fact'    -> the id exists in okt_repository.facts
+//	'concept' -> the id exists in okt_repository.concepts
+//	(absent)  -> not found in either table (the caller treats absence
+//	             as 'missing')
+//
+// Used by the annotate_report Phase 0 direct-citation validator (to
+// flip a wrong "concept:" prefix on a fact UUID and vice versa, and to
+// drop hallucinated ids) and by the read paths (GetDefinition /
+// GetReport) to build a citation_kinds map the frontend uses to route
+// bare-UUID citations. A UNION ALL is used so an id present in both
+// tables (should never happen in practice) surfaces both rows; the
+// caller dedups preferring 'fact' first for backward compatibility
+// with the legacy bare-uuid-as-fact convention. The join against
+// unnest (rather than selecting unnest directly) lets sqlc infer the
+// id column type as uuid instead of interface{}.
+func (q *Queries) ResolveUUIDKinds(ctx context.Context, ids []pgtype.UUID) ([]ResolveUUIDKindsRow, error) {
+	rows, err := q.db.Query(ctx, resolveUUIDKinds, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResolveUUIDKindsRow
+	for rows.Next() {
+		var i ResolveUUIDKindsRow
+		if err := rows.Scan(&i.ID, &i.Kind); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchFactsByNumericTokens = `-- name: SearchFactsByNumericTokens :many
 SELECT DISTINCT ON (f.id) f.id, f.text, f.status, f.embedded_at, f.embedded_model, f.created_at, f.search_tsv, f.image_url, f.fact_kind, f.promptset_hash
 FROM okt_repository.facts f
