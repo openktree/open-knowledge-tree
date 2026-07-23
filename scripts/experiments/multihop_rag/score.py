@@ -254,28 +254,30 @@ def source_coverage(predictions: list[dict], queries_by_id: dict[str, dict]) -> 
 # ---------------------------------------------------------------------------
 
 
-def _evidence_key(e: dict[str, Any]) -> tuple[str, str, str]:
+def _evidence_key(e: dict[str, Any]) -> tuple[str, str]:
     """Normalize an evidence_list entry / retrieved source into a
-    (title, source, published_at) tuple for matching.
+    (title, source) tuple for matching.
 
-    published_at is truncated to date-only (the corpus stores dates,
-    not timestamps; the downloader frontmatters are date strings).
+    We match on (title, source) only — NOT published_at — because the
+    baseline retrieval_hits recorded in the prediction file may omit
+    the date (a known limitation of the run_variant logging), while the
+    gold evidence_list always carries it. Dropping the date from the
+    match key makes recall@k computable on the existing predictions
+    without re-running. (title, source) is sufficient to uniquely
+    identify a corpus article in this 609-doc dataset.
     """
     title = (e.get("title") or "").strip().lower()
     source = (e.get("source") or e.get("parsed_sitename") or "").strip().lower()
-    pub = str(e.get("published_at") or "").strip()
-    if "T" in pub:
-        pub = pub.split("T")[0]
-    return (title, source, pub)
+    return (title, source)
 
 
-def _gold_set(q: dict) -> set[tuple[str, str, str]]:
+def _gold_set(q: dict) -> set[tuple[str, str]]:
     """The set of gold evidence keys for a question. Empty for null_query."""
     ev = q.get("evidence_list") or []
     return {_evidence_key(e) for e in ev if e.get("title") or e.get("source")}
 
 
-def _retrieved_set_okt(pred: dict, queries_by_id: dict[str, dict]) -> set[tuple[str, str, str]]:
+def _retrieved_set_okt(pred: dict, queries_by_id: dict[str, dict]) -> set[tuple[str, str]]:
     """For OKT variants, we don't have per-source metadata on the
     prediction row directly — but the answer audit isn't loaded here.
     We approximate via the OKT source UUIDs matched back through
@@ -292,13 +294,13 @@ def _retrieved_set_okt(pred: dict, queries_by_id: dict[str, dict]) -> set[tuple[
     return set()
 
 
-def _retrieved_set_baseline(pred: dict) -> set[tuple[str, str, str]]:
-    """For baseline variants, retrieval_hits carries title/source/published_at
-    per retrieved chunk. We dedup by (title, source, published_at) so
-    multiple chunks from the same article count as one source hit.
+def _retrieved_set_baseline(pred: dict) -> set[tuple[str, str]]:
+    """For baseline variants, retrieval_hits carries title/source per
+    retrieved chunk. We dedup by (title, source) so multiple chunks
+    from the same article count as one source hit.
     """
     hits = pred.get("retrieval_hits") or []
-    out: set[tuple[str, str, str]] = set()
+    out: set[tuple[str, str]] = set()
     for h in hits:
         if h.get("title") or h.get("source"):
             out.add(_evidence_key(h))

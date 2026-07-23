@@ -1,7 +1,7 @@
-import { useNavigate } from "@solidjs/router";
 import { createResource, createSignal, For, Show } from "solid-js";
 import Badge from "../../components/Badge";
 import Card from "../../components/Card";
+import CitationModal from "../../components/CitationModal";
 import EmptyState from "../../components/EmptyState";
 import { renderMarkdown } from "../../lib/markdown";
 import { normalizeCitations } from "../../lib/normalizeCitations";
@@ -37,7 +37,9 @@ import { api } from "../../services/api";
 export default function SummaryPanel(props) {
   const slug = () => props.slug;
   const conceptID = () => props.conceptID;
-  const navigate = useNavigate();
+
+  // Inline-citation modal state (same pattern as DefinitionPanel).
+  const [cite, setcite] = createSignal(null);
 
   const [refreshKey, setRefreshKey] = createSignal(0);
   const [collapsed, setCollapsed] = createSignal(true);
@@ -66,20 +68,26 @@ export default function SummaryPanel(props) {
     return renderMarkdown(normalized);
   };
 
-  // Intercept clicks on citation links so the Solid router handles
-  // the navigation (no full page reload). Only internal fact-detail
-  // and concept-detail links are intercepted; external links behave
-  // normally.
+  // Intercept clicks on citation links and open an inline
+  // CitationModal instead of navigating away (the reader stays in
+  // the summaries context). Each modal carries a "View full … page →"
+  // link for the complete detail page.
   const onSummaryClick = (e) => {
     const a = e.target.closest("a");
     if (!a) return;
     const href = a.getAttribute("href") || "";
-    if (
-      href.startsWith("/") &&
-      (/\/facts\/[0-9a-fA-F-]{36}/.test(href) || /\/concepts\/[0-9a-fA-F-]{36}/.test(href))
-    ) {
-      e.preventDefault();
-      navigate(href);
+    if (href.startsWith("/")) {
+      const factM = href.match(/\/facts\/([0-9a-fA-F-]{36})/);
+      if (factM) {
+        e.preventDefault();
+        setcite({ kind: "fact", id: factM[1] });
+        return;
+      }
+      const conceptM = href.match(/\/concepts\/([0-9a-fA-F-]{36})/);
+      if (conceptM) {
+        e.preventDefault();
+        setcite({ kind: "concept", id: conceptM[1] });
+      }
     }
   };
 
@@ -166,6 +174,13 @@ export default function SummaryPanel(props) {
           </Show>
         </div>
       </Show>
+      <CitationModal
+        open={cite() != null}
+        onClose={() => setcite(null)}
+        kind={cite()?.kind}
+        id={cite()?.id}
+        slug={slug()}
+      />
     </Card>
   );
 }

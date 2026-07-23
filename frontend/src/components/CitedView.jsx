@@ -1,8 +1,8 @@
-import { useNavigate } from "@solidjs/router";
-import { createEffect, createMemo } from "solid-js";
+import { createEffect, createMemo, createSignal } from "solid-js";
 import { renderMarkdown } from "../lib/markdown";
 import { normalizeCitations, normalizeImageCitations } from "../lib/normalizeCitations";
 import { wrapSentencesHtml } from "../lib/wrapSentences";
+import CitationModal from "./CitationModal";
 
 // CitedView renders a cited markdown body (a report's body_md or a
 // source's parsed_markdown) with two transformations applied BEFORE
@@ -26,6 +26,11 @@ import { wrapSentencesHtml } from "../lib/wrapSentences";
 // wrapSentencesHtml so the sentence-offset map (computed from the raw
 // markdown) lines up with the rendered HTML.
 //
+// Citation clicks open an inline CitationModal (fact text + badges or
+// concept definition preview) instead of navigating away — the reader
+// stays in the report/synthesis context. Each modal carries a
+// "View full … page →" link for the complete detail page.
+//
 // Props:
 //   - markdown:      the raw cited markdown
 //   - slug:          repo slug, used to build fact/concept detail hrefs
@@ -33,8 +38,12 @@ import { wrapSentencesHtml } from "../lib/wrapSentences";
 //   - annotations / highlightIndices / factCounts / onSentenceClick:
 //     sentence-highlight wiring (see original CitedView).
 export default function CitedView(props) {
-  const navigate = useNavigate();
   const slug = () => props.slug || "";
+
+  // Active inline-citation modal state. `cite` is null when no
+  // citation modal is open; otherwise { kind, id }.
+  const [cite, setcite] = createSignal(null);
+  const closeCite = () => setcite(null);
 
   const hi = createMemo(() => {
     if (props.highlightIndices) return props.highlightIndices;
@@ -75,20 +84,26 @@ export default function CitedView(props) {
   });
 
   const handleClick = (e) => {
-    // Intercept internal fact/concept detail links for SPA navigation
-    // (mirrors DefinitionPanel.onDefinitionClick). A real <a href> is
-    // present after normalization; without this the browser does a
-    // full page reload.
+    // Intercept internal fact/concept detail links and open an inline
+    // CitationModal instead of navigating away (the reader stays in
+    // the report/synthesis context). The modal carries a "View full
+    // … page →" link for the complete detail page.
     const a = e.target.closest("a");
     if (a) {
       const href = a.getAttribute("href") || "";
-      if (
-        href.startsWith("/") &&
-        (/\/facts\/[0-9a-fA-F-]{36}/.test(href) || /\/concepts\/[0-9a-fA-F-]{36}/.test(href))
-      ) {
-        e.preventDefault();
-        navigate(href);
-        return;
+      if (href.startsWith("/")) {
+        const factM = href.match(/\/facts\/([0-9a-fA-F-]{36})/);
+        if (factM) {
+          e.preventDefault();
+          setcite({ kind: "fact", id: factM[1] });
+          return;
+        }
+        const conceptM = href.match(/\/concepts\/([0-9a-fA-F-]{36})/);
+        if (conceptM) {
+          e.preventDefault();
+          setcite({ kind: "concept", id: conceptM[1] });
+          return;
+        }
       }
     }
     const span = e.target.closest("span.okt-sentence--has-facts");
@@ -98,13 +113,22 @@ export default function CitedView(props) {
   };
 
   return (
-    <div
-      class="prose dark:prose-invert max-w-none text-sm text-text-base leading-relaxed"
-      ref={(el) => {
-        bodyEl = el;
-        if (el) el.innerHTML = wrappedHtml();
-      }}
-      onClick={handleClick}
-    />
+    <>
+      <div
+        class="prose dark:prose-invert max-w-none text-sm text-text-base leading-relaxed"
+        ref={(el) => {
+          bodyEl = el;
+          if (el) el.innerHTML = wrappedHtml();
+        }}
+        onClick={handleClick}
+      />
+      <CitationModal
+        open={cite() != null}
+        onClose={closeCite}
+        kind={cite()?.kind}
+        id={cite()?.id}
+        slug={slug()}
+      />
+    </>
   );
 }

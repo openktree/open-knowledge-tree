@@ -163,8 +163,10 @@ async def audit_over_merging(conn: asyncpg.Connection, repo_id: str, model: str 
         contexts = r["contexts"]
         prompt = f'Concept group name: "{name}"\nAssigned contexts: {contexts}\nFact count: {r["fact_count"]}\n\nDoes this single concept group contain two or more distinct real-world entities that were incorrectly merged?'
         result = judge_json(prompt, OVERMERGE_SYSTEM, model=model)
-        if result is None:
-            result = {"over_merged": False, "entities": [], "reason": "parse error"}
+        if isinstance(result, list) and result:
+            result = result[0]
+        if not isinstance(result, dict):
+            result = {"over_merged": False, "entities": [], "reason": f"parse error: {type(result).__name__}"}
         if result.get("over_merged"):
             n_over_merged += 1
         audits.append({"name": name, "contexts": contexts, **result})
@@ -434,8 +436,10 @@ async def audit_context_mislabeling(conn: asyncpg.Connection, repo_id: str, mode
         assigned = r["assigned_context"]
         prompt = f'Concept name: "{name}"\nSystem-assigned context: "{assigned}"\n\nWhat is the correct context label for this concept?'
         result = judge_json(prompt, system, model=model)
-        if result is None:
-            result = {"correct_context": assigned, "reason": "parse error"}
+        if isinstance(result, list) and result:
+            result = result[0]
+        if not isinstance(result, dict):
+            result = {"correct_context": assigned, "reason": f"parse error: {type(result).__name__}"}
         correct = (result.get("correct_context") or "").lower()
         is_wrong = correct != assigned and correct in [c.lower() for c in official_contexts]
         if is_wrong:
