@@ -27,8 +27,8 @@ MAX_RETRIES = 3
 TIMEOUT_S = 60
 
 
-def _cache_key(system: str, prompt: str) -> Path:
-    h = hashlib.sha256((system + "\n" + prompt).encode()).hexdigest()[:16]
+def _cache_key(system: str, prompt: str, model: str = "") -> Path:
+    h = hashlib.sha256((model + "\n" + system + "\n" + prompt).encode()).hexdigest()[:16]
     return CACHE_DIR / f"{h}.json"
 
 
@@ -83,7 +83,7 @@ def judge(
     """Call the LLM with retry/backoff and content-hash caching. Returns raw text."""
     model = model or OPENROUTER_MODEL
     if use_cache:
-        key = _cache_key(system, prompt)
+        key = _cache_key(system, prompt, model)
         cached = _cached(key)
         if cached is not None:
             return cached
