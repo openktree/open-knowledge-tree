@@ -54,6 +54,8 @@ const sidebars = {
             "reference/examples/agroforestry",
             "reference/examples/humanalimentation",
             "reference/examples/healing",
+            "reference/examples/males",
+            "reference/examples/females",
           ],
         },
         "reference/expected-cost",
