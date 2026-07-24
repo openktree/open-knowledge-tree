@@ -5,6 +5,7 @@ import Button from "../../components/Button";
 import Card from "../../components/Card";
 import CitedView from "../../components/CitedView";
 import { buildCitedText } from "../../lib/citedCopy";
+import { extractInlineCitations } from "../../lib/extractInlineCitations";
 import { api } from "../../services/api";
 import { formatScore, formatTimestamp, statusVariant } from "./constants";
 
@@ -41,25 +42,48 @@ export default function ReportDetailContent(props) {
 
   const handleCopyCites = async () => {
     const anns = props.annotations() || [];
-    if (!anns.length) {
-      props.onAlert?.({ variant: "error", message: "No annotations to cite." });
-      return;
-    }
+    const body = report().body_md ?? "";
     setCopyingCites(true);
     try {
-      const factIds = [...new Set(anns.map((a) => a.fact_id))];
+      // Collect auto-annotated fact ids (from the annotate_report
+      // worker) and inline-cited fact ids (from the author's own
+      // [text](<fact:uuid>) links in the prose). Inline-only facts
+      // (cited by the author but not auto-matched to a sentence) are
+      // fetched and appended to the annex with a "(direct cite)"
+      // label so the reader sees the author's explicit citations.
+      const annIds = new Set(anns.map((a) => a.fact_id));
+      const { factIds: inlineIds } = extractInlineCitations(body);
+      const inlineOnlyIds = inlineIds.filter((id) => !annIds.has(id));
+
       const factSources = new Map();
+      const inlineFacts = new Map();
+      // Fetch all facts in parallel: annotated ones get sources only
+      // (their text comes from the annotation row); inline-only ones
+      // get text + sources (no annotation row exists for them).
       await Promise.all(
-        factIds.map(async (fid) => {
+        [...new Set([...annIds, ...inlineOnlyIds])].map(async (fid) => {
           try {
             const res = await api.getFact(props.slug, fid);
             factSources.set(fid, res.sources || []);
+            if (inlineOnlyIds.includes(fid) && res.fact) {
+              inlineFacts.set(fid, {
+                text: res.fact.text || "",
+                sources: res.sources || [],
+              });
+            }
           } catch {
             factSources.set(fid, []);
+            if (inlineOnlyIds.includes(fid)) {
+              inlineFacts.set(fid, { text: "", sources: [] });
+            }
           }
         }),
       );
-      const text = buildCitedText(report().body_md ?? "", anns, factSources);
+      const text = buildCitedText(body, anns, factSources, inlineFacts);
+      if (!anns.length && inlineOnlyIds.length === 0) {
+        props.onAlert?.({ variant: "error", message: "No citations to include." });
+        return;
+      }
       await copyToClipboard(text);
       setCopiedCites(true);
       setTimeout(() => setCopiedCites(false), 1500);
