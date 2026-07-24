@@ -131,6 +131,11 @@ tmp/
 *.tgz
 *.tar.gz
 
+# Python bytecode caches (experiments under scripts/experiments/)
+__pycache__/
+*.py[cod]
+*.pyo
+
 # -----------------------------------------------------------------------------
 # Docusaurus (docs site)
 # -----------------------------------------------------------------------------
