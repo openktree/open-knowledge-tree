@@ -45,48 +45,54 @@ export default function ReportDetailContent(props) {
     const body = report().body_md ?? "";
     setCopyingCites(true);
     try {
-      // Collect auto-annotated fact ids (from the annotate_report
-      // worker) and inline-cited fact ids (from the author's own
-      // [text](<fact:uuid>) links in the prose). Inline-only facts
-      // (cited by the author but not auto-matched to a sentence) are
-      // fetched and appended to the annex with a "(direct cite)"
-      // label. A 404 or fetch failure is recorded per-fact so the
-      // annex shows "(direct cite — unavailable: <error>)" and the
-      // copy still succeeds for the rest.
+      // Collect ALL inline-cited fact ids (from the author's own
+      // [text](<fact:uuid>) links). These go in the "direct cites"
+      // section of the annex FIRST and take priority over auto-
+      // annotated facts (a fact that is both inline-cited and auto-
+      // matched appears only as a direct cite, not duplicated).
+      // Auto-only facts (annotated but not inline-cited) are fetched
+      // for their sources only (text comes from the annotation row).
       const annIds = new Set(anns.map((a) => a.fact_id));
       const { factIds: inlineIds } = extractInlineCitations(body);
-      const inlineOnlyIds = inlineIds.filter((id) => !annIds.has(id));
+      const inlineIdSet = new Set(inlineIds);
+      const autoOnlyIds = [...annIds].filter((id) => !inlineIdSet.has(id));
 
       const factSources = new Map();
       const inlineFacts = new Map();
       await Promise.all(
-        [...new Set([...annIds, ...inlineOnlyIds])].map(async (fid) => {
+        [...new Set([...inlineIds, ...autoOnlyIds])].map(async (fid) => {
           try {
             const res = await api.getFact(props.slug, fid);
-            factSources.set(fid, res.sources || []);
-            if (inlineOnlyIds.includes(fid)) {
+            const sources = res.sources || [];
+            if (inlineIdSet.has(fid)) {
+              // Inline-cited: needs text + sources for the direct section.
               inlineFacts.set(fid, {
                 text: res.fact?.text || "",
-                sources: res.sources || [],
+                sources,
                 error: null,
               });
+              factSources.set(fid, sources);
+            } else {
+              // Auto-only: needs sources only (text from annotation row).
+              factSources.set(fid, sources);
             }
           } catch (err) {
-            // Non-fatal: record the error so the annex surfaces it
-            // and the copy still succeeds for the other facts.
-            factSources.set(fid, []);
-            if (inlineOnlyIds.includes(fid)) {
+            // Non-fatal: record the error per-fact so the annex
+            // surfaces it and the copy still succeeds.
+            if (inlineIdSet.has(fid)) {
               inlineFacts.set(fid, {
                 text: "",
                 sources: [],
                 error: err?.message || "fetch failed",
               });
+            } else {
+              factSources.set(fid, []);
             }
           }
         }),
       );
       const text = buildCitedText(body, anns, factSources, inlineFacts);
-      if (!anns.length && inlineOnlyIds.length === 0) {
+      if (!anns.length && inlineIds.length === 0) {
         props.onAlert?.({ variant: "error", message: "No citations to include." });
         return;
       }
