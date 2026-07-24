@@ -50,31 +50,37 @@ export default function ReportDetailContent(props) {
       // [text](<fact:uuid>) links in the prose). Inline-only facts
       // (cited by the author but not auto-matched to a sentence) are
       // fetched and appended to the annex with a "(direct cite)"
-      // label so the reader sees the author's explicit citations.
+      // label. A 404 or fetch failure is recorded per-fact so the
+      // annex shows "(direct cite — unavailable: <error>)" and the
+      // copy still succeeds for the rest.
       const annIds = new Set(anns.map((a) => a.fact_id));
       const { factIds: inlineIds } = extractInlineCitations(body);
       const inlineOnlyIds = inlineIds.filter((id) => !annIds.has(id));
 
       const factSources = new Map();
       const inlineFacts = new Map();
-      // Fetch all facts in parallel: annotated ones get sources only
-      // (their text comes from the annotation row); inline-only ones
-      // get text + sources (no annotation row exists for them).
       await Promise.all(
         [...new Set([...annIds, ...inlineOnlyIds])].map(async (fid) => {
           try {
             const res = await api.getFact(props.slug, fid);
             factSources.set(fid, res.sources || []);
-            if (inlineOnlyIds.includes(fid) && res.fact) {
+            if (inlineOnlyIds.includes(fid)) {
               inlineFacts.set(fid, {
-                text: res.fact.text || "",
+                text: res.fact?.text || "",
                 sources: res.sources || [],
+                error: null,
               });
             }
-          } catch {
+          } catch (err) {
+            // Non-fatal: record the error so the annex surfaces it
+            // and the copy still succeeds for the other facts.
             factSources.set(fid, []);
             if (inlineOnlyIds.includes(fid)) {
-              inlineFacts.set(fid, { text: "", sources: [] });
+              inlineFacts.set(fid, {
+                text: "",
+                sources: [],
+                error: err?.message || "fetch failed",
+              });
             }
           }
         }),
