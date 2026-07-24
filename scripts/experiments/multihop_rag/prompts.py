@@ -125,56 +125,44 @@ ANSWER_SYSTEM = (
     "filter to facts whose Source line names that publication.\n"
     "3. Keep the answer SHORT: a single name, organization, 'Yes', 'no', "
     "or a short phrase.\n"
-    "4. You may draw reasonable inferences from the provided facts — if the "
-    "evidence logically entails an answer, give it. For example, if two "
-    "facts from the same publication state the same claim, you may infer "
-    "the articles agree; if a fact states a date and another fact states "
-    "an event on that date, you may infer the event's timing. However, "
-    "if the evidence does not clearly support the answer — if you would "
-    "need to assume a fact not present in the evidence — abstain. Do NOT "
-    "guess when the evidence is silent or ambiguous.\n"
-    "5. ALWAYS end your final message with exactly one line in this format:\n"
+    "4. For comparison and temporal questions that expect a 'Yes' or 'no' "
+    "answer: commit to an answer when the evidence is present, even if it "
+    "requires a judgment call. Only abstain when the evidence is truly "
+    "absent or directly contradicts the question. Do NOT abstain just "
+    "because you are unsure — make your best guess from the available "
+    "facts.\n"
+    "5. If the provided evidence is genuinely absent or empty, respond "
+    "with the abstention phrase.\n"
+    "6. ALWAYS end your final message with exactly one line in this format:\n"
     '   The answer to the question is "<answer>"\n'
     '   For abstention, the line must be:\n'
     '   The answer to the question is "Insufficient information."\n'
-    "6. Do not include any text after that final line."
+    "7. Do not include any text after that final line."
 )
 
 
-def answer_user(question: str, facts: list[dict]) -> str:
-    """Build the user message with the question and the gathered facts.
-
-    Each fact dict carries: id, text, sources (list of {url, parsed_title,
-    parsed_sitename, parsed_author, published_at}), and optionally linked
-    concepts. We expose the source metadata — publication name (parsed_sitename),
-    article title, author, and published_at — because MultiHop-RAG questions
-    frequently reference source attribution and dates ("the TechCrunch article
-    published on November 1, 2023").
+def _render_evidence_lines(facts: list[dict]) -> list[str]:
+    """Render the per-fact evidence block (the lines answer_user emits
+    for the facts, excluding the question + boilerplate). Factored out
+    so the runners can count the evidence-token budget the synthesis
+    LLM receives — the 'context size' each RAG variant gives the model.
     """
-    lines = [f"Question: {question}", "", "Evidence (facts with source metadata):"]
+    lines: list[str] = []
     if not facts:
         lines.append("(no facts were retrieved for this question)")
+        return lines
     for i, f in enumerate(facts, 1):
         lines.append(f"--- Fact {i} (id: {f['id']}) ---")
         lines.append(f"Text: {f.get('text', '').strip()}")
         srcs = f.get("sources", [])
         if srcs:
             for s in srcs:
-                # Compose a one-line attribution with whatever metadata is
-                # available. Lead with the publication name (parsed_sitename)
-                # because MultiHop-RAG questions identify articles by
-                # outlet ("the TechCrunch article", "the Bloomberg piece").
-                # Fall back to the article title, then to the URL.
                 site = (s.get("parsed_sitename") or "").strip()
                 title = (s.get("parsed_title") or "").strip()
                 author = (s.get("parsed_author") or "").strip()
                 pub = s.get("published_at") or ""
-                # Trim published_at to date-only when present (it comes back
-                # as "2023-09-28" already from the date column, but be
-                # defensive in case a timestamp slips through).
                 if pub and "T" in str(pub):
                     pub = str(pub).split("T")[0]
-                # Attribution line.
                 bits = []
                 if site:
                     bits.append(site)
@@ -196,6 +184,32 @@ def answer_user(question: str, facts: list[dict]) -> str:
             )
             if names:
                 lines.append(f"Concepts: {names}")
+    return lines
+
+
+def evidence_tokens(facts: list[dict]) -> int:
+    """Whitespace-token count of the retrieved-evidence block passed to
+    the synthesis LLM (the facts + their source/concept metadata lines,
+    as rendered by answer_user). Excludes the question and the fixed
+    prompt boilerplate, so it isolates the RAG context budget — the
+    'how much text the retriever gave the model to read' metric.
+    """
+    lines = _render_evidence_lines(facts)
+    return len(" ".join(lines).split())
+
+
+def answer_user(question: str, facts: list[dict]) -> str:
+    """Build the user message with the question and the gathered facts.
+
+    Each fact dict carries: id, text, sources (list of {url, parsed_title,
+    parsed_sitename, parsed_author, published_at}), and optionally linked
+    concepts. We expose the source metadata — publication name (parsed_sitename),
+    article title, author, and published_at — because MultiHop-RAG questions
+    frequently reference source attribution and dates ("the TechCrunch article
+    published on November 1, 2023").
+    """
+    lines = [f"Question: {question}", "", "Evidence (facts with source metadata):"]
+    lines.extend(_render_evidence_lines(facts))
     lines.append("")
     lines.append(
         "Based on the evidence above, give a short answer. End with exactly:"

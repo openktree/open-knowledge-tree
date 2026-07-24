@@ -53,6 +53,7 @@ from tqdm import tqdm
 
 import config
 import llm
+import prompts
 from baselines import embeddings, qdrant_store
 
 
@@ -283,6 +284,7 @@ def run_variant(
     chunk_ids_used = [str(h.get("id", "")) for h in hits if h.get("id")]
 
     # 4. Synthesize with the shared prompt + LLM.
+    ev_tokens = prompts.evidence_tokens(facts)
     synthesis = llm.synthesize_answer(question, facts)
     total_usage = llm._add_usage(total_usage, synthesis["usage"])
 
@@ -294,6 +296,7 @@ def run_variant(
         "gold": q.get("gold_answer", ""),
         "evidence_list": q.get("evidence_list", []),
         "prediction": synthesis["answer"],
+        "evidence_tokens": ev_tokens,
         # For recall@k: the source articles (doc_ids) the baseline retrieved.
         "source_ids_used": source_ids_used,
         "chunk_ids_used": chunk_ids_used,
@@ -307,6 +310,7 @@ def run_variant(
                 "score": round(h.get("score", 0.0), 4),
                 "title": h.get("title", ""),
                 "source": h.get("source", ""),
+                "published_at": h.get("published_at", ""),
             }
             for h in hits
         ],

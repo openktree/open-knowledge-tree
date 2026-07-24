@@ -39,8 +39,10 @@ export default function CitationModal(props) {
         }
         return { kind: "concept", concept, definition };
       }
-      const fact = await api.getFact(slug, id);
-      return { kind: "fact", fact };
+      // api.getFact returns {fact, sources, source_count, concepts,
+      // concept_count}; the fact row is nested under "fact".
+      const res = await api.getFact(slug, id);
+      return { kind: "fact", fact: res.fact, sourceCount: res.source_count };
     },
   );
 

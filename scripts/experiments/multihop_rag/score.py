@@ -606,6 +606,27 @@ def _format_side_by_side(
             f"avg_prompt={toks['prompt']/n:>7.0f}  "
             f"avg_completion={toks['completion']/n:>5.0f}"
         )
+    lines.append("")
+
+    # Evidence-token budget (the retrieved-evidence context the
+    # synthesis LLM receives from the retriever — isolates the RAG
+    # context size, distinct from total tokens which includes the
+    # prompt template + completion). This is the key metric for the
+    # "information density" comparison: facts are small, passages are
+    # large, so facts@10 and traditional@5 can be compared on roughly
+    # equal evidence-token budgets.
+    lines.append("Avg evidence tokens per question (retrieved context only):")
+    for name in variant_names:
+        preds = variant_predictions.get(name, [])
+        n = len(preds) or 1
+        ev = sum(int(p.get("evidence_tokens", 0)) for p in preds)
+        avg_n = sum(
+            1 for p in preds if "evidence_tokens" in p
+        ) or 1
+        lines.append(
+            f"  {name:<10} avg_evidence={ev/avg_n:>7.0f}  "
+            f"(recorded on {avg_n}/{n} rows)"
+        )
     lines.append("=" * 100)
     return "\n".join(lines)
 

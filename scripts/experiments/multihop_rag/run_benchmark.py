@@ -55,6 +55,7 @@ from tqdm import tqdm
 import config
 import llm
 import okt
+import prompts
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +460,8 @@ def run_facts_variant(
     q: dict,
     facts_per_query: int,
     predictions_path: str,
+    max_queries: int = 0,
+    max_facts: int = 0,
 ) -> dict:
     """Run the direct fact-search retrieval variant for one question.
 
@@ -466,6 +469,17 @@ def run_facts_variant(
     the question, then searches the repo-wide /facts endpoint with
     each query (sorted by source_count), dedups, enriches, and
     synthesizes.
+
+    max_queries (default 0 = use all extracted queries): cap the number
+    of LLM-extracted queries actually run against /facts. This bounds
+    the total retrieved set so the variant retrieves a known N (matching
+    the baselines' top-k), rather than 5 queries x facts_per_query.
+    Recommended pairing: @10 -> max_queries=1, @20 -> max_queries=2.
+
+    max_facts (default 0 = no cap): hard cap on the final deduped fact
+    set passed to synthesis. Trims anything above N so the synthesis
+    LLM sees exactly the labeled budget. Set = facts_per_query for a
+    strict N-fact budget.
     """
     qid = q["id"]
     question = q["query"]
@@ -476,12 +490,26 @@ def run_facts_variant(
     extracted_queries, q_usage = llm.extract_fact_queries(question)
     total_usage = llm._add_usage(total_usage, q_usage)
 
+    # Bound the number of queries actually run. The extractor returns
+    # 1-5; we keep the first max_queries (they're ordered by the LLM's
+    # perceived relevance). max_queries=0 means use all (legacy behavior).
+    queries_used = extracted_queries
+    if max_queries and max_queries > 0:
+        queries_used = extracted_queries[:max_queries]
+
     fact_search_hits: list[dict] = []
-    if extracted_queries:
+    if queries_used:
         # 2-3. Run each query against /facts, dedup.
         fact_summaries, fact_search_hits = _gather_facts_for_queries(
-            extracted_queries, facts_per_query
+            queries_used, facts_per_query
         )
+        # 2b. Hard cap on the deduped set (max_facts). Trims to the
+        # labeled budget so facts@10 retrieves exactly 10 facts, matching
+        # the baselines' top-k. The dedup order is per-query then
+        # within-query rank (source_count DESC, ts_rank), so trimming
+        # the tail keeps the highest-ranked facts.
+        if max_facts and max_facts > 0 and len(fact_summaries) > max_facts:
+            fact_summaries = fact_summaries[:max_facts]
         # 4. Enrich.
         enriched, source_ids_used = _enrich_facts(fact_summaries)
         fact_ids_used = [f["id"] for f in enriched]
@@ -490,7 +518,8 @@ def run_facts_variant(
         fact_ids_used = []
         source_ids_used = []
 
-    # 5. Synthesize answer.
+    # 5. Synthesize answer. (aggressive prompt restored in prompts.py)
+    ev_tokens = prompts.evidence_tokens(enriched)
     synthesis = llm.synthesize_answer(question, enriched)
     total_usage = llm._add_usage(total_usage, synthesis["usage"])
 
@@ -501,10 +530,12 @@ def run_facts_variant(
         "question_type": q.get("question_type", ""),
         "gold": q.get("gold_answer", ""),
         "prediction": synthesis["answer"],
+        "evidence_tokens": ev_tokens,
         "fact_ids_used": fact_ids_used,
         "source_ids_used": source_ids_used,
         "concept_ids_used": [],
         "extracted_queries": extracted_queries,
+        "queries_used": queries_used,
         "fact_search_hits": fact_search_hits,
         "latency_ms": int((time.time() - started) * 1000),
         "tokens": total_usage,
@@ -514,6 +545,9 @@ def run_facts_variant(
         },
         "params": {
             "facts_per_query": facts_per_query,
+            "max_queries": max_queries,
+            "max_facts": max_facts,
+            "actual_facts_retrieved": len(fact_ids_used),
         },
     }
     _append_prediction(pred, predictions_path)
@@ -566,7 +600,8 @@ def run_direct_variant(
         fact_ids_used = []
         source_ids_used = []
 
-    # 3. Synthesize answer.
+    # 3. Synthesize answer. (aggressive prompt restored in prompts.py)
+    ev_tokens = prompts.evidence_tokens(enriched)
     synthesis = llm.synthesize_answer(question, enriched)
     total_usage = llm._add_usage(total_usage, synthesis["usage"])
 
@@ -577,6 +612,7 @@ def run_direct_variant(
         "question_type": q.get("question_type", ""),
         "gold": q.get("gold_answer", ""),
         "prediction": synthesis["answer"],
+        "evidence_tokens": ev_tokens,
         "fact_ids_used": fact_ids_used,
         "source_ids_used": source_ids_used,
         "concept_ids_used": [],
@@ -610,13 +646,17 @@ def run_one(
     num_concept_queries: int,
     facts_per_query: int,
     predictions_path: str,
+    max_queries: int = 0,
+    max_facts: int = 0,
 ) -> dict:
     if variant == "concept":
         return run_concept_variant(
             q, top_n, facts_per_concept, num_concept_queries, predictions_path
         )
     if variant == "facts":
-        return run_facts_variant(q, facts_per_query, predictions_path)
+        return run_facts_variant(
+            q, facts_per_query, predictions_path, max_queries, max_facts
+        )
     if variant == "direct":
         return run_direct_variant(q, facts_per_query, predictions_path)
     raise ValueError(f"unknown variant: {variant}")
@@ -654,6 +694,16 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--facts-per-query", type=int,
                     default=config.FACTS_PER_QUERY,
                     help="facts fetched per fact-search query (facts variant)")
+    ap.add_argument("--max-queries", type=int, default=0,
+                    help="cap the number of LLM-extracted queries run "
+                         "against /facts (facts variant). 0 = use all "
+                         "(legacy: up to 5). Recommended: @10 -> 1, "
+                         "@20 -> 2, so facts retrieves a known N "
+                         "matching the baselines' top-k.")
+    ap.add_argument("--max-facts", type=int, default=0,
+                    help="hard cap on the deduped fact set passed to "
+                         "synthesis (facts variant). 0 = no cap. Set = "
+                         "--facts-per-query for a strict N-fact budget.")
     ap.add_argument("--concurrency", type=int, default=1,
                     help="parallel questions (best-effort; OKT must handle it)")
     ap.add_argument("--seed", type=int, default=42)
@@ -675,9 +725,26 @@ def _select_queries(queries: list[dict], args) -> list[dict]:
     return selected
 
 
-def _predictions_path_for(variant: str) -> str:
+def _predictions_path_for(variant: str, stamp: str = "", facts_per_query: int = 0) -> str:
+    """Output predictions path. Timestamped so re-runs never overwrite.
+
+    For the facts variant the facts-per-query is embedded in the filename
+    (predictions_facts_10_<stamp>.jsonl) so @10 and @20 runs coexist.
+    Other variants keep the legacy name when no stamp is given (back-compat
+    with the existing OKT prediction files).
+    """
     base = os.path.join(config.RESULTS_DIR, "predictions")
-    return f"{base}_{variant}.jsonl"
+    parts = [base, variant]
+    if facts_per_query:
+        parts.append(str(facts_per_query))
+    if stamp:
+        parts.append(stamp)
+    return "_".join(parts) + ".jsonl"
+
+
+# Timestamp fixed at process start so all variants in one invocation share it.
+import time as _time_mod  # noqa: E402
+_RUN_STAMP = _time_mod.strftime("%Y%m%d-%H%M%S")
 
 
 def main() -> int:
@@ -690,13 +757,18 @@ def main() -> int:
     variants = ["concept", "facts", "direct"] if args.variant == "all" else [args.variant]
 
     for variant in variants:
-        predictions_path = _predictions_path_for(variant)
+        # Timestamped output for the facts variant (it has the k in the name);
+        # other variants use the stamp too for consistency.
+        predictions_path = _predictions_path_for(
+            variant, stamp=_RUN_STAMP, facts_per_query=args.facts_per_query
+        )
         done = _load_done_ids(predictions_path)
         todo = [q for q in selected if q["id"] not in done]
         print(
             f"\n[{variant}] {len(todo)} to run "
             f"({len(selected) - len(todo)} already done in {predictions_path})"
         )
+        print(f"  writing to: {predictions_path}")
         if not todo:
             continue
 
@@ -707,6 +779,7 @@ def main() -> int:
                         run_one, q, variant, args.top_n,
                         args.facts_per_concept, args.num_concept_queries,
                         args.facts_per_query, predictions_path,
+                        args.max_queries, args.max_facts,
                     ): q
                     for q in todo
                 }
@@ -724,12 +797,13 @@ def main() -> int:
                     run_one(
                         q, variant, args.top_n, args.facts_per_concept,
                         args.num_concept_queries, args.facts_per_query,
-                        predictions_path,
+                        predictions_path, args.max_queries, args.max_facts,
                     )
                 except Exception as e:  # noqa: BLE001
                     print(f"  {q['id']}: pipeline error: {e}", file=sys.stderr)
 
         print(f"  Predictions: {predictions_path}")
+        print(f"  Score with: python3 score.py --predictions-file {predictions_path}")
 
     print("\nNext: python3 score.py")
     return 0
