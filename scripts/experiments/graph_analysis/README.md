@@ -44,6 +44,6 @@ dumps.
 |---|---|---|
 | 1 — BiCM null-model edge validation | done | `results/bicm_validation.json` |
 | 2 — 7 graph-property measurements | done | `results/graph_properties.json` |
-| 3 — 5 failure-mode audits | planned | — |
+| 3 — 5 failure-mode audits | done (DeepSeek; Gemma comparison pending) | `results/failure_audits.json` |
 | 4 — KGQA head-to-head | planned | — |
-| REPORT.md | in progress (Exp 1+2 written) | — |
+| REPORT.md | in progress (Exp 1+2+3 written) | — |

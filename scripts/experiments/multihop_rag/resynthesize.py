@@ -70,35 +70,51 @@ def _refetch_okt_facts(fact_ids: list[str]) -> list[dict]:
     return out
 
 
-def _refetch_baseline_chunks(point_ids: list[str]) -> list[dict]:
+def _refetch_baseline_chunks(point_ids: list[str], variant: str = "") -> list[dict]:
     """Re-fetch chunks from Qdrant by point id. Returns the fact dicts
     that prompts.answer_user expects: {id, text, sources, concepts}.
+
+    `variant` is the prediction row's variant field ('dense_x' or
+    'traditional') — used to pick the right Qdrant collection
+    (propositions vs passages). Falls back to trying both collections.
     """
     if not point_ids:
         return []
+    # Pick the collection by variant label.
+    if variant == "dense_x":
+        primary = config.BASELINE_PROPOSITION_COLLECTION
+    elif variant == "traditional":
+        primary = config.BASELINE_PASSAGE_COLLECTION
+    else:
+        primary = config.BASELINE_PROPOSITION_COLLECTION  # default guess
     c = qdrant_store._client()
     out: list[dict] = []
     # Qdrant retrieve by id (batch of up to 100).
     for start in range(0, len(point_ids), 100):
         batch = point_ids[start : start + 100]
+        points = []
         try:
             points = c.retrieve(
-                collection_name=config.BASELINE_PROPOSITION_COLLECTION
-                if "dense_x" in str(point_ids) else config.BASELINE_PASSAGE_COLLECTION,
+                collection_name=primary,
                 ids=batch,
                 with_payload=True,
                 with_vectors=False,
             )
         except Exception:  # noqa: BLE001
             # Try the other collection if the first failed.
+            other = (
+                config.BASELINE_PASSAGE_COLLECTION
+                if primary == config.BASELINE_PROPOSITION_COLLECTION
+                else config.BASELINE_PROPOSITION_COLLECTION
+            )
             try:
                 points = c.retrieve(
-                    collection_name=config.BASELINE_PASSAGE_COLLECTION,
+                    collection_name=other,
                     ids=batch,
                     with_payload=True,
                     with_vectors=False,
                 )
-            except Exception as e:  # noqa: BLE101
+            except Exception as e:  # noqa: BLE001
                 print(f"    qdrant retrieve failed: {e}", file=sys.stderr)
                 points = []
         for p in points:
@@ -135,7 +151,7 @@ def _resynthesize_one(pred: dict, variant_kind: str) -> dict:
         facts = _refetch_okt_facts(fact_ids)
     else:  # baseline
         point_ids = pred.get("chunk_ids_used") or []
-        facts = _refetch_baseline_chunks(point_ids)
+        facts = _refetch_baseline_chunks(point_ids, pred.get("variant", ""))
 
     # Compute evidence tokens (the retrieved-evidence token budget).
     ev_tokens = prompts.evidence_tokens(facts)
@@ -176,6 +192,8 @@ def main() -> int:
         default="",
         help="output file (default: <input>_resynth_<stamp>.jsonl)",
     )
+    ap.add_argument("--no-smoke", action="store_true",
+                    help="skip the 5-question smoke-test gate")
     args = ap.parse_args()
 
     if not os.path.exists(args.input):
@@ -192,6 +210,26 @@ def main() -> int:
         base, ext = os.path.splitext(args.input)
         out_path = f"{base}_resynth_{stamp}.jsonl"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    # Smoke test: re-synthesize 5 questions and validate evidence_tokens
+    # before the full run. Catches the wrong-collection / empty-fetch bug
+    # (evidence_tokens=7) that invalidated a prior full resynth run.
+    if not args.no_smoke and len(preds) > 5:
+        print(f"  smoke test: 5 questions...")
+        smoke_out = []
+        for p in preds[:5]:
+            smoke_out.append(_resynthesize_one(p, args.variant))
+        import validate as _v
+        r = _v.validate(smoke_out, kind=args.variant)
+        _v._print_report(r)
+        if r["status"] == "FAIL":
+            print(f"  SMOKE FAIL: systemic failure — aborting full resynth.",
+                  file=sys.stderr)
+            print(f"  Most likely cause: wrong Qdrant collection (variant "
+                  f"mismatch) or OKT is down. Check the --variant flag.",
+                  file=sys.stderr)
+            return 2
+        print(f"  smoke OK — proceeding with full resynth")
 
     # Write incrementally.
     done_ids: set[str] = set()

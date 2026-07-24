@@ -98,6 +98,22 @@ def _embed_and_upsert(
         f"  indexed {total} points into {collection} in {elapsed:.0f}s "
         f"({total/elapsed:.0f} pts/s)"
     )
+    # Post-build validation: the actual Qdrant point count MUST match the
+    # number of chunks we upserted. A mismatch means points are
+    # colliding (the point-id key isn't unique per chunk — e.g. the
+    # proposition bug where (doc_id, chunk_index) collapsed many
+    # propositions to one point). Fail fast instead of letting a full
+    # benchmark run against a broken index.
+    actual = qdrant_store.collection_count(collection)
+    if actual != total:
+        raise SystemExit(
+            f"  INDEX BUILD FAILED: {collection} has {actual} points but we "
+            f"upserted {total} chunks. Point-id collision detected — the "
+            f"point-id key is not unique per chunk. Aborting before any "
+            f"benchmark run uses this broken index. (expected {total}, "
+            f"got {actual})"
+        )
+    print(f"  validated: {actual} points == {total} chunks (no collision)")
 
 
 def build_passages(rebuild: bool, embed_concurrency: int) -> None:

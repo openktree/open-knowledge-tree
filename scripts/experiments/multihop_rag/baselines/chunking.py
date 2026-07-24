@@ -194,8 +194,14 @@ def _extract_propositions_llm(
 
     out: list[dict[str, Any]] = []
     total_usage = {"prompt": 0, "completion": 0}
+    # Track per-passage success so we can warn if extraction is silently
+    # failing for a large fraction of passages (the error is swallowed
+    # per-task and returns [] — without this check, a systemic failure
+    # like all-extraction-failing produces 0 propositions with no signal).
+    passages_with_props = 0
 
-    def _one(p: dict[str, Any]) -> list[dict[str, Any]]:
+    def _one(p: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+        """Returns (propositions, produced_any)."""
         messages = [
             {"role": "system", "content": _PROPOSITION_SYSTEM},
             {"role": "user", "content": _proposition_user(p["text"], {
@@ -209,11 +215,11 @@ def _extract_propositions_llm(
             resp = llm._chat(messages)
         except Exception as e:  # noqa: BLE001
             print(f"  proposition extraction failed for {p['doc_id']}#{p['chunk_index']}: {e}", file=sys.stderr)
-            return []
+            return [], False
         content = llm._extract_content(resp).strip()
         # Reuse the phrase-array parser (handles JSON arrays + fenced).
         props = llm._parse_string_array(content)
-        return [
+        out_props = [
             {
                 "doc_id": p["doc_id"],
                 "chunk_index": p["chunk_index"],
@@ -227,15 +233,39 @@ def _extract_propositions_llm(
             for prop in props
             if prop.strip()
         ]
+        return out_props, len(out_props) > 0
 
     if concurrency > 1:
         with ThreadPoolExecutor(max_workers=concurrency) as ex:
             futures = {ex.submit(_one, p): p for p in passages}
             for fut in as_completed(futures):
-                out.extend(fut.result())
+                props, produced = fut.result()
+                if produced:
+                    passages_with_props += 1
+                out.extend(props)
     else:
         for p in passages:
-            out.extend(_one(p))
+            props, produced = _one(p)
+            if produced:
+                passages_with_props += 1
+            out.extend(props)
+
+    # Sanity: warn loudly if <50% of passages produced any propositions.
+    # A silent systemic failure (all extraction calls failing) would
+    # produce 0 propositions with no other signal.
+    success_rate = passages_with_props / len(passages) if passages else 0.0
+    if success_rate < 0.5:
+        print(
+            f"  WARNING: only {passages_with_props}/{len(passages)} passages "
+            f"({success_rate:.0%}) produced any propositions. Extraction may "
+            f"be failing silently — check the LLM backend.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"  extraction: {passages_with_props}/{len(passages)} passages "
+            f"({success_rate:.0%}) produced propositions"
+        )
     return out
 
 

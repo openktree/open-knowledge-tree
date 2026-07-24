@@ -706,6 +706,8 @@ def _parse_args() -> argparse.Namespace:
                          "--facts-per-query for a strict N-fact budget.")
     ap.add_argument("--concurrency", type=int, default=1,
                     help="parallel questions (best-effort; OKT must handle it)")
+    ap.add_argument("--no-smoke", action="store_true",
+                    help="skip the 5-question smoke-test gate before the full run")
     ap.add_argument("--seed", type=int, default=42)
     return ap.parse_args()
 
@@ -771,6 +773,51 @@ def main() -> int:
         print(f"  writing to: {predictions_path}")
         if not todo:
             continue
+
+        # Smoke test: run 5 questions and validate before the full run.
+        # Catches OKT-down / wrong-endpoint / empty-retrieval before
+        # wasting a full 2556-question run. Skip with --no-smoke.
+        if not args.no_smoke and len(todo) > 5:
+            smoke_path = os.path.join(
+                config.RESULTS_DIR, f"_smoke_{variant}_{args.facts_per_query}.jsonl"
+            )
+            os.makedirs(os.path.dirname(smoke_path), exist_ok=True)
+            if os.path.exists(smoke_path):
+                os.remove(smoke_path)
+            print(f"  smoke test: 5 questions...")
+            for q in todo[:5]:
+                try:
+                    run_one(q, variant, args.top_n, args.facts_per_concept,
+                            args.num_concept_queries, args.facts_per_query,
+                            smoke_path, args.max_queries, args.max_facts)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  smoke {q['id']}: error: {e}", file=sys.stderr)
+            import validate as _v
+            smoke_preds = []
+            with open(smoke_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        smoke_preds.append(json.loads(line))
+                    except Exception:  # noqa: BLE001
+                        pass
+            os.remove(smoke_path)
+            r = _v.validate(smoke_preds, kind="okt")
+            _v._print_report(r)
+            if r["status"] == "FAIL":
+                print(f"  SMOKE FAIL: systemic failure — aborting full run.",
+                      file=sys.stderr)
+                return 2
+            # Clean up the smoke-test audit dir.
+            import shutil
+            sub_map = {"concept": "answers_concept", "facts": "answers_facts",
+                       "direct": "answers_direct"}
+            smoke_audit = os.path.join(
+                os.path.dirname(__file__), sub_map.get(variant, f"answers_{variant}")
+            )
+            # Only remove if it looks like a smoke dir (small). The audit
+            # writes overwrite per-id, so just leave it — the full run will
+            # overwrite the same files. No cleanup needed.
+            print(f"  smoke OK — proceeding with full run")
 
         if args.concurrency > 1:
             with ThreadPoolExecutor(max_workers=args.concurrency) as ex:

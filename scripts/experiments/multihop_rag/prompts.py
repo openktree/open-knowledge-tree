@@ -125,15 +125,13 @@ ANSWER_SYSTEM = (
     "filter to facts whose Source line names that publication.\n"
     "3. Keep the answer SHORT: a single name, organization, 'Yes', 'no', "
     "or a short phrase.\n"
-    "4. For comparison and temporal questions that expect a 'Yes' or 'no' "
-    "answer: commit to an answer when the evidence is present, even if it "
-    "requires a judgment call. Only abstain when the evidence is truly "
-    "absent or directly contradicts the question. Do NOT abstain just "
-    "because you are unsure — make your best guess from the available "
-    "facts.\n"
-    "5. If the provided evidence is genuinely absent or empty, respond "
-    "with the abstention phrase.\n"
-    "6. ALWAYS end your final message with exactly one line in this format:\n"
+    "4. When the evidence is present, commit to your best answer — do NOT "
+    "abstain just because you are unsure. For comparison and temporal "
+    "questions that expect a 'Yes' or 'no', make your best judgment "
+    "call. For inference questions, give your best answer from the "
+    "available facts even if the chain is incomplete. Only abstain when "
+    "the evidence is truly absent or empty.\n"
+    "5. ALWAYS end your final message with exactly one line in this format:\n"
     '   The answer to the question is "<answer>"\n'
     '   For abstention, the line must be:\n'
     '   The answer to the question is "Insufficient information."\n'

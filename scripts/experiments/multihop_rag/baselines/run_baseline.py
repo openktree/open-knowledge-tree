@@ -390,6 +390,8 @@ def _parse_args() -> argparse.Namespace:
         help="chunks/facts retrieved per question (matches OKT facts-per-query)",
     )
     ap.add_argument("--concurrency", type=int, default=1)
+    ap.add_argument("--no-smoke", action="store_true",
+                    help="skip the 5-question smoke-test gate before the full run")
     ap.add_argument("--seed", type=int, default=42)
     return ap.parse_args()
 
@@ -407,6 +409,58 @@ def _select_queries(queries: list[dict], args) -> list[dict]:
     elif args.limit:
         selected = selected[: args.limit]
     return selected
+
+
+def _smoke_test(
+    variant: str, top_k: int, queries: list[dict], n: int = 5
+) -> bool:
+    """Run N questions end-to-end and validate before the full run.
+
+    Catches systemic failures (wrong collection, empty retrieval,
+    evidence_tokens near-zero) BEFORE committing to 2556 questions.
+    Returns True if the smoke test passed.
+    """
+    import validate as _v
+    print(f"\n[{variant}] smoke test: {n} questions...")
+    smoke_path = os.path.join(
+        config.RESULTS_DIR, f"_smoke_{variant}_{top_k}.jsonl"
+    )
+    os.makedirs(os.path.dirname(smoke_path), exist_ok=True)
+    if os.path.exists(smoke_path):
+        os.remove(smoke_path)
+    smoke_queries = queries[:n]
+    for q in smoke_queries:
+        try:
+            run_variant(q, variant, top_k, smoke_path)
+        except Exception as e:  # noqa: BLE001
+            print(f"  smoke {q['id']}: error: {e}", file=sys.stderr)
+    preds = []
+    with open(smoke_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                preds.append(json.loads(line))
+            except Exception:  # noqa: BLE001
+                pass
+    os.remove(smoke_path)
+    if not preds:
+        print(f"  SMOKE FAIL: no predictions produced", file=sys.stderr)
+        return False
+    r = _v.validate(preds, kind="baseline")
+    _v._print_report(r)
+    if r["status"] == "FAIL":
+        print(f"  SMOKE FAIL: systemic failure detected — aborting full run.",
+              file=sys.stderr)
+        return False
+    # Clean up the smoke-test audit dir.
+    _, _, sub = _VARIANT_MAP[variant]
+    import shutil
+    smoke_audit = os.path.join(
+        os.path.dirname(__file__), "..", f"{sub}_{top_k}_{_RUN_STAMP}"
+    )
+    if os.path.isdir(smoke_audit):
+        shutil.rmtree(smoke_audit, ignore_errors=True)
+    print(f"  smoke OK — proceeding with full run")
+    return True
 
 
 def main() -> int:
@@ -434,6 +488,17 @@ def main() -> int:
         print(f"  writing to: {predictions_path}")
         if not todo:
             continue
+
+        # Smoke test: run 5 questions and validate before the full run.
+        # Catches wrong-collection / empty-retrieval / evidence_tokens=0
+        # before wasting a full 2556-question run. Skip with --no-smoke.
+        if not args.no_smoke and len(todo) > 5:
+            if not _smoke_test(variant, args.top_k, todo):
+                return 2
+            # Re-read done ids (smoke test wrote to a throwaway file, not the
+            # real path, so todo is unchanged).
+            done = _load_done_ids(label, args.top_k)
+            todo = [q for q in selected if q["id"] not in done]
 
         if args.concurrency > 1:
             with ThreadPoolExecutor(max_workers=args.concurrency) as ex:

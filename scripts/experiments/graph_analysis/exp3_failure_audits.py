@@ -73,62 +73,207 @@ def _load_official_contexts() -> list[str]:
 # Failure 1 — Under-merging (fragmentation)
 # ---------------------------------------------------------------------------
 
-FRAG_SYSTEM = """You are an entity-linking expert. Given a concept name and its context, return the most likely Wikidata entity it refers to. Respond in JSON: {"qid": "Q123", "label": "...", "confidence": "high|medium|low", "note": "..."}. If the name is too generic to map to a single entity, return {"qid": null, "label": null, "confidence": "low", "note": "generic"}."""
-
 async def audit_fragmentation(conn: asyncpg.Connection, repo_id: str) -> dict:
-    """Sample concept groups, map each to Wikidata, count fragmentation."""
-    rng = random.Random(SEED)
-    # Get all concept groups (lower(canonical_name)) with their contexts.
+    """Intra-corpus fragmentation detection.
+
+    Instead of mapping to an external ontology (Wikidata), which only
+    measures ontology compliance, we detect fragmentation WITHIN the corpus:
+    two OKT concept groups that should be one entity because they are
+    aliases of each other (one group's canonical name is another's alias,
+    or they share an alias, or their names are substrings/abbreviations).
+
+    Method:
+      1. Load all concept groups + their aliases.
+      2. For each pair (A, B) where A != B, check:
+         a. Is A's canonical name an alias of B (or vice versa)?
+         b. Do A and B share any alias?
+         c. Is A's name a substring of B's name (or vice versa), and
+            do they share zero facts (true fragmentation, not co-occurrence)?
+      3. Flag pairs as fragmented if they are linked to overlapping but
+         mostly disjoint fact sets (would benefit from merging).
+    """
+    # Load all concept groups with their aliases and fact sets.
     rows = await conn.fetch(
         """
         SELECT lower(c.canonical_name) AS name,
-               array_agg(DISTINCT lower(c.context)) AS contexts,
+               array_agg(DISTINCT ca.alias_text) FILTER (WHERE ca.alias_text IS NOT NULL) AS aliases,
                count(DISTINCT fc.fact_id) AS fact_count
         FROM okt_repository.concepts c
+        LEFT JOIN okt_repository.concept_aliases ca ON ca.concept_id = c.id
         LEFT JOIN okt_repository.fact_concepts fc ON fc.concept_id = c.id
         WHERE c.repository_id = $1
         GROUP BY lower(c.canonical_name)
-        ORDER BY fact_count DESC
         """,
         repo_id,
     )
-    # Sample, oversampling high-degree groups (where fragmentation matters most).
-    sample = rng.sample(rows, min(SAMPLE_SIZE, len(rows)))
-
-    # Map each to Wikidata concurrently (200 sequential calls would take ~27min).
-    names_with_hints = [(r["name"], r["contexts"][0] if r["contexts"] else "") for r in sample]
-    qid_results = await batch_best_qids(names_with_hints)
-
-    qid_map: dict[str, dict] = {}
-    qid_to_groups: dict[str, list[str]] = {}
-    for r in sample:
+    # Build lookup: name → set of aliases (including canonical name as self-alias).
+    name_to_aliases: dict[str, set[str]] = {}
+    name_to_facts: dict[str, set[str]] = {}
+    all_names = []
+    for r in rows:
         name = r["name"]
-        hit = qid_results.get(name)
-        if hit:
-            qid_map[name] = {"qid": hit.qid, "label": hit.label, "desc": hit.description}
-            qid_to_groups.setdefault(hit.qid, []).append(name)
-        else:
-            qid_map[name] = {"qid": None, "label": None, "desc": None}
+        aliases = set(a.lower() for a in (r["aliases"] or []))
+        aliases.add(name)
+        name_to_aliases[name] = aliases
+        all_names.append(name)
 
-    # Fragmentation: Q-IDs that appear under >1 OKT concept group.
-    fragmented = {qid: groups for qid, groups in qid_to_groups.items() if len(groups) > 1}
-    n_mapped = sum(1 for v in qid_map.values() if v["qid"])
-    n_fragmented_entities = len(fragmented)
-    n_fragmented_groups = sum(len(g) for g in fragmented.values())
+    # Build a reverse index: alias text → set of concept names that claim it.
+    alias_to_names: dict[str, set[str]] = {}
+    for name, aliases in name_to_aliases.items():
+        for a in aliases:
+            alias_to_names.setdefault(a, set()).add(name)
+
+    # Fragmentation type 1: shared alias — two groups claim the same alias text.
+    # Only flag as TRUE fragmentation when both conditions hold:
+    # (a) the shared alias is long and specific (>= 8 chars — excludes "google",
+    #     "amazon", "sam", "ai" which are shared by legitimately different concepts), AND
+    # (b) the groups share at least 1 fact (same entity split but still connected
+    #     through the same source text), OR the shared alias IS one group's full
+    #     canonical name (e.g., "reserve bank of australia" is canonical of A
+    #     and alias of B — clear fragmentation).
+    MIN_SPECIFIC_ALIAS_LEN = 8
+    shared_alias_pairs: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for alias, names in alias_to_names.items():
+        if len(names) > 1 and len(alias) >= MIN_SPECIFIC_ALIAS_LEN:
+            names_list = sorted(names)
+            for i in range(len(names_list)):
+                for j in range(i + 1, len(names_list)):
+                    a, b = names_list[i], names_list[j]
+                    key = (a, b)
+                    if key in seen_pairs:
+                        continue
+                    seen_pairs.add(key)
+                    facts_a = await _get_facts_for_name(conn, repo_id, a)
+                    facts_b = await _get_facts_for_name(conn, repo_id, b)
+                    overlap = len(facts_a & facts_b)
+                    is_canonical_of_a = alias == a
+                    is_canonical_of_b = alias == b
+                    if overlap > 0 or is_canonical_of_a or is_canonical_of_b:
+                        shared_alias_pairs.append({
+                            "name_a": a, "name_b": b,
+                            "shared_alias": alias,
+                            "facts_a": len(facts_a), "facts_b": len(facts_b),
+                            "shared_facts": overlap,
+                            "type": "shared_alias",
+                        })
+
+    # Fragmentation type 2: one group's canonical name is another's alias.
+    canonical_as_alias_pairs: list[dict] = []
+    for name in all_names:
+        # Is this name an alias of a DIFFERENT group?
+        names_with_this_alias = alias_to_names.get(name, set())
+        for other in names_with_this_alias:
+            if other != name:
+                key = tuple(sorted([name, other]))
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                facts_a = await _get_facts_for_name(conn, repo_id, name)
+                facts_b = await _get_facts_for_name(conn, repo_id, other)
+                overlap = len(facts_a & facts_b)
+                canonical_as_alias_pairs.append({
+                    "name_a": name, "name_b": other,
+                    "detail": f'"{name}" is an alias of "{other}"',
+                    "facts_a": len(facts_a), "facts_b": len(facts_b),
+                    "shared_facts": overlap,
+                    "type": "canonical_is_alias",
+                })
+
+    # Fragmentation type 3: one group's canonical name is an abbreviation or
+    # full form of another's. Only flag if:
+    # (a) the shorter name is a PREFIX of the longer (not a random substring),
+    # (b) the shorter name is at least 4 chars,
+    # (c) the longer name is at most 1.5× the shorter name's length,
+    # (d) they share zero facts (true fragmentation, not co-occurrence), AND
+    # (e) the longer name does NOT add a qualifier noun after the prefix
+    #     (e.g., "artificial intelligence models" is a different concept from
+    #     "artificial intelligence", not a fragmented form of it).
+    QUALIFIER_WORDS = {
+        "models", "model", "tools", "tool", "training", "systems", "system",
+        "companies", "company", "algorithms", "algorithm", "technology",
+        "technologies", "applications", "application", "industry", "market",
+        "markets", "council", "pact", "budgets", "developers", "generators",
+        "innovation", "chatbots", "regulation", "regulations", "research",
+        "researchers", "ethics", "safety", "governance", "policy", "policies",
+        "law", "laws", "act", "office", "agency", "committee", "framework",
+        "standards", "standard", "patent", "patents", "logo", "logos",
+        "platform", "platforms", "software", "hardware", "device", "devices",
+        "service", "services", "product", "products", "report", "reports",
+        "data", "dataset", "datasets", "code", "api", "app", "apps",
+        "conference", "summit", "forum", "lab", "labs", "institute",
+        "department", "center", "centre", "program", "project", "team",
+        "group", "network", "networks", "strategy", "strategies", "plan",
+        "guide", "guidelines", "manual", "handbook", "review", "analysis",
+        "study", "studies", "survey", "report", "statistics", "stats",
+        "trends", "outlook", "forecast", "prediction", "predictions",
+        "news", "media", "content", "article", "articles", "blog", "post",
+        "video", "videos", "podcast", "show", "series", "episode",
+    }
+    substring_pairs: list[dict] = []
+    for a in all_names:
+        if len(a) < 4:
+            continue
+        for b in all_names:
+            if a == b:
+                continue
+            if b.startswith(a + " ") and len(b) <= len(a) * 1.5 and a != b:
+                # Check (e): the suffix after the prefix must not be a qualifier word.
+                suffix = b[len(a) + 1:].lower().strip()
+                if suffix in QUALIFIER_WORDS:
+                    continue
+                key = tuple(sorted([a, b]))
+                if key in seen_pairs:
+                    continue
+                facts_a = await _get_facts_for_name(conn, repo_id, a)
+                facts_b = await _get_facts_for_name(conn, repo_id, b)
+                overlap = len(facts_a & facts_b)
+                if overlap == 0:
+                    seen_pairs.add(key)
+                    substring_pairs.append({
+                        "name_a": a, "name_b": b,
+                        "detail": f'"{a}" is a prefix of "{b}" (suffix: "{suffix}")',
+                        "facts_a": len(facts_a), "facts_b": len(facts_b),
+                        "shared_facts": 0,
+                        "type": "prefix_no_overlap",
+                    })
+
+    all_pairs = shared_alias_pairs + canonical_as_alias_pairs + substring_pairs
+    # Deduplicate by (name_a, name_b).
+    final_pairs = {}
+    for p in all_pairs:
+        key = tuple(sorted([p["name_a"], p["name_b"]]))
+        if key not in final_pairs:
+            final_pairs[key] = p
 
     return {
-        "n_sampled": len(sample),
-        "n_mapped_to_wikidata": n_mapped,
-        "n_unique_qids": len(qid_to_groups),
-        "n_fragmented_entities": n_fragmented_entities,
-        "n_fragmented_groups": n_fragmented_groups,
-        "fragmentation_rate": round(n_fragmented_entities / max(n_mapped, 1), 4),
-        "fragmented_examples": [
-            {"qid": qid, "groups": groups}
-            for qid, groups in sorted(fragmented.items(), key=lambda kv: -len(kv[1]))[:10]
-        ],
-        "sample_details": [{"name": n, **qid_map[n]} for n in sorted(qid_map.keys())[:50]],
+        "n_concept_groups": len(all_names),
+        "n_fragmented_pairs": len(final_pairs),
+        "fragmentation_rate": round(len(final_pairs) / max(len(all_names), 1), 4),
+        "method": (
+            "Intra-corpus fragmentation: detects pairs of concept groups that "
+            "should be one entity. Three signals: (1) shared alias — two groups "
+            "claim the same alias text; (2) canonical-is-alias — one group's "
+            "canonical name is another's alias; (3) substring with zero shared "
+            "facts — one name is contained in another and they share no facts. "
+            "No external ontology needed."
+        ),
+        "fragmented_examples": sorted(final_pairs.values(), key=lambda x: -(x["facts_a"] + x["facts_b"]))[:20],
     }
+
+
+async def _get_facts_for_name(conn: asyncpg.Connection, repo_id: str, name: str) -> set[str]:
+    """Get the set of fact_ids linked to a concept group (by lower(canonical_name))."""
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT fc.fact_id::text AS fid
+        FROM okt_repository.fact_concepts fc
+        JOIN okt_repository.concepts c ON c.id = fc.concept_id
+        WHERE c.repository_id = $1 AND lower(c.canonical_name) = $2
+        """,
+        repo_id, name,
+    )
+    return {r["fid"] for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +330,26 @@ async def audit_over_merging(conn: asyncpg.Connection, repo_id: str, model: str 
 # Failure 3 — Missing concepts (recall) + 3b — hallucinated concepts
 # ---------------------------------------------------------------------------
 
-async def audit_recall(conn: asyncpg.Connection, repo_id: str) -> dict:
+NOISE_SYSTEM = """You are an entity extraction quality auditor. You are given a fact text and a list of candidate entities that a spaCy NER extractor pulled from the text but that the OKT system's LLM extractor did NOT capture.
+
+For each candidate entity, classify it as either:
+  "real_miss" — a genuine named entity, concept, or organization that OKT SHOULD have captured (a person, company, product, place, event, or specific concept that is meaningfully present in the fact).
+  "noise" — spaCy over-extracted this: it is too generic (e.g. "the company", "some people"), a sentence fragment (e.g. "the first time"), a bound-failure (e.g. "united states of" missing "america"), a common word, or something that is not worth extracting as a concept.
+
+Respond in JSON as a list of objects: [{"entity": "...", "classification": "real_miss"|"noise", "reason": "..."}]"""
+
+async def audit_recall(conn: asyncpg.Connection, repo_id: str, model: str | None = None) -> dict:
     """Sample facts, run spaCy NER, diff against OKT-linked concepts.
 
-    Note: spaCy NER retrieves more entities but also more noise (fails to
-    split/bound some concepts). This is a tradeoff, not a pure gold standard.
-    We report raw recall and note the spaCy noise separately.
+    Measures BOTH sides of the tradeoff:
+      - Raw recall: of spaCy entities, what fraction did OKT capture?
+      - Noise rate: of the "missed" spaCy entities, what fraction are noise
+        (spaCy over-extraction) vs real misses (OKT under-extraction)?
+      - Adjusted recall: excluding noise, what fraction did OKT capture?
+
+    This makes the contrast clear: spaCy was removed from the system because
+    it retrieved more entities but also more noise (fails to split/bound
+    some concepts). The noise measurement quantifies that tradeoff.
     """
     import spacy
     nlp = spacy.load("en_core_web_lg")
@@ -212,10 +371,11 @@ async def audit_recall(conn: asyncpg.Connection, repo_id: str) -> dict:
         """,
         repo_id, RECALL_SAMPLE,
     )
-    # Re-sample deterministically.
     sample = rng.sample(rows, min(RECALL_SAMPLE, len(rows)))
 
     recalls = []
+    all_real_misses = []
+    all_noise = []
     for r in sample:
         fact_text = r["text"]
         okt_concepts = set(c for c in (r["okt_concepts"] or []) if c)
@@ -225,13 +385,12 @@ async def audit_recall(conn: asyncpg.Connection, repo_id: str) -> dict:
         for ent in doc.ents:
             if ent.label_ in ("PERSON", "ORG", "GPE", "LOC", "PRODUCT", "WORK_OF_ART", "EVENT", "FAC", "NORP", "LAW", "LANGUAGE"):
                 spacy_entities.add(ent.text.lower().strip())
-        # Also extract noun chunks ( spaCy gets more but noisier).
+        # Also extract noun chunks (spaCy gets more but noisier).
         for chunk in doc.noun_chunks:
             text = chunk.text.lower().strip()
             if len(text) > 2 and not text.startswith(("the ", "a ", "an ", "this ", "that ")):
                 spacy_entities.add(text)
 
-        # Recall: of the spaCy entities, how many are in OKT concepts?
         # Match by substring (OKT concept name in spaCy entity or vice versa).
         matched = set()
         for se in spacy_entities:
@@ -239,55 +398,117 @@ async def audit_recall(conn: asyncpg.Connection, repo_id: str) -> dict:
                 if se in oc or oc in se or se == oc:
                     matched.add(se)
                     break
-        recall = len(matched) / max(len(spacy_entities), 1)
+        missed = spacy_entities - matched
+        raw_recall = len(matched) / max(len(spacy_entities), 1)
+
+        # Classify missed entities as real_miss or noise via LLM judge.
+        real_misses = []
+        noise = []
+        if missed:
+            missed_list = sorted(missed)[:20]  # cap for prompt size
+            prompt = f'Fact text: "{fact_text[:500]}"\n\nCandidate entities that spaCy extracted but OKT missed:\n{missed_list}\n\nClassify each as "real_miss" or "noise".'
+            classifications = judge_json(prompt, NOISE_SYSTEM, model=model)
+            if isinstance(classifications, list):
+                for item in classifications:
+                    if not isinstance(item, dict):
+                        continue
+                    entity = (item.get("entity") or "").lower().strip()
+                    cls = item.get("classification", "noise")
+                    reason = item.get("reason", "")
+                    if cls == "real_miss":
+                        real_misses.append({"entity": entity, "reason": reason})
+                    else:
+                        noise.append({"entity": entity, "reason": reason})
+            # Any missed entity not classified defaults to noise.
+            classified_entities = {m["entity"] for m in real_misses} | {n["entity"] for n in noise}
+            for me in missed_list:
+                if me not in classified_entities:
+                    noise.append({"entity": me, "reason": "unclassified"})
+
+        n_real_miss = len(real_misses)
+        n_noise = len(noise)
+        n_missed_total = len(missed)
+        # Adjusted recall: exclude noise from the denominator.
+        adjusted_recall = len(matched) / max(len(spacy_entities) - n_noise, 1)
+        noise_rate = n_noise / max(n_missed_total, 1)
+
+        all_real_misses.extend(real_misses)
+        all_noise.extend(noise)
+
         recalls.append({
             "fid": r["fid"],
             "fact_text": fact_text[:200],
             "n_spacy_entities": len(spacy_entities),
             "n_okt_concepts": len(okt_concepts),
             "n_matched": len(matched),
-            "recall": round(recall, 4),
+            "n_missed": n_missed_total,
+            "n_real_misses": n_real_miss,
+            "n_noise": n_noise,
+            "raw_recall": round(raw_recall, 4),
+            "adjusted_recall": round(adjusted_recall, 4),
+            "noise_rate": round(noise_rate, 4),
             "spacy_entities": sorted(spacy_entities)[:15],
             "okt_concepts": sorted(okt_concepts)[:15],
-            "missed": sorted(spacy_entities - matched)[:10],
+            "real_misses": [m["entity"] for m in real_misses][:10],
+            "noise_examples": [n["entity"] for n in noise][:10],
         })
 
-    mean_recall = float(np.mean([r["recall"] for r in recalls])) if recalls else 0
-    median_recall = float(np.median([r["recall"] for r in recalls])) if recalls else 0
+    raw_recalls = [r["raw_recall"] for r in recalls]
+    adj_recalls = [r["adjusted_recall"] for r in recalls]
+    noise_rates = [r["noise_rate"] for r in recalls]
 
     return {
+        "model": model or "default",
         "n_sampled": len(sample),
-        "mean_recall": round(mean_recall, 4),
-        "median_recall": round(median_recall, 4),
-        "recall_distribution": {
-            "p25": float(np.percentile([r["recall"] for r in recalls], 25)) if recalls else 0,
-            "p75": float(np.percentile([r["recall"] for r in recalls], 75)) if recalls else 0,
-            "p90": float(np.percentile([r["recall"] for r in recalls], 90)) if recalls else 0,
+        "mean_raw_recall": round(float(np.mean(raw_recalls)), 4) if raw_recalls else 0,
+        "mean_adjusted_recall": round(float(np.mean(adj_recalls)), 4) if adj_recalls else 0,
+        "median_raw_recall": round(float(np.median(raw_recalls)), 4) if raw_recalls else 0,
+        "median_adjusted_recall": round(float(np.median(adj_recalls)), 4) if adj_recalls else 0,
+        "mean_noise_rate": round(float(np.mean(noise_rates)), 4) if noise_rates else 0,
+        "n_total_real_misses": len(all_real_misses),
+        "n_total_noise": len(all_noise),
+        "adjusted_recall_distribution": {
+            "p25": float(np.percentile(adj_recalls, 25)) if adj_recalls else 0,
+            "p75": float(np.percentile(adj_recalls, 75)) if adj_recalls else 0,
+            "p90": float(np.percentile(adj_recalls, 90)) if adj_recalls else 0,
         },
-        "caveat": (
-            "spaCy NER retrieves more entities than LLM extraction but also more "
-            "noise (fails to split/bound some concepts). This is a tradeoff, not a "
-            "pure gold standard. Raw recall numbers are an upper bound on the gap; "
-            "some 'missed' spaCy entities are noise, not real misses."
+        "noise_examples": [n["entity"] for n in all_noise[:20]],
+        "real_miss_examples": [m["entity"] for m in all_real_misses[:20]],
+        "method": (
+            "spaCy NER (en_core_web_lg) extracts entities + noun chunks from "
+            "each fact. Matched against OKT concepts by substring. Missed "
+            "entities are classified by the LLM judge as 'real_miss' (OKT "
+            "should have captured it) or 'noise' (spaCy over-extraction: "
+            "generic, fragment, bound-failure). Adjusted recall excludes "
+            "noise from the denominator. This measures BOTH sides of the "
+            "spaCy-vs-LLM tradeoff: OKT's under-extraction (real misses) "
+            "and spaCy's over-extraction (noise)."
         ),
         "sample_details": recalls[:30],
     }
 
 
 async def audit_hallucination(conn: asyncpg.Connection, repo_id: str) -> dict:
-    """Sub-audit 3b: residual cross-contamination.
+    """Sub-audit 3b: residual cross-contamination (alias-aware).
 
-    For each concept, count facts where the concept name is a substring of
-    the fact text (cheap proxy for 'actually mentioned') vs total linked facts.
-    Concepts with a large gap (linked to many facts but rarely mentioned) are
-    suspect — residual cross-contamination post-fix.
+    For each concept with >20 linked facts, sample 20 facts and check if
+    the concept's canonical name OR any of its aliases appears in the fact
+    text. If neither the name nor any alias is found, the fact is "unmentioned"
+    — the concept was linked to a fact that doesn't actually reference it.
+
+    The previous version used substring matching against the canonical name
+    only ("google llc"), which produced 55.5% false positives because OKT
+    formalizes names while facts use informal forms ("Google"). Using aliases
+    ("Google", "Alphabet", "GOOG" etc.) fixes this.
     """
     rows = await conn.fetch(
         """
         SELECT lower(c.canonical_name) AS name,
+               array_agg(DISTINCT ca.alias_text) FILTER (WHERE ca.alias_text IS NOT NULL) AS aliases,
                count(DISTINCT fc.fact_id) AS n_linked_facts
         FROM okt_repository.concepts c
         JOIN okt_repository.fact_concepts fc ON fc.concept_id = c.id
+        LEFT JOIN okt_repository.concept_aliases ca ON ca.concept_id = c.id
         WHERE c.repository_id = $1
         GROUP BY lower(c.canonical_name)
         HAVING count(DISTINCT fc.fact_id) > 20
@@ -296,11 +517,17 @@ async def audit_hallucination(conn: asyncpg.Connection, repo_id: str) -> dict:
         """,
         repo_id,
     )
-    # For each high-degree concept, sample 20 linked facts and check substring.
     suspects = []
     for r in rows:
         name = r["name"]
+        aliases = list(r["aliases"] or [])
+        # Build the set of search terms: canonical name + all aliases, lowercased.
+        search_terms = set([name] + [a.lower() for a in aliases])
+        # Filter out very short aliases (1 char) to avoid false matches, but
+        # keep 2-char ones (AI, US, UK) since they're common abbreviations.
+        search_terms = {t for t in search_terms if len(t) >= 2}
         n_linked = r["n_linked_facts"]
+
         fact_rows = await conn.fetch(
             """
             SELECT f.text
@@ -313,11 +540,17 @@ async def audit_hallucination(conn: asyncpg.Connection, repo_id: str) -> dict:
             """,
             repo_id, name,
         )
-        n_mentioned = sum(1 for fr in fact_rows if name in fr["text"].lower())
+        n_mentioned = 0
+        for fr in fact_rows:
+            text = fr["text"].lower()
+            if any(term in text for term in search_terms):
+                n_mentioned += 1
         mention_rate = n_mentioned / max(len(fact_rows), 1)
         if mention_rate < 0.5:
             suspects.append({
                 "name": name,
+                "aliases": aliases[:5],
+                "n_search_terms": len(search_terms),
                 "n_linked_facts": n_linked,
                 "n_sampled": len(fact_rows),
                 "n_mentioned": n_mentioned,
@@ -331,9 +564,10 @@ async def audit_hallucination(conn: asyncpg.Connection, repo_id: str) -> dict:
         "suspects": sorted(suspects, key=lambda x: x["mention_rate"])[:20],
         "method": (
             "For each concept with >20 linked facts, sample 20 facts and check if "
-            "the concept name is a substring of the fact text. Concepts mentioned "
-            "in <50% of their linked facts are flagged as suspect (residual "
-            "cross-contamination). This is a cheap proxy, not a gold standard."
+            "the concept's canonical name OR any of its aliases (>= 3 chars) appears "
+            "in the fact text. Concepts mentioned in <50% of their linked facts are "
+            "flagged as suspect (residual cross-contamination). Alias-aware matching "
+            "fixes the name-format mismatch that inflated the previous 55.5% rate."
         ),
     }
 
@@ -489,8 +723,8 @@ async def run(dsn: str = DEFAULT_DSN, repo_slug: str = DEFAULT_REPO_SLUG) -> dic
 
         print("Failure 3 — Missing concepts (recall)...")
         t3 = time.time()
-        f3 = await audit_recall(conn, repo_id)
-        print(f"  done in {time.time()-t3:.1f}s: mean recall={f3['mean_recall']}")
+        f3 = await audit_recall(conn, repo_id, model=JUDGE_MODELS[0])
+        print(f"  done in {time.time()-t3:.1f}s: raw recall={f3['mean_raw_recall']}, adjusted={f3['mean_adjusted_recall']}, noise_rate={f3['mean_noise_rate']}")
 
         print("Failure 3b — Hallucinated concepts (cross-contamination)...")
         t3b = time.time()
@@ -558,9 +792,16 @@ def _print_summary(result: dict) -> None:
                 print(f"    {ex['name']}: {ex.get('entities', [])} — {ex.get('reason', '')[:80]}")
 
     f3 = result["failure_3_recall"]
-    print(f"\nFailure 3 — Missing concepts (recall): [spaCy comparator]")
-    print(f"  Sampled: {f3['n_sampled']}, mean recall: {f3['mean_recall']:.1%}, median: {f3['median_recall']:.1%}")
-    print(f"  ⚠ {f3['caveat']}")
+    print(f"\nFailure 3 — Missing concepts (recall): [spaCy comparator + LLM noise classification]")
+    print(f"  Sampled: {f3['n_sampled']}")
+    print(f"  Raw recall:      {f3['mean_raw_recall']:.1%} (mean), {f3['median_raw_recall']:.1%} (median)")
+    print(f"  Adjusted recall:  {f3['mean_adjusted_recall']:.1%} (mean), {f3['median_adjusted_recall']:.1%} (median)")
+    print(f"  Noise rate:       {f3['mean_noise_rate']:.1%} of missed entities are spaCy noise")
+    print(f"  Real misses: {f3['n_total_real_misses']}, Noise: {f3['n_total_noise']}")
+    if f3.get("noise_examples"):
+        print(f"  Noise examples: {f3['noise_examples'][:10]}")
+    if f3.get("real_miss_examples"):
+        print(f"  Real miss examples: {f3['real_miss_examples'][:10]}")
 
     f3b = result["failure_3b_hallucination"]
     print(f"\nFailure 3b — Hallucinated concepts (cross-contamination): [substring check]")

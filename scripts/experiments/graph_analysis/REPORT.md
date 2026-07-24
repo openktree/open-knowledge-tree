@@ -440,3 +440,172 @@ useful confidence signal simply because it lacks variance.
    untestable here, not disproven.
 
 Output: `results/graph_properties.json`. Computation: ~51s. No LLM cost.
+
+---
+
+## Experiment 3 — 5 failure-mode audits (§6.2)
+
+**Paper claim under test (§6.2):** the report flagged five concept-extraction
+failure modes as the "biggest risks" but never measured them. Experiments 1
+and 2 showed the graph *structure* is sound; this experiment asks whether the
+concept *extraction itself* is any good.
+
+**Judge model:** DeepSeek V4 Flash (`deepseek/deepseek-v4-flash`) for the
+LLM-dependent audits (Failures 2 and 5). A Gemma 4 31B comparison run is
+planned but not yet complete. The model-independent audits (Failures 1, 3,
+3b, 4) use no LLM.
+
+### Failure 1 — Under-merging (fragmentation): 6.87% (1,254 pairs)
+
+**Method (intra-corpus, alias-based):** instead of mapping to an external
+ontology (Wikidata), which only measures ontology compliance, we detect
+fragmentation *within* the corpus — two OKT concept groups that should be one
+entity. Three signals: (1) shared alias ≥ 8 chars with shared facts or
+canonical-name match; (2) one group's canonical name is another's alias; (3)
+prefix match with zero shared facts (excluding qualifier-noun suffixes like
+"models", "tools", "training"). See `exp3_failure_audits.py`.
+
+**Result:** 1,254 fragmented pairs out of 18,242 groups (6.87%). The examples
+fall into two categories:
+
+- **Real fragmentation** (should merge): `"sam"` ↔ `"samuel bankman-fried"`
+  (same person, "Sam" is an alias of SBF), `"amazon prime"` ↔ `"amazon.com,
+  inc."` (share 6 facts — Amazon Prime is Amazon's service).
+- **Entity vs derivative entity** (borderline): `"las vegas"` ↔ `"las vegas
+  raiders"` (city vs team, share 3 facts), `"england"` ↔ `"england national
+  football team"` (country vs team, share 1 fact). These share aliases and
+  occasional facts but are arguably different concepts.
+
+**Verdict:** fragmentation is real but moderate (~7%). The report called this
+"likely one of the two biggest risks" — it is present but not severe. The
+alias-based intra-corpus method is a stronger signal than the original
+Wikidata-mapping approach (which only mapped 9/200 concepts and measured
+ontology compliance, not fragmentation).
+
+### Failure 2 — Over-merging (false merges): 4.0% (8/200)
+
+**Method:** sampled 200 concept groups, DeepSeek judged whether each contains
+two or more distinct real-world entities incorrectly merged because they share
+a surface form.
+
+**Result:** 8 over-merged groups (4.0%):
+- `"national basketball league"` — merges Australian NBL and US NBL (1937-1949)
+- `"the penguin"` — merges the fictional character with the TV series
+- `"national championships"` — merges US Figure Skating and UK Swimming
+
+**Verdict:** over-merging is real but rare (4%). These are genuine homonym
+collisions where the L3 context didn't disambiguate. The report called this the
+"second biggest risk" — present but less severe than fragmentation.
+
+### Failure 3 — Missing concepts (recall): 42% raw, 65% adjusted
+
+**Method:** sampled 100 facts, ran spaCy NER (`en_core_web_lg`) to extract gold
+entities + noun chunks, diffed against OKT-linked concepts. Then the LLM judge
+(DeepSeek) classified each "missed" entity as either a **real miss** (OKT
+should have captured it — a genuine entity/concept) or **noise** (spaCy
+over-extracted: too generic, fragment, bound-failure, common word). This
+measures both sides of the spaCy-vs-LLM tradeoff: OKT's under-extraction
+and spaCy's over-extraction.
+
+**Results:**
+
+| Metric | Value |
+|---|---|
+| Raw recall (all spaCy entities) | 41.9% mean |
+| **Adjusted recall (excluding noise)** | **65.0% mean** |
+| Noise rate (of missed entities) | 59.3% noise |
+| Real misses | 126 |
+| spaCy noise | 213 |
+
+**59.3% of the "missed" entities are spaCy noise**, not real misses. The raw
+42% recall makes OKT look worse than it is — spaCy extracts fragments like
+"seven touchdown scoring drives", "five teams", "breathtaking speed",
+"memory", "storage", "that", "which" — none of which are concepts worth
+extracting. When noise is excluded, **adjusted recall rises to 65%**, which
+falls within the report's predicted 60-80% range.
+
+**Noise examples (spaCy over-extraction):** "seven touchdown scoring drives",
+"gb", "memory", "storage", "tb", "five teams", "breathtaking speed",
+"complexity", "size", "moderators", "private testing", "that", "which",
+"less than 100% capacity", "practice".
+
+**Real miss examples (OKT under-extraction):** "128gb", "8tb", "ai", "nmpa",
+"the us copyright office", "tim mcgraw", "mozilla's instance".
+
+The real misses are mostly specific technical/product entities ("128GB",
+"8TB") and abbreviations ("AI", "NMPA") that spaCy catches but OKT's LLM
+extractor missed — likely because the LLM is more conservative about
+extracting quantities and abbreviations. These are genuine recall gaps, but
+they are a small fraction of what spaCy extracts.
+
+**This quantifies why spaCy was removed from the system:** it retrieved more
+entities but also more noise (59.3% of its "misses" are noise). The OKT LLM
+extractor trades quantity for quality — capturing 65% of real entities while
+avoiding the fragments and generic nouns spaCy produces. The previous
+versions of the system used a spaCy extractor and removed it for exactly this
+reason; the noise measurement confirms the tradeoff was the right call.
+
+### Failure 3b — Hallucinated concepts (cross-contamination): 0.5% (1/200)
+
+**Method (alias-aware):** for each concept with >20 linked facts, sampled 20
+facts and checked if the concept's canonical name OR any of its aliases
+(≥ 2 chars) appears in the fact text. Concepts mentioned in <50% of their
+linked facts are flagged as suspect.
+
+**Result:** 1 suspect concept out of 200 (0.5%): `x corp.` (mention_rate 35% —
+linked to 337 facts, aliases include "Twitter" but facts may reference the
+company in other ways). The previous substring-only method reported 55.5%
+suspect, but that was inflated by name-format mismatch (OKT formalizes "google
+llc" while facts say "Google"). Using aliases dropped it to 0.5%.
+
+**Verdict:** residual cross-contamination is negligible on this corpus
+post-fix. The strict-grounding prompt (already shipped) appears to have
+eliminated the hallucinated-concept problem the old repo found (Nature linked
+to 2,735 facts with only ~15 real). The alias-aware method is the right way
+to measure this.
+
+### Failure 4 — Dedup-severed facts: skipped
+
+The `facts` table has no `content_hash` column in the current schema. The
+audit was designed for a column that doesn't exist (renamed or removed). Not
+measurable with the current schema.
+
+### Failure 5 — Context mislabeling: 13.5% (27/200)
+
+**Method:** sampled 200 concepts, DeepSeek assigned the correct L3 context
+from the repo's official 88-label shortlist (NOT the full 789 DBpedia L3 list,
+which was dropped for being too long), compared against the system-assigned
+context.
+
+**Result:** 27 mislabeled (13.5%), within the report's predicted 10-25%
+range:
+- `"jahmyr gibbs"`: assigned "person" → correct "Athlete" (too generic)
+- `"consumer reports"`: assigned "organisation" → correct "Media publication"
+- `"florida a&m university"`: assigned "sports team" → correct "University"
+
+**Verdict:** context mislabeling is moderate (13.5%) and within the predicted
+range. The errors are mostly over-generic labels — the LLM picks "person"
+when "Athlete" is more specific, "organisation" when "Media publication" is
+more accurate. This is a precision issue, not a catastrophic failure.
+
+### Summary
+
+| Failure | Rate | Report's prediction | Verdict |
+|---|---|---|---|
+| 1 (fragmentation) | 6.87% (1,254 pairs) | "biggest risk" | **Real but moderate** — intra-corpus alias detection |
+| 2 (over-merging) | 4.0% (8/200) | "biggest risk" | **Real but rare** — homonym collisions |
+| 3 (recall) | 42% raw / **65% adjusted** | 60-80% | **Adjusted recall within prediction** — 59% of "misses" are spaCy noise |
+| 3b (hallucination) | 0.5% (1/200) | (not predicted) | **Negligible post-fix** — alias-aware method corrects 55.5% false positive rate |
+| 4 (dedup-severed) | N/A | — | **Skipped** — no content_hash column |
+| 5 (context mislabeling) | 13.5% (27/200) | 10-25% | **Within prediction** — mostly over-generic labels |
+
+**Overall assessment:** the concept extraction is sound. The two "biggest
+risks" (fragmentation 7%, over-merging 4%) are present but moderate.
+Hallucination is negligible post-fix. Context mislabeling is within the
+predicted range. Recall (42% raw) rises to **65% adjusted** when spaCy noise
+is excluded — within the predicted 60-80% range — and the noise measurement
+(59.3% of "misses" are spaCy over-extraction) quantifies exactly why spaCy
+was removed from the system in previous versions.
+
+Output: `results/failure_audits.json`. DeepSeek V4 Flash judge. Cost: ~$0.01.
+Wall time: ~20min for 400 LLM calls.
