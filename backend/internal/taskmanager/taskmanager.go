@@ -954,26 +954,6 @@ func (m *Manager) EnqueueEmbedConcepts(ctx context.Context, repositoryID string)
 	return fmt.Sprintf("%d", res.Job.ID), nil
 }
 
-// EnqueueSummarizeConcepts enqueues a summarize_concepts pass for a
-// repo. Used by the registry import paths to trigger summary
-// generation after importing facts, concepts, and links from the
-// registry. Returns the job id; best-effort at the call site.
-func (m *Manager) EnqueueSummarizeConcepts(ctx context.Context, args tasks.SummarizeConceptsArgs) (string, error) {
-	opts := &river.InsertOpts{
-		Queue:       tasks.QueueSummarizeConcepts,
-		ScheduledAt: time.Now(),
-		Metadata: tasks.MarshalMetadata(tasks.JobMetadata{
-			RepositoryID: args.RepositoryID,
-			SourceID:     args.SourceID,
-		}),
-	}
-	res, err := m.client.Insert(ctx, args, opts)
-	if err != nil {
-		return "", fmt.Errorf("enqueueing summarize_concepts job: %w", err)
-	}
-	return fmt.Sprintf("%d", res.Job.ID), nil
-}
-
 // EnqueueSynthesize enqueues a synthesize_concept job for a single
 // concept. Used by the per-concept "Resynthesize" endpoint to let an
 // operator regenerate a concept's definition on demand (e.g. after a

@@ -306,8 +306,7 @@ func (w *RetrieveSourceWorker) Work(ctx context.Context, job *river.Job[Retrieve
 		// An already-synced source (all facts skipped) produces an
 		// empty plan and triggers zero jobs. Summarize is NOT
 		// enqueued directly — it's reached transitively via
-		// dedup → extract_concepts → summarize, which only fires
-		// when dedup promotes new stable facts.
+		// dedup → extract_concepts → (refine_concepts →) summarize.
 		plan := w.reconciler.Plan(importStats)
 		if plan.ReembedFacts {
 			// Reset embeddings on the imported facts so the

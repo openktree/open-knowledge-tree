@@ -748,7 +748,9 @@ func (w *ExtractConceptsWorker) Work(ctx context.Context, job *river.Job[Extract
 	// chains to summarize_concepts on completion, so we skip the
 	// parallel enqueue here to avoid double-enqueueing.
 	if w.summarizationEnabled && !w.refinementEnabled {
-		w.enqueueSummarizeConcepts(ctx, pool.Pool, repoID, args.RepositoryID, args.SourceID)
+		if err := w.enqueueSummarizeConcepts(ctx, pool.Pool, repoID, args.RepositoryID, args.SourceID); err != nil {
+			return fmt.Errorf("extract_concepts: enqueueing summarize_concepts for repo %s: %w", args.RepositoryID, err)
+		}
 	}
 
 	// Chain a concept-relations matview refresh so the relations-list
@@ -840,16 +842,15 @@ func (w *ExtractConceptsWorker) enqueueRefineConcepts(ctx context.Context, pool 
 // enqueueSummarizeConcepts lists the concept_ids touched by this
 // pass (scoped by source when SourceID is set, repo-wide otherwise),
 // chunks them by MaxConceptsPerRun, and enqueues one
-// SummarizeConcepts job per chunk. Failures are logged and swallowed
-// so a summarization enqueue problem never fails the
-// extract_concepts job (the fact pipeline still completes; the next
-// extract_concepts pass or the periodic catch-up will retry
-// summarization).
-func (w *ExtractConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, pool *pgxpool.Pool, repoID pgtype.UUID, repoIDStr, sourceIDStr string) {
+// SummarizeConcepts job per chunk. Returns an error if any chunk
+// fails to insert so River retries the extract_concepts job — the
+// retry is cheap (extract skips facts that already have fact_concepts
+// rows) and lets River's 25-attempt backoff absorb transient
+// DB/client failures instead of silently dropping the summarize chain.
+func (w *ExtractConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, pool *pgxpool.Pool, repoID pgtype.UUID, repoIDStr, sourceIDStr string) error {
 	client := river.ClientFromContext[pgx.Tx](ctx)
 	if client == nil {
-		log.Printf("extract_concepts: no river client on context; summarize_concepts not enqueued for repo %s", repoIDStr)
-		return
+		return fmt.Errorf("no river client on context")
 	}
 	queries := store.New(pool)
 	listCtx, listCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -858,15 +859,13 @@ func (w *ExtractConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, po
 	if sourceIDStr != "" {
 		var srcID pgtype.UUID
 		if err := srcID.Scan(sourceIDStr); err != nil {
-			log.Printf("extract_concepts: scanning source_id for summarize fan-out: %v", err)
-			return
+			return fmt.Errorf("scanning source_id for summarize fan-out: %w", err)
 		}
 		rows, err := queries.ListTouchedConceptsForSummary(listCtx, store.ListTouchedConceptsForSummaryParams{
 			RepositoryID: repoID, SourceID: srcID,
 		})
 		if err != nil {
-			log.Printf("extract_concepts: listing touched concepts by source for summarize fan-out: %v", err)
-			return
+			return fmt.Errorf("listing touched concepts by source for summarize fan-out: %w", err)
 		}
 		for _, r := range rows {
 			conceptIDs = append(conceptIDs, r.ID)
@@ -874,20 +873,20 @@ func (w *ExtractConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, po
 	} else {
 		rows, err := queries.ListTouchedConceptsForSummaryByRepo(listCtx, repoID)
 		if err != nil {
-			log.Printf("extract_concepts: listing touched concepts repo-wide for summarize fan-out: %v", err)
-			return
+			return fmt.Errorf("listing touched concepts repo-wide for summarize fan-out: %w", err)
 		}
 		for _, r := range rows {
 			conceptIDs = append(conceptIDs, r.ID)
 		}
 	}
 	if len(conceptIDs) == 0 {
-		return
+		return nil
 	}
 
 	maxPerRun := 40
 	chunkCtx, chunkCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer chunkCancel()
+	var firstErr error
 	for start := 0; start < len(conceptIDs); start += maxPerRun {
 		end := start + maxPerRun
 		if end > len(conceptIDs) {
@@ -909,8 +908,12 @@ func (w *ExtractConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, po
 			}),
 		}); err != nil {
 			log.Printf("extract_concepts: enqueueing summarize_concepts chunk for repo %s: %v", repoIDStr, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
+	return firstErr
 }
 
 // enqueueRefreshConceptRelations enqueues a refresh of the

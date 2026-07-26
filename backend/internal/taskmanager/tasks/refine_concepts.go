@@ -304,8 +304,16 @@ func (w *RefineConceptsWorker) Work(ctx context.Context, job *river.Job[RefineCo
 		args.RepositoryID, result.CandidatesResolved, result.ConceptsCreated, result.ConceptsMerged, result.AliasesAdded, result.AliasesPruned, result.Errors)
 
 	// Chain to summarize_concepts for the resolved concept_ids.
+	// Errors are NOT swallowed: a failed enqueue returns an error so
+	// River retries the refine_concepts job. The retry is cheap —
+	// already-resolved candidates hit the early return at the top of
+	// refineOneCandidate (candidate.ResolvedConceptID.Valid) and skip
+	// all LLM work; the retry just re-collects resolvedConceptIDs and
+	// re-attempts the enqueue. See enqueueSummarizeConcepts.
 	if w.summarizerEnabled {
-		w.enqueueSummarizeConcepts(ctx, args.RepositoryID, args.SourceID, resolvedConceptIDs)
+		if err := w.enqueueSummarizeConcepts(ctx, args.RepositoryID, args.SourceID, resolvedConceptIDs); err != nil {
+			return fmt.Errorf("refine_concepts: enqueueing summarize_concepts for repo %s: %w", args.RepositoryID, err)
+		}
 	}
 
 	return river.RecordOutput(ctx, &result)
@@ -910,16 +918,19 @@ func (w *RefineConceptsWorker) mergeAliasesOntoConcept(
 }
 
 // enqueueSummarizeConcepts enqueues one summarize_concepts job per
-// resolved concept_id. Failures are logged and swallowed so a
-// summarize enqueue problem never fails the refine_concepts job.
-func (w *RefineConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, repoIDStr, sourceIDStr string, conceptIDs []pgtype.UUID) {
+// chunk of resolved concept_ids. Returns an error if any chunk fails
+// to insert so River retries the refine_concepts job — the retry is
+// cheap (already-resolved candidates skip LLM work) and lets River's
+// 25-attempt backoff absorb transient DB/client failures instead of
+// silently dropping the summarize chain.
+func (w *RefineConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, repoIDStr, sourceIDStr string, conceptIDs []pgtype.UUID) error {
 	client := river.ClientFromContext[pgx.Tx](ctx)
 	if client == nil {
-		log.Printf("refine_concepts: no river client on context; summarize_concepts not enqueued for repo %s", repoIDStr)
-		return
+		return fmt.Errorf("no river client on context")
 	}
 
 	maxPerRun := 40
+	var firstErr error
 	for start := 0; start < len(conceptIDs); start += maxPerRun {
 		end := start + maxPerRun
 		if end > len(conceptIDs) {
@@ -930,7 +941,7 @@ func (w *RefineConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, rep
 			chunkIDs = append(chunkIDs, pgUUIDToString(id))
 		}
 		chunkCtx, chunkCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if _, err := client.Insert(chunkCtx, SummarizeConceptsArgs{
+		_, err := client.Insert(chunkCtx, SummarizeConceptsArgs{
 			RepositoryID: repoIDStr,
 			SourceID:     sourceIDStr,
 			ConceptIDs:   chunkIDs,
@@ -940,11 +951,16 @@ func (w *RefineConceptsWorker) enqueueSummarizeConcepts(ctx context.Context, rep
 				RepositoryID: repoIDStr,
 				SourceID:     sourceIDStr,
 			}),
-		}); err != nil {
-			log.Printf("refine_concepts: enqueueing summarize_concepts chunk for repo %s: %v", repoIDStr, err)
-		}
+		})
 		chunkCancel()
+		if err != nil {
+			log.Printf("refine_concepts: enqueueing summarize_concepts chunk for repo %s: %v", repoIDStr, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
+	return firstErr
 }
 
 var _ river.Worker[RefineConceptsArgs] = (*RefineConceptsWorker)(nil)

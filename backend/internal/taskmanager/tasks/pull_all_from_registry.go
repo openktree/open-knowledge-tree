@@ -266,7 +266,10 @@ func (w *PullAllFromRegistryWorker) Work(ctx context.Context, job *river.Job[Pul
 	// whether to enqueue downstream jobs. An already-synced repo
 	// (all facts skipped) produces an empty plan and triggers
 	// zero jobs. Summarize is NOT enqueued directly — it's
-	// transitive via dedup → extract_concepts → summarize.
+	// transitive via dedup → extract_concepts → (refine_concepts →)
+	// summarize. The chain's enqueue errors propagate to River for
+	// retry (see extract_concepts.enqueueSummarizeConcepts and
+	// refine_concepts.enqueueSummarizeConcepts).
 	plan := w.reconciler.Plan(aggregateStats)
 	if plan.ReembedFacts {
 		w.reconciler.ResetForReembed(ctx, queries, repoID)
