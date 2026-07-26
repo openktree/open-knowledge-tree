@@ -91,6 +91,7 @@ type ExportGraphArgs struct {
 	Description   string   `json:"description,omitempty"`
 	Tags          []string `json:"tags,omitempty"`
 	IncludeBodies bool     `json:"include_bodies,omitempty"`
+	IncludeImages bool     `json:"include_images"`
 }
 
 // ImportGraphArgs is the wire shape for POST /repositories/import-graph
@@ -130,10 +131,15 @@ func (h *Graph) ExportGraph(w http.ResponseWriter, r *http.Request) {
 		Tags          []string `json:"tags"`
 		RegistryID    string   `json:"registry_id"`
 		IncludeBodies bool     `json:"include_bodies"`
+		IncludeImages *bool    `json:"include_images"` // nil = default true
 	}
 	if err := httputil.DecodeBody(r, &body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+	includeImages := true // default: images travel with the graph
+	if body.IncludeImages != nil {
+		includeImages = *body.IncludeImages
 	}
 	if body.Name == "" {
 		// Default to the repository's name when the caller omits one.
@@ -153,6 +159,7 @@ func (h *Graph) ExportGraph(w http.ResponseWriter, r *http.Request) {
 		Description:   body.Description,
 		Tags:          body.Tags,
 		IncludeBodies: body.IncludeBodies,
+		IncludeImages: includeImages,
 	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -211,6 +218,9 @@ func (h *Graph) DownloadGraph(w http.ResponseWriter, r *http.Request) {
 	// the storage backend (nil-safe — source images + bodies are
 	// skipped when storage isn't configured).
 	includeBodies := r.URL.Query().Get("include_bodies") == "true"
+	// include_images defaults to true (matches the export task's
+	// default); the caller opts out with ?include_images=false.
+	includeImages := r.URL.Query().Get("include_images") != "false"
 	builder := graph.NewBundleBuilder(
 		queries,
 		h.deps.Qdrant,
@@ -219,20 +229,15 @@ func (h *Graph) DownloadGraph(w http.ResponseWriter, r *http.Request) {
 		h.deps.Config.Providers.Embedding.Model,
 		h.deps.Config.Providers.Embedding.Dimensions,
 		includeBodies,
+		includeImages,
 	)
-	bundle, err := builder.Build(r.Context(), graph.BundleMetadata{
-		Name: name,
-		Tags: []string{},
-	})
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "building graph bundle: "+err.Error())
-		return
-	}
 
-	// Stream back as a downloadable gzipped JSON attachment. We write
-	// the gzip output directly to the ResponseWriter (instead of
-	// buffering the entire gzipped bundle in memory) so peak memory
-	// stays bounded for large repos with images + PDFs. The filename
+	// Stream the bundle straight to the ResponseWriter via
+	// StreamBuild (single pass, shaOverride="" — the download path
+	// doesn't need the sha for registry dedup). This bounds peak
+	// memory to one Qdrant batch + one storage image at a time
+	// instead of materializing the whole bundle, so a large repo's
+	// download no longer threatens the host's memory. The filename
 	// uses the repo's slug (already slug-safe) + .json.gz.
 	filename := repo.Slug
 	if filename == "" {
@@ -242,10 +247,13 @@ func (h *Graph) DownloadGraph(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.WriteHeader(http.StatusOK)
-	if err := graph.MarshalGzipTo(bundle, w); err != nil {
+	if _, err := builder.StreamBuild(r.Context(), graph.BundleMetadata{
+		Name: name,
+		Tags: []string{},
+	}, w, ""); err != nil {
 		// The response has already started; the client will see a
 		// truncated download. Log so the operator knows.
-		log.Printf("download graph: streaming gzip for repo %s: %v", repoID, err)
+		log.Printf("download graph: streaming bundle for repo %s: %v", repoID, err)
 		return
 	}
 }

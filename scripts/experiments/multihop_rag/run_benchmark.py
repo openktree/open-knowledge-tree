@@ -462,6 +462,7 @@ def run_facts_variant(
     predictions_path: str,
     max_queries: int = 0,
     max_facts: int = 0,
+    query_mode: str = "multi",
 ) -> dict:
     """Run the direct fact-search retrieval variant for one question.
 
@@ -487,7 +488,7 @@ def run_facts_variant(
     total_usage = {"prompt": 0, "completion": 0}
 
     # 1. Extract tsvector-oriented fact queries.
-    extracted_queries, q_usage = llm.extract_fact_queries(question)
+    extracted_queries, q_usage = llm.extract_fact_queries(question, query_mode)
     total_usage = llm._add_usage(total_usage, q_usage)
 
     # Bound the number of queries actually run. The extractor returns
@@ -648,6 +649,7 @@ def run_one(
     predictions_path: str,
     max_queries: int = 0,
     max_facts: int = 0,
+    query_mode: str = "multi",
 ) -> dict:
     if variant == "concept":
         return run_concept_variant(
@@ -655,7 +657,7 @@ def run_one(
         )
     if variant == "facts":
         return run_facts_variant(
-            q, facts_per_query, predictions_path, max_queries, max_facts
+            q, facts_per_query, predictions_path, max_queries, max_facts, query_mode
         )
     if variant == "direct":
         return run_direct_variant(q, facts_per_query, predictions_path)
@@ -704,6 +706,11 @@ def _parse_args() -> argparse.Namespace:
                     help="hard cap on the deduped fact set passed to "
                          "synthesis (facts variant). 0 = no cap. Set = "
                          "--facts-per-query for a strict N-fact budget.")
+    ap.add_argument("--query-mode", type=str, default="multi",
+                    choices=["multi", "single", "top3"],
+                    help="facts variant query strategy: multi (1-5 diverse "
+                         "short queries), single (1 comprehensive query "
+                         "with all key terms), top3 (multi but trim to 3)")
     ap.add_argument("--concurrency", type=int, default=1,
                     help="parallel questions (best-effort; OKT must handle it)")
     ap.add_argument("--no-smoke", action="store_true",
@@ -789,7 +796,8 @@ def main() -> int:
                 try:
                     run_one(q, variant, args.top_n, args.facts_per_concept,
                             args.num_concept_queries, args.facts_per_query,
-                            smoke_path, args.max_queries, args.max_facts)
+                            smoke_path, args.max_queries, args.max_facts,
+                            args.query_mode)
                 except Exception as e:  # noqa: BLE001
                     print(f"  smoke {q['id']}: error: {e}", file=sys.stderr)
             import validate as _v
@@ -826,7 +834,7 @@ def main() -> int:
                         run_one, q, variant, args.top_n,
                         args.facts_per_concept, args.num_concept_queries,
                         args.facts_per_query, predictions_path,
-                        args.max_queries, args.max_facts,
+                        args.max_queries, args.max_facts, args.query_mode,
                     ): q
                     for q in todo
                 }
@@ -844,7 +852,7 @@ def main() -> int:
                     run_one(
                         q, variant, args.top_n, args.facts_per_concept,
                         args.num_concept_queries, args.facts_per_query,
-                        predictions_path, args.max_queries, args.max_facts,
+                        predictions_path, args.max_queries, args.max_facts, args.query_mode,
                     )
                 except Exception as e:  # noqa: BLE001
                     print(f"  {q['id']}: pipeline error: {e}", file=sys.stderr)

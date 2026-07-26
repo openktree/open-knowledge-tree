@@ -451,9 +451,9 @@ and 2 showed the graph *structure* is sound; this experiment asks whether the
 concept *extraction itself* is any good.
 
 **Judge model:** DeepSeek V4 Flash (`deepseek/deepseek-v4-flash`) for the
-LLM-dependent audits (Failures 2 and 5). A Gemma 4 31B comparison run is
-planned but not yet complete. The model-independent audits (Failures 1, 3,
-3b, 4) use no LLM.
+LLM-dependent audits (Failures 2, 3, 5). The model-independent audits
+(Failures 1, 3b, 4) use no LLM. The judge model is configurable via the
+`JUDGE_MODEL` env var for future re-runs with a different model.
 
 ### Failure 1 — Under-merging (fragmentation): 6.87% (1,254 pairs)
 
@@ -609,3 +609,307 @@ was removed from the system in previous versions.
 
 Output: `results/failure_audits.json`. DeepSeek V4 Flash judge. Cost: ~$0.01.
 Wall time: ~20min for 400 LLM calls.
+
+---
+
+## Experiment 4 — KGQA head-to-head (§4.4 / §7.2)
+
+**Paper claim under test (§4.4):** "The discriminating experiment would be a
+head-to-head on a downstream task that needs relation semantics — e.g.,
+multi-hop KGQA. On such a task, a triplet KG with typed predicates should win
+because it carries the semantics the task needs; a co-occurrence concept
+graph must lean on the LLM to infer the relation type at query time."
+
+**Method.** Four retrieval conditions answer the same MultiHop-RAG questions
+(n=500 random sample), scored per question type (inference, comparison,
+temporal, null) using the same token-overlap scorer as the existing benchmark:
+
+- **(a) Triplet-KG** — a triplet KG built from **raw source text** (the
+  original 609 articles, NOT pre-decomposed atomic facts — this is the fair
+  comparison: both OKT and the triplet KG start from the same raw source text,
+  but the triplet KG extracts typed relations while OKT decomposes into atomic
+  facts). Source text was chunked at ~2000 tokens (1,053 chunks), and Gemma 4
+  31B (the same model OKT uses for fact/concept extraction) extracted (subject,
+  relation, object) triples per chunk. **Temporal enrichment:** each triple
+  carries the source's `published_at` date as a fourth field
+  `(subject, relation, object, published_at)` — standard REBEL/EDC triples
+  have no temporal dimension, which would make temporal_query questions
+  unanswerable. The date is inherited from the source article (all 609 sources
+  have `published_at`), giving the triplet KG the same temporal context OKT
+  facts carry via `source.published_at`. Result: 11,874 triples, 1,661
+  relation types, 6,492 unique subjects. Top relations: plays_for (3262),
+  works_at (458), located_in (363). For each question, keyword queries retrieve
+  matching triples, which are fed to the synthesis LLM with their dates.
+- **(b) Concept-graph walk** — the existing OKT REST endpoints:
+  `search_concepts` → `get_related_concepts` → `get_concept_facts`. Walks the
+  co-occurrence graph to surface connected facts. Uses **two separate
+  query-generation steps**: concept queries (noun phrases for concept name
+  matching) find the right concepts, then fact-optimized queries
+  (keyword-rich `websearch_to_tsquery` strings tuned for the fact tsvector
+  index, matching the original benchmark's `FACT_QUERY_SYSTEM` prompt) filter
+  facts within each concept. This mirrors the original benchmark's agentic
+  query extraction applied after graph navigation, instead of reusing concept
+  phrases for fact filtering. Fed to the synthesis LLM.
+- **(c) Facts-direct (baseline)** — the existing `search_facts` endpoint with
+  keyword queries. The existing `direct@20` baseline from `RESULTS.md`. OKT's
+  `search_facts` fuses lexical tsvector + embedding search — this is the real
+  retrieval mechanism the other two conditions are compared against.
+- **(d) Concept definitions (planned, not yet run)** — would retrieve the
+  LLM-generated concept synthesis/definition (the compressed summary from the
+  `synthesize_concept` worker) instead of raw facts. This tests whether the
+  processed summary is a better retrieval unit than the raw fact list. Not
+  included in the current results.
+
+All conditions use the same answer-synthesis prompt and LLM backend
+(Gemma 4 31B). Only the retrieval path differs. See
+`exp4_kgqa/run_kgqa.py`.
+
+### Triplet KG enrichment
+
+The triplet KG was enriched beyond standard REBEL/EDC output to make the
+comparison fair:
+
+1. **Source-text extraction (not fact extraction).** Triples were extracted
+   from the raw `sources.parsed_text` (the original articles), not from OKT's
+   pre-decomposed atomic facts. A standard triplet KG construction pipeline
+   works on raw text; extracting triples from facts would give the triplet KG
+   an unfair advantage (pre-decomposed, self-contained claims) rather than
+   testing the paradigm on its own terms.
+
+2. **Temporal metadata.** Standard triples are (s, r, o) with no time
+   dimension. The MultiHop-RAG benchmark has `temporal_query` questions
+   (n=119 in the sample) that require date awareness. Without dates, the
+   triplet KG would score 0% on temporal questions by design, not by
+   retrieval failure. Each triple carries the source article's
+   `published_at` (all 609 sources have it), giving the triplet KG the same
+   temporal context OKT facts carry via `source.published_at`. The date is
+   included in the evidence fed to the synthesis LLM:
+   `[2023-10-01] Sam Bankman-Fried | faces | fraud charges`.
+
+3. **Same extraction model.** Gemma 4 31B (the model OKT uses for fact and
+   concept extraction) was used for triplet extraction, so both sides use the
+   same model family. A smarter or weaker model would confound the comparison.
+
+### Results — Overall (n=500)
+
+| Variant | Accuracy | Refusal rate | Answer rate |
+|---|---|---|---|
+| triplet_kg | 18.4% | 95.6% | 4.4% |
+| concept_walk | 18.0% | 96.0% | 4.0% |
+| concept_definitions | 32.4% | 81.6% | 18.4% |
+| **facts_direct** | **50.4%** | 61.4% | **38.6%** |
+
+**The paper's prediction is not confirmed.** The triplet KG does NOT win — it
+loses decisively. `facts_direct` (50.4%) beats `concept_definitions` (32.4%)
+by 1.5×, and beats both `concept_walk` (18%) and `triplet_kg` (18.4%) by ~3×.
+The triplet KG has a 95.6% refusal rate — it almost never produces an answer.
+
+The concept-graph walk (now using fact-optimized queries for fact filtering)
+dropped from 25% (pre-enrichment) to 18% — the dual-query approach made it
+slower per question (more API calls) but did not improve accuracy. The
+concept_definitions variant (LLM-generated syntheses, not raw facts) is the
+strongest graph-based approach at 32.4%, but still well below direct fact
+search.
+
+### Results — Per question type
+
+| Type | n | triplet_kg | concept_walk | concept_definitions | facts_direct |
+|---|---|---|---|---|---|
+| inference_query | 146 | 14.4% | 13.0% | 56.9% | **81.5%** |
+| comparison_query | 164 | 0.0% | 0.0% | 1.8% | **25.6%** |
+| temporal_query | 119 | 0.0% | 0.0% | 4.2% | **16.8%** |
+| null_query | 71 | 100% | 100% | 100% | 100% |
+
+The pattern holds across all question types. `facts_direct` dominates
+`inference_query` (81.5% vs 56.9% vs 14.4% vs 13.0%) — the exact question type
+the paper predicted the triplet KG would win on. The triplet KG scores **0% on
+comparison and temporal** questions (100% refusal), even with temporal
+enrichment (published_at per triple). The concept_definitions variant is the
+only graph-based approach that scores meaningfully on inference (56.9%) —
+the LLM-generated synthesis carries more context than isolated triples or
+raw fact lists filtered through graph navigation.
+
+### Why the triplet KG loses
+
+The triplet KG's 97.2% refusal rate is the key: it almost never retrieves
+relevant triples for a given question. The issue is **retrieval, not
+extraction**:
+
+1. **The triple store is unindexed.** Triples are matched by keyword substring
+   against subject/relation/object. This is far less precise than OKT's
+   `websearch_to_tsquery` full-text search over 36k facts. A question about
+   "the cryptocurrency executive facing fraud charges" must match triples
+   whose subject or object literally contains "cryptocurrency" or "fraud" —
+   but the triples say "Sam Bankman-Fried | CEO of | FTX" and "Sam
+   Bankman-Fried | faces | fraud charges", with "cryptocurrency" nowhere.
+
+2. **Triples lose context.** A triple "Sam Bankman-Fried | faces | fraud
+   charges" carries the relation but drops the surrounding context (which
+   article, what specific charges). The temporal enrichment adds the date
+   (`[2023-10-01] Sam Bankman-Fried | faces | fraud charges`) but still drops
+   the full sentence context. The synthesis LLM can't answer multi-hop
+   questions ("who is the individual associated with the cryptocurrency
+   industry facing a criminal trial") from isolated triples the way it can
+   from atomic facts that preserve full sentences.
+
+3. **The concept-graph walk is in between.** It retrieves facts (not triples)
+   but through graph navigation (concept → related concepts → facts), which
+   is less precise than direct fact search. 18% accuracy with 96% refusals
+   — the concept search often finds no matching concepts for the question's
+   entities, so no facts are retrieved. The fact-optimized query filter
+   (matching the original benchmark's `FACT_QUERY_SYSTEM` prompt) did not
+   improve accuracy over the pre-enrichment run (18% vs 25%), suggesting the
+   bottleneck is the concept-search recall, not the fact-filtering precision.
+
+4. **Concept definitions outperform concept facts.** The concept_definitions
+   variant (32.4%) beats the concept_walk variant (18%) by 1.8× — the
+   LLM-generated synthesis/definition carries more context per concept than
+   the raw fact list, giving the synthesis LLM better material to reason with.
+   On inference_query specifically, concept_definitions scores 56.9% vs
+   concept_walk's 13.0% — the compressed summary preserves the multi-hop
+   connections the raw fact list fragments. But concept_definitions still
+   loses to facts_direct (50.4%) — the synthesis is a lossy compression of
+   the facts, and direct fact search preserves more relevant detail.
+
+### What this settles
+
+1. **On targeted retrieval, fact-RAG beats a naive triplet KG.** The triplet
+   KG (18.4%) loses to fact-RAG (50.4%) — but this is an implementation
+   comparison (naive keyword search vs full-text + embeddings), not a paradigm
+   comparison. The fair KG-vs-fact-RAG comparison would need proper KG
+   navigation (embeddings, entity linking, typed-path traversal).
+
+2. **The concept graph is not a knowledge base and should not be compared to
+   a KG on QA.** The concept walk (18%) scores low because the concept graph is
+   an organization structure (indexes facts), not a knowledge base (stores
+   knowledge). Including it in this experiment was a framing error — it tests
+   an index on a retrieval task where the knowledge bases (facts, triples)
+   are the right competitors.
+
+3. **Fact-RAG is the strongest retrieval path for targeted QA.** OKT's atomic
+   facts — self-contained, searchable by full-text + embeddings — are a better
+   retrieval substrate than either isolated triples (naive) or concept-guided
+   fact filtering. The graph-based approaches (concept walk, concept
+   definitions) add navigation overhead that hurts recall without improving
+   precision on narrow-domain QA.
+
+4. **The triplet KG could work on this benchmark with proper navigation.** The
+   18.4% score reflects our naive keyword retrieval, not the triplet-KG
+   paradigm's ceiling. Embedding search over triples + entity linking would
+   likely close much of the gap with fact-RAG, since the dominant failure mode
+   is vocabulary mismatch (the question says "cryptocurrency" but the triple
+   says "FTX"), which embeddings solve.
+
+5. **Concept syntheses have independent retrieval value (32.4%).** The
+   LLM-generated synthesis outperforms both the concept walk (18%) and the
+   triplet KG (18.4%) — the compressed summary preserves multi-hop connections
+   that raw fact lists fragment and that isolated triples lose. On
+   inference_query, concept definitions scores 56.9% vs concept walk's 13.0%.
+   But syntheses are lossy compressions and still lose to direct fact search
+   (50.4%). The synthesis layer complements fact retrieval; it doesn't replace
+   it.
+
+### Limitations of this experiment and why the comparison framing matters
+
+This experiment has a framing problem that the results expose. The OKT concept
+graph and a triplet KG are **not the same kind of structure**, and the
+comparison as designed conflates two different questions:
+
+1. **The fair comparison is KG vs Fact-RAG, not KG vs concept graph.** A
+   triplet KG and OKT's atomic facts are both **knowledge bases** — they store
+   knowledge. The triple `(Sam Bankman-Fried, CEO_of, FTX)` IS knowledge; the
+   atomic fact "Sam Bankman-Fried was CEO of FTX" IS knowledge. Comparing them
+   on a retrieval task is apples-to-apples: both are knowledge bases competing
+   to be the best retrieval substrate. The concept graph, by contrast, is an
+   **organization structure** — it doesn't store knowledge, it structures
+   knowledge that already exists in the facts. The concepts and their
+   co-occurrence edges are an index over the fact knowledge base, not a
+   knowledge base themselves.
+
+2. **The concept graph should be evaluated on navigation/discovery tasks, not
+   against a KG on QA.** The OKT concept graph's value — per Experiments 1 and
+   2 — is in navigation (graph-walking to discover connected evidence),
+   synthesis (community structure), and exploration (browsing related concepts
+   across a wide domain). These are wide-domain tasks (discovery, review,
+   synthesis), not narrow-domain tasks (targeted QA). Including the concept
+   walk in this experiment was a framing error: it tests the concept graph on a
+   task it was not designed for, against a competitor (triplet KG) that is a
+   different kind of structure entirely.
+
+3. **The triplet KG could work on this benchmark with proper navigation.** Our
+   triplet KG used naive keyword substring search — no embeddings, no entity
+   linking, no typed-path traversal. A production KGQA system would resolve
+   the question's entities to KG nodes, then traverse typed relation paths to
+   find the answer. The 18.4% score reflects our implementation's retrieval
+   weakness, not the triplet-KG paradigm's limitation. Adding embedding search
+   to the triple store would likely close much of the gap with fact-RAG, since
+   the retrieval failure (vocabulary mismatch) is the dominant problem.
+
+4. **OKT's concept graph is not a knowledge base in the KG sense.** A
+   traditional KG stores knowledge in its relations — remove the relation and
+   the knowledge is gone. OKT's concept graph stores nothing; it computes
+   co-occurrence counts over facts that already hold the knowledge. This is
+   why the concept graph competes with other *indexing/navigation* structures
+   (ontologies, taxonomies, embedding clusters), not with *knowledge bases*
+   (triplet KGs, fact stores). The concept graph is better understood as a
+   navigational layer over the fact knowledge base, not as an alternative to
+   the triplet KG.
+
+**What this experiment does show:**
+- On a targeted retrieval task (MultiHop-RAG), OKT's fact knowledge base
+  dominates all graph-based approaches, including a naive triplet KG.
+- The triplet KG's poor performance is an implementation problem (naive
+  retrieval), not a paradigm problem. A KG with proper navigation (embeddings,
+  entity linking, typed-path traversal) would be the fair competitor to
+  fact-RAG.
+- The concept graph's low score (18%) is expected — it's an organization
+  structure tested on a retrieval task it wasn't designed for. Its value is in
+  navigation and discovery (Experiments 1-2), not targeted QA.
+
+**What this experiment cannot show:**
+- Whether a properly-implemented triplet KG beats fact-RAG on retrieval quality
+  (would need embedding search + entity linking on the triple store).
+- Whether OKT's concept graph beats a triplet KG on a discovery/navigation
+  task (would need a different benchmark and evaluation methodology).
+- Whether typed relations help on a real KGQA benchmark (MetaQA, WebQuestionsSP)
+  that requires typed-path traversal — MultiHop-RAG questions don't exercise
+  this.
+
+### Caveats
+
+- **n=500 random sample, not the full 2556.** The full run would confirm the
+  pattern but is unlikely to change the ranking.
+- **This is not a fair KGQA comparison.** As documented above, the OKT concept
+  graph is an organization structure (not a knowledge base), MultiHop-RAG is a
+  retrieval benchmark (not a KGQA benchmark), and the triplet KG lacks
+  embedding search. The results show that on a targeted retrieval task, facts
+  dominate graphs — but they cannot adjudicate the paper's KGQA claim, which
+  requires a real KGQA benchmark with typed-path traversal questions.
+- **The triplet KG retrieval is naive (keyword substring).** OKT's
+  `search_facts` fuses lexical + embedding search; the triplet KG has only
+  keyword substring. Adding embedding search to the triplet KG was considered
+  but dropped — it would improve retrieval but would not make the comparison
+  fair, because the structural mismatch (organization structure vs knowledge
+  base, retrieval task vs KGQA task) would remain.
+- **The concept-graph walk uses the default W=1 threshold** (all edges). Using
+  the BiCM-validated weights from Experiment 1 or the W=5 threshold might
+  improve precision, but the dominant failure mode is "no matching concepts
+  found" (recall), not "wrong concepts found" (precision).
+- **All conditions use Gemma 4 31B for synthesis.** A stronger synthesis model
+  might narrow the gap by inferring relations from context, but the retrieval
+  bottleneck would remain.
+- **The `facts_direct` baseline (50.4%) is below the original benchmark's
+  `facts@20` (75.7%).** The original benchmark uses agentic query extraction
+  (3-6 keyword-rich tsvector queries per question, tuned by a dedicated
+  `FACT_QUERY_SYSTEM` prompt) and OKT's fused lexical+embedding search. This
+  experiment's `facts_direct` uses the same prompt but a simpler retrieval
+  path. The 50.4% vs 75.7% gap is a retrieval-pipeline difference, not a
+  paradigm difference — the real OKT system is stronger than this experiment's
+  baseline.
+
+Output: `exp4_kgqa/results/kgqa_headtohead.json`. Triplet extraction: Gemma 4
+31B, 609 sources (raw text), 1,053 chunks, 11,874 triples with temporal
+enrichment (published_at per triple). Four variants: triplet_kg,
+concept_walk (fact-optimized queries), concept_definitions (LLM syntheses),
+facts_direct (baseline). Total wall time: ~59 min (triplet extraction
+~10 min + 4 × 500 questions ~12 min each).

@@ -1039,8 +1039,10 @@ export const api = {
   // exportRepoGraph enqueues a whole-repository graph export. The
   // body carries the human-readable name/description/tags the
   // registry indexes for search. include_bodies controls whether
-  // source PDFs are embedded in the bundle (opt-in; images are always
-  // embedded). Returns 202 + { job_id }.
+  // source PDFs are embedded in the bundle (opt-in; default false).
+  // include_images controls whether source images are embedded
+  // (default true; opt out for a smaller, faster export). Returns
+  // 202 + { job_id }.
   exportRepoGraph(slug, body) {
     return request(`/repositories/${slug}/export-graph`, {
       method: "POST",
@@ -1052,13 +1054,15 @@ export const api = {
   // it back as a gzipped JSON attachment. No registry required — the
   // bundle is built in-process and returned directly. The browser
   // saves it as <slug>.json.gz. includeBodies controls whether source
-  // PDFs are embedded (opt-in; images are always embedded). Returns a
-  // Blob the caller can turn into a download via an object URL.
-  async downloadRepoGraph(slug, name, includeBodies) {
+  // PDFs are embedded (opt-in; default false). includeImages controls
+  // whether source images are embedded (default true). Returns a Blob
+  // the caller can turn into a download via an object URL.
+  async downloadRepoGraph(slug, name, includeBodies, includeImages = true) {
     const token = getToken();
     const params = new URLSearchParams();
     if (name) params.set("name", name);
     if (includeBodies) params.set("include_bodies", "true");
+    if (!includeImages) params.set("include_images", "false");
     const qs = params.toString();
     const res = await fetch(
       `${BASE}/repositories/${slug}/export-graph/download${qs ? "?" + qs : ""}`,

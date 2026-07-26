@@ -1959,6 +1959,19 @@ type TaskConfig struct {
 	// for repos with no recent extraction (and for catching up after
 	// a deploy that adds the matview to an existing database).
 	RefreshConceptRelationsInterval time.Duration `mapstructure:"refresh_concept_relations_interval"`
+	// GraphExport holds export_graph-task-specific settings.
+	GraphExport GraphExportConfig `mapstructure:"graph_export"`
+}
+
+// GraphExportConfig configures the export_graph River worker
+// (tasks/export_graph.go). The worker streams a whole-repository
+// GraphBundle to a temp file, then pushes the gzipped bytes to the
+// shared knowledge registry. TempDir is where the temp file lives
+// during the build; "" = OS default (os.CreateTemp, typically /tmp).
+// Set it to a mounted volume in containerized prod so a multi-GB
+// bundle doesn't fill the container's writable layer.
+type GraphExportConfig struct {
+	TempDir string `mapstructure:"temp_dir"`
 }
 
 // DSN builds the PostgreSQL connection string for the task database,

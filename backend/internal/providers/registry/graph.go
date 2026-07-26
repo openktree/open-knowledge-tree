@@ -51,18 +51,36 @@ type PushGraphResult struct {
 // (deduped by (name, sha256) when the bundle's metadata.id is empty).
 //
 // Mirrors PushSource: a write operation (uses writeKey), returns the
-// registry-assigned id.
+// registry-assigned id. For multi-GB bundles prefer PushGraphStream
+// (streams the body instead of buffering it in a []byte).
 func (c *Client) PushGraph(ctx context.Context, gzippedBundle []byte) (*PushGraphResult, error) {
+	return c.PushGraphStream(ctx, bytes.NewReader(gzippedBundle), int64(len(gzippedBundle)))
+}
+
+// PushGraphStream pushes a gzipped graph bundle to the registry from
+// an io.Reader, avoiding the in-memory []byte buffer that PushGraph
+// requires. The reader yields the raw gzipped bytes (the same format
+// PushGraph sends); contentLength is set as Content-Length when > 0
+// (enables chunked transfer-encoding when unknown). Auth is Bearer
+// only (addAuth doesn't sign the body), so streaming is safe.
+//
+// Use this for large repos whose gzipped bundle exceeds the worker's
+// memory budget — the export task streams the temp file straight to
+// the HTTP request body without buffering.
+func (c *Client) PushGraphStream(ctx context.Context, body io.Reader, contentLength int64) (*PushGraphResult, error) {
 	if c.baseURL == "" {
 		return nil, ErrRegistryDisabled
 	}
 	endpoint := fmt.Sprintf("%s/api/v1/graphs", c.baseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(gzippedBundle))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
 	if err != nil {
 		return nil, fmt.Errorf("registry: creating push graph request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/gzip")
-	c.addAuth(req, gzippedBundle, true)
+	if contentLength > 0 {
+		req.ContentLength = contentLength
+	}
+	c.addAuth(req, nil, true)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("registry: pushing graph: %w", err)

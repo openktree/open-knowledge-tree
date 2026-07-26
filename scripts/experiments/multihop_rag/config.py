@@ -181,3 +181,47 @@ BASELINE_MIN_SCORE = float(_env("BASELINE_MIN_SCORE", "0.0"))
 # Concurrency for the index-build embedding step (independent of the
 # per-question run concurrency, which is set via run_baseline.py --concurrency).
 BASELINE_INDEX_CONCURRENCY = _env_int("BASELINE_INDEX_CONCURRENCY", 8)
+
+# ---------------------------------------------------------------------------
+# Late-chunking baseline configuration
+# ---------------------------------------------------------------------------
+# Late chunking (arXiv:2409.04701) embeds a full document through a
+# long-context encoder to get per-token embeddings, then chunks AFTER the
+# transformer forward pass and BEFORE mean pooling. This structurally
+# requires a long-context embedding model that exposes pre-pooling token
+# vectors — NOT the gemini-embedding-2 model used by the other baselines /
+# OKT (which returns pooled sentence vectors via OpenRouter /v1/embeddings).
+# This is an inherent methodological asymmetry, NOT a bug: the experiment
+# isolates (chunking strategy + its native embedding), not chunking alone.
+# Flagged explicitly in the writeup per the experiment plan's success
+# criterion #3.
+#
+# Default model: jina-embeddings-v3 (the model the late-chunking paper
+# itself uses). Self-hosted via transformers — NO API key required. The
+# model is public (CC-BY-NC, fine for research), downloaded once by
+# HuggingFace (~2GB), and kept resident on the GPU. You already have
+# torch+CUDA+transformers installed.
+BASELINE_LATE_CHUNK_COLLECTION = _env(
+    "BASELINE_LATE_CHUNK_COLLECTION", "multihoprag_late_chunks"
+)
+# HuggingFace model id for the long-context embedding model. jinaai/
+# jina-embeddings-v3: 570M params, 8192-token context, 1024-dim, exposes
+# per-token hidden states (the precondition for late chunking).
+BASELINE_LATE_CHUNK_MODEL = _env(
+    "BASELINE_LATE_CHUNK_MODEL", "jinaai/jina-embeddings-v3"
+)
+BASELINE_LATE_CHUNK_DIMENSIONS = _env_int("BASELINE_LATE_CHUNK_DIMENSIONS", 1024)
+BASELINE_LATE_CHUNK_MAX_TOKENS = _env_int("BASELINE_LATE_CHUNK_MAX_TOKENS", 8192)
+# Chunk window size (whitespace tokens) applied AFTER the transformer
+# forward pass, BEFORE mean pooling. Tuned to match the average OKT atomic
+# fact length (measured at ~23 whitespace tokens). See Phase 3 of the
+# experiment plan. Keep within 1x-2x of the fact average for a clean
+# granularity match; flag any divergence in the writeup.
+BASELINE_LATE_CHUNK_WINDOW = _env_int("BASELINE_LATE_CHUNK_WINDOW", 24)
+# Per-document embedding batch size for the index build (documents per
+# forward pass). Each doc is one forward pass; this controls how many
+# docs to queue in parallel — but the model is resident on the GPU and
+# forward passes are serial, so this only affects the worker count for
+# the ThreadPoolExecutor in index_build.py. Default 4 keeps GPU memory
+# bounded (each forward pass holds one doc's per-token activations).
+BASELINE_LATE_CHUNK_BATCH_SIZE = _env_int("BASELINE_LATE_CHUNK_BATCH_SIZE", 4)

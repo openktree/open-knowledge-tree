@@ -33,6 +33,7 @@ from prompts import (
     CONCEPT_QUERY_SYSTEM,
     concept_query_user,
     FACT_QUERY_SYSTEM,
+    FACT_QUERY_SINGLE_SYSTEM,
     fact_query_user,
     ANSWER_SYSTEM,
     answer_user,
@@ -198,8 +199,18 @@ def extract_concept_queries(question: str) -> tuple[list[str], dict[str, int]]:
     )
 
 
-def extract_fact_queries(question: str) -> tuple[list[str], dict[str, int]]:
-    """1 LLM call -> (1-5 keyword-rich websearch_to_tsquery strings, usage)."""
+def extract_fact_queries(question: str, query_mode: str = "multi") -> tuple[list[str], dict[str, int]]:
+    """1 LLM call -> (1-5 keyword-rich websearch_to_tsquery strings, usage).
+
+    query_mode:
+      "multi"  (default): 1-5 short diverse 3-6 term queries
+      "single": 1 comprehensive query with all key terms (covers full semantic space)
+      "top3":   same as multi but caller trims to 3 queries + max_facts
+    """
+    if query_mode == "single":
+        return _extract_query_list(
+            FACT_QUERY_SINGLE_SYSTEM, fact_query_user(question), "fact query (single)"
+        )
     return _extract_query_list(
         FACT_QUERY_SYSTEM, fact_query_user(question), "fact query extraction"
     )

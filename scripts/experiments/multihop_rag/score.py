@@ -156,7 +156,79 @@ def score_predictions(predictions: list[dict]) -> dict[str, Any]:
         "overall": _metrics(overall),
         "breakdown_by_question_type": breakdown_by_type,
         "breakdown_overall": breakdown_overall,
+        # Per-question correctness vector (excluding llm_errors), retained
+        # so callers can compute bootstrap CIs without re-scoring.
+        "per_question_correct": overall,
     }
+
+
+def bootstrap_accuracy_ci(
+    predictions: list[dict],
+    n_resamples: int = 2000,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> tuple[float, float, float]:
+    """Bootstrap 95% CI on accuracy across the scored questions.
+
+    Addresses the experiment plan's success criterion #2 ("Report CIs or
+    a significance test on the accuracy difference, not just point
+    estimates") and repeats the paper's own critique of the clinical
+    chunking comparison (where CI overlap mattered).
+
+    Returns (point_estimate, ci_low, ci_high) for the accuracy. Uses the
+    same per-question correctness definition as score_predictions
+    (intersection of prediction & gold; llm_errors excluded). A question
+    is scored correct if has_intersection(pred, gold) is True AND it is
+    not an LLM error / refusal-only count — refusals on non-null gold are
+    counted as wrong here, matching score_predictions' accuracy denominator.
+    """
+    import random
+
+    correct: list[bool] = []
+    for p in predictions:
+        pred = p.get("prediction") or ""
+        gold = p.get("gold") or ""
+        if _is_llm_error(pred):
+            continue
+        correct.append(has_intersection(pred, gold))
+    if not correct:
+        return 0.0, 0.0, 0.0
+    n = len(correct)
+    point = sum(1 for x in correct if x) / n
+    rng = random.Random(seed)
+    boot_accs: list[float] = []
+    for _ in range(n_resamples):
+        idx = [rng.randrange(n) for _ in range(n)]
+        acc = sum(1 for i in idx if correct[i]) / n
+        boot_accs.append(acc)
+    boot_accs.sort()
+    alpha = (1.0 - confidence) / 2.0
+    lo_idx = int(alpha * n_resamples)
+    hi_idx = int((1.0 - alpha) * n_resamples)
+    lo = boot_accs[lo_idx]
+    hi = boot_accs[min(hi_idx, n_resamples - 1)]
+    return point, lo, hi
+
+
+def avg_retrieval_unit_tokens(predictions: list[dict]) -> float:
+    """Average whitespace-token length of the retrieved units per question.
+
+    For the late-chunking vs atomic-fact granularity-match report
+    (experiment plan success criterion #3). Uses the retrieval_hits'
+    text where present (baselines), otherwise falls back to the
+    fact_ids_used enrichment text (OKT variants) — but for baseline
+    variants the retrieval_hits text is always populated.
+    """
+    lens: list[float] = []
+    for p in predictions:
+        hits = p.get("retrieval_hits") or []
+        for h in hits:
+            t = h.get("text") or ""
+            if t:
+                lens.append(len(t.split()))
+    if not lens:
+        return 0.0
+    return sum(lens) / len(lens)
 
 
 def _format_breakdown_table(breakdown: dict[str, Any], title: str) -> str:
@@ -535,6 +607,31 @@ def _format_side_by_side(
         )
     lines.append("")
 
+    # Bootstrap 95% CI on overall accuracy + avg retrieval-unit length.
+    # (Experiment plan success criteria #2 and #3: CIs so differences are
+    # distinguishable from noise; granularity reported so the comparison
+    # isn't confounded by chunk size.)
+    lines.append("Accuracy 95% bootstrap CI + retrieval-unit granularity:")
+    header_ci = (
+        f"  {'variant':<10} {'acc':>7} {'ci_low':>7} {'ci_high':>8} "
+        f"{'avg_unit_tok':>12}"
+    )
+    lines.append(header_ci)
+    for name in variant_names:
+        preds = variant_predictions.get(name, [])
+        point, lo, hi = bootstrap_accuracy_ci(preds)
+        avg_unit = avg_retrieval_unit_tokens(preds)
+        lines.append(
+            f"  {name:<10} {point:>7.3f} {lo:>7.3f} {hi:>8.3f} "
+            f"{avg_unit:>12.1f}"
+        )
+    lines.append(
+        "  (CI = 2000-resample bootstrap on per-question correctness; "
+        "non-overlapping CIs => distinguishable from noise. "
+        "avg_unit_tok = mean whitespace tokens per retrieved chunk/segment.)"
+    )
+    lines.append("")
+
     # Per question_type accuracy across all variants.
     qts = sorted(set().union(*[
         vm["by_question_type"].keys() for vm in variant_metrics.values()
@@ -810,8 +907,8 @@ def main() -> int:
     if args.variants:
         candidate = [v.strip() for v in args.variants.split(",") if v.strip()]
     else:
-        # Default: OKT variants + the new baselines, if present.
-        candidate = ["concept", "facts", "direct", "dense_x", "traditional"]
+        # Default: OKT variants + all baselines, if present.
+        candidate = ["concept", "facts", "direct", "dense_x", "traditional", "late_chunk"]
     variant_preds: dict[str, list[dict]] = {}
     variant_metrics: dict[str, dict[str, Any]] = {}
     variant_coverage: dict[str, dict[str, Any]] = {}

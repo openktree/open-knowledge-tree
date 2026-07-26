@@ -113,6 +113,25 @@ func (s *S3Store) Store(ctx context.Context, key string, body []byte, contentTyp
 	return err
 }
 
+// StoreStream uploads body to S3 via PutObject with a reader body,
+// avoiding the in-memory []byte buffer that Store requires. The AWS
+// SDK natively streams from an io.Reader, so multi-GB bundles don't
+// buffer in registry memory. Used by the graph push handler.
+func (s *S3Store) StoreStream(ctx context.Context, key string, body io.Reader, contentType string) (int64, error) {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		Body:        body,
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return 0, err
+	}
+	// PutObject doesn't report bytes written; return -1 to signal
+	// "unknown" to callers that only care about success.
+	return -1, nil
+}
+
 func (s *S3Store) Get(ctx context.Context, key string) (StoredFile, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),

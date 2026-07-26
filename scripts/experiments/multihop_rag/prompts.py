@@ -61,6 +61,10 @@ phrase_extraction_user = concept_query_user
 
 
 # --- Facts variant: fact-query extraction ----------------------------------
+# Three query modes, selectable via --query-mode:
+#   multi   (default): 1-5 short 3-6 term tsvector queries (original behavior)
+#   single:  one comprehensive query containing ALL key terms from the question
+#   top3:    up to 3 short queries, then trim results to max_facts
 
 FACT_QUERY_SYSTEM = (
     "You build search queries for a full-text fact index.\n"
@@ -104,6 +108,35 @@ FACT_QUERY_SYSTEM = (
     "Respond with the JSON array only — no prose, no markdown fences."
 )
 
+# Single comprehensive query: one query that captures ALL key entities,
+# numbers, and topic terms from the question. This covers the full
+# semantic space of the question in one shot, rather than splitting
+# across multiple narrow queries. The risk: websearch_to_tsquery ANDs
+# every token, so a 10-term query requires all 10 to appear in one fact
+# — which is unlikely for multi-hop facts. Use this to test whether
+# breadth (one wide query) beats diversity (many narrow queries).
+FACT_QUERY_SINGLE_SYSTEM = (
+    "You build ONE search query for a full-text fact index.\n"
+    "The index is a PostgreSQL tsvector of atomic fact sentences. "
+    "The search operator is websearch_to_tsquery — EVERY term in "
+    "your query must appear in a fact's text for it to match.\n"
+    "Output ONLY a JSON array with ONE string: a single query "
+    "containing ALL the key entities, numbers, publication names, "
+    "and topic terms from the question. Rules:\n"
+    "1. Include every proper noun, number, publication name, and "
+    "discriminating noun from the question.\n"
+    "2. Drop stop-words, question words, articles, conjunctions, "
+    "and generic verbs.\n"
+    "3. Aim for 5-15 terms — enough to cover the full semantic space "
+    "of the question, but not so many that no single fact contains "
+    "them all. Prefer specific nouns and numbers.\n"
+    "4. For comparison questions mentioning two publications, include "
+    "both publication names and the shared subject.\n"
+    "5. For temporal questions, include the dates/time references and "
+    "the subject entities.\n"
+    "Respond with a JSON array of one string only — no prose."
+)
+
 
 def fact_query_user(question: str) -> str:
     return f"Question: {question}\n\nFact search queries:"
@@ -112,30 +145,20 @@ def fact_query_user(question: str) -> str:
 # --- Shared answer-synthesis prompt ---------------------------------------
 
 ANSWER_SYSTEM = (
-    "You answer multi-hop questions using evidence gathered from a knowledge base.\n"
+    "You answer multi-hop questions using retrieved evidence.\n"
+    "Evidence format: each fact has text + source metadata (publication, "
+    "title, author, date). Questions may reference articles by publication "
+    "name (e.g. 'the TechCrunch article') — filter to facts whose Source "
+    "line names that publication.\n"
     "Rules:\n"
-    "1. Use ONLY the provided facts and their source metadata to answer.\n"
-    "2. Many questions require reasoning across MULTIPLE sources (multi-hop): "
-    "combine facts from different sources, and use source metadata "
-    "(publication name, title, author, published_at) when the question "
-    "references it. The publication name is the 'Source:' prefix on each "
-    "fact (e.g. 'Source: TechCrunch \"...\" by Jacquelyn Melinek on "
-    "2023-10-01'). Questions that mention a publication by name "
-    "('the TechCrunch article', 'the Bloomberg piece') are asking you to "
-    "filter to facts whose Source line names that publication.\n"
-    "3. Keep the answer SHORT: a single name, organization, 'Yes', 'no', "
-    "or a short phrase.\n"
-    "4. When the evidence is present, commit to your best answer — do NOT "
-    "abstain just because you are unsure. For comparison and temporal "
-    "questions that expect a 'Yes' or 'no', make your best judgment "
-    "call. For inference questions, give your best answer from the "
-    "available facts even if the chain is incomplete. Only abstain when "
-    "the evidence is truly absent or empty.\n"
-    "5. ALWAYS end your final message with exactly one line in this format:\n"
-    '   The answer to the question is "<answer>"\n'
-    '   For abstention, the line must be:\n'
-    '   The answer to the question is "Insufficient information."\n'
-    "7. Do not include any text after that final line."
+    "1. Use ONLY the provided facts.\n"
+    "2. Deduce the answer by combining facts across sources (multi-hop) "
+    "when the evidence supports it. Commit to your best answer — do not "
+    "abstain from uncertainty alone.\n"
+    "3. Abstain ONLY when the evidence is absent or empty.\n"
+    "4. Keep the answer short: a name, organization, 'Yes', 'no', or short phrase.\n"
+    '5. End with exactly: The answer to the question is "<answer>"\n'
+    '   For abstention: The answer to the question is "Insufficient information."'
 )
 
 

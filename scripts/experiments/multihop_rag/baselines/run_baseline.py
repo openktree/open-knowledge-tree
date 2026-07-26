@@ -55,12 +55,18 @@ import config
 import llm
 import prompts
 from baselines import embeddings, qdrant_store
+from baselines import embeddings_long
 
 
-# Map variant -> (collection, label, answers subdir).
+# Map variant -> (collection, label, answers subdir, embed_mode).
+# embed_mode "openrouter" uses gemini-embedding-2 (dense_x/traditional);
+# embed_mode "jina_long" uses jina-embeddings-v3 (late_chunk) — the same
+# long-context model the late-chunk index was built with, so Condition
+# B's dense retrieval is fair within the condition.
 _VARIANT_MAP = {
-    "dense_x": (config.BASELINE_PROPOSITION_COLLECTION, "dense_x", "answers_dense_x"),
-    "traditional": (config.BASELINE_PASSAGE_COLLECTION, "traditional", "answers_traditional"),
+    "dense_x": (config.BASELINE_PROPOSITION_COLLECTION, "dense_x", "answers_dense_x", "openrouter"),
+    "traditional": (config.BASELINE_PASSAGE_COLLECTION, "traditional", "answers_traditional", "openrouter"),
+    "late_chunk": (config.BASELINE_LATE_CHUNK_COLLECTION, "late_chunk", "answers_late_chunk", "jina_long"),
 }
 
 
@@ -177,7 +183,7 @@ def _write_answer_audit(
     (variant_<k>_<stamp>) so a re-run doesn't overwrite prior audits —
     each run's audits are grouped in their own subdir.
     """
-    _, label, sub = _VARIANT_MAP[variant]
+    _, label, sub, _ = _VARIANT_MAP[variant]
     out_dir = os.path.join(
         os.path.dirname(__file__), "..", f"{sub}_{top_k}_{_RUN_STAMP}"
     )
@@ -250,7 +256,7 @@ def run_variant(
     predictions_path: str,
 ) -> dict[str, Any]:
     """Run one baseline variant for one question."""
-    collection, label, _ = _VARIANT_MAP[variant]
+    collection, label, _, embed_mode = _VARIANT_MAP[variant]
     qid = q["id"]
     question = q["query"]
     started = time.time()
@@ -258,7 +264,10 @@ def run_variant(
 
     # 1. Embed the question with the same model the index uses.
     try:
-        qvec = embeddings.embed_one(question)
+        if embed_mode == "jina_long":
+            qvec = embeddings_long.embed_query(question)
+        else:
+            qvec = embeddings.embed_one(question)
     except Exception as e:  # noqa: BLE001
         print(f"  {qid}: embed failed: {e}", file=sys.stderr)
         pred = _base_pred(q, variant, question, started, total_usage, [], [],
@@ -323,7 +332,16 @@ def run_variant(
             "top_k": top_k,
             "collection": collection,
             "retrieval": "dense-only",
-            "embedding_model": config.BASELINE_EMBEDDING_MODEL,
+            "embedding_model": (
+                config.BASELINE_LATE_CHUNK_MODEL
+                if embed_mode == "jina_long"
+                else config.BASELINE_EMBEDDING_MODEL
+            ),
+            "chunking": (
+                "late-chunking (arXiv:2409.04701)"
+                if embed_mode == "jina_long"
+                else "chunk-then-embed"
+            ),
         },
     }
     _append_prediction(pred, predictions_path)
@@ -342,7 +360,7 @@ def _base_pred(
     answer: str,
     raw: str,
 ) -> dict[str, Any]:
-    _, label, _ = _VARIANT_MAP[variant]
+    _, label, _, _ = _VARIANT_MAP[variant]
     return {
         "id": q["id"],
         "variant": label,
@@ -381,7 +399,7 @@ def _parse_args() -> argparse.Namespace:
         "--variant",
         type=str,
         default="all",
-        choices=["all", "dense_x", "traditional"],
+        choices=["all", "dense_x", "traditional", "late_chunk"],
     )
     ap.add_argument(
         "--top-k",
@@ -452,7 +470,7 @@ def _smoke_test(
               file=sys.stderr)
         return False
     # Clean up the smoke-test audit dir.
-    _, _, sub = _VARIANT_MAP[variant]
+    _, _, sub, _ = _VARIANT_MAP[variant]
     import shutil
     smoke_audit = os.path.join(
         os.path.dirname(__file__), "..", f"{sub}_{top_k}_{_RUN_STAMP}"
@@ -470,11 +488,11 @@ def main() -> int:
     selected = _select_queries(queries, args)
 
     variants = (
-        ["dense_x", "traditional"] if args.variant == "all" else [args.variant]
+        ["dense_x", "traditional", "late_chunk"] if args.variant == "all" else [args.variant]
     )
 
     for variant in variants:
-        _, label, _ = _VARIANT_MAP[variant]
+        _, label, _, _ = _VARIANT_MAP[variant]
         predictions_path = _predictions_path_for(label, args.top_k)
         # Resume across ALL prior timestamped files for this variant+k.
         done = _load_done_ids(label, args.top_k)

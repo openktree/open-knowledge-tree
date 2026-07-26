@@ -323,7 +323,7 @@ func New(
 	// fresh or existing repo in a single task. Both are no-ops when
 	// no registry is configured (the workers return a clear error).
 	graphImportReembed := &graphImportReembedAdapter{}
-	river.AddWorker(workers, tasks.NewExportGraphWorker(registryClients, registry, systemQueries, qdrantStore, storageBackend, cfg.Providers.Embedding.Model, cfg.Providers.Embedding.Dimensions))
+	river.AddWorker(workers, tasks.NewExportGraphWorker(registryClients, registry, systemQueries, qdrantStore, storageBackend, cfg.Providers.Embedding.Model, cfg.Providers.Embedding.Dimensions, cfg.Task.GraphExport.TempDir))
 	river.AddWorker(workers, tasks.NewImportGraphWorker(registryClients, registry, systemQueries, qdrantStore, storageBackend, cfg.Providers.Embedding.Model, graphImportReembed))
 	river.AddWorker(workers, tasks.NewFactCatchupWorker(cfg.Providers.Dedup, qdrantStore, registry, systemQueries))
 	// Audit log retention. Daily sweep that deletes
@@ -1269,6 +1269,7 @@ func (a *graphExportEnqueuerAdapter) EnqueueExportGraph(ctx context.Context, arg
 		Description:   args.Description,
 		Tags:          args.Tags,
 		IncludeBodies: args.IncludeBodies,
+		IncludeImages: args.IncludeImages,
 	})
 }
 

@@ -17,6 +17,12 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
+// nowFn is the time source for ExportedAt. Defaults to time.Now;
+// tests override it to freeze the timestamp so StreamBuild's sha can
+// be compared against Build's sha byte-for-byte (exported_at is in
+// the hashed region, so the two passes must agree on it).
+var nowFn = time.Now
+
 // BundleBuilder assembles a GraphBundle from a repository's derived
 // layer. It reads every entity via the per-repo *store.Queries (the
 // same one the per-repo chi middleware builds) and fetches Qdrant
@@ -36,6 +42,11 @@ type BundleBuilder struct {
 	embeddingModel string
 	embeddingDims  int
 	includeBodies  bool
+	includeImages  bool
+	// bodyBuf accumulates streamed source-body refs during a
+	// StreamBuild pass; drained + emitted after the suppressed
+	// region begins. Unused by the in-memory Build path.
+	bodyBuf []bodyRefCollected
 }
 
 // NewBundleBuilder constructs a builder for the given repo. queries
@@ -44,8 +55,8 @@ type BundleBuilder struct {
 // storageBackend may be nil (source images + bodies are skipped).
 // includeBodies controls whether source body files (PDFs) are embedded
 // in the bundle (opt-in; images are always embedded when storage is
-// available).
-func NewBundleBuilder(queries *store.Queries, qdrant *qdrantstore.Store, storageBackend storage.FileStorage, repoID pgtype.UUID, embeddingModel string, embeddingDims int, includeBodies bool) *BundleBuilder {
+// available and includeImages is true).
+func NewBundleBuilder(queries *store.Queries, qdrant *qdrantstore.Store, storageBackend storage.FileStorage, repoID pgtype.UUID, embeddingModel string, embeddingDims int, includeBodies bool, includeImages bool) *BundleBuilder {
 	return &BundleBuilder{
 		queries:        queries,
 		qdrant:         qdrant,
@@ -55,6 +66,7 @@ func NewBundleBuilder(queries *store.Queries, qdrant *qdrantstore.Store, storage
 		embeddingModel: embeddingModel,
 		embeddingDims:  embeddingDims,
 		includeBodies:  includeBodies,
+		includeImages:  includeImages,
 	}
 }
 
@@ -76,7 +88,7 @@ func (b *BundleBuilder) Build(ctx context.Context, meta BundleMetadata) (*GraphB
 		SchemaVersion: SchemaVersion,
 		Metadata:      meta,
 	}
-	bundle.Metadata.ExportedAt = time.Now().UTC()
+	bundle.Metadata.ExportedAt = nowFn().UTC()
 	bundle.Metadata.EmbeddingModel = b.embeddingModel
 	bundle.Metadata.EmbeddingDimensions = b.embeddingDims
 
@@ -120,6 +132,12 @@ func (b *BundleBuilder) Build(ctx context.Context, meta BundleMetadata) (*GraphB
 	// image facts. Embed bytes for storage-backed images (storage_key
 	// non-null AND url empty — PDF page renders + mirrored inline).
 	// Inline images with a remote url are metadata-only.
+	//
+	// The image *rows* (metadata) are always emitted when storage is
+	// wired so the importer can remap image facts; the image *bytes*
+	// are gated by includeImages (default true). When includeImages is
+	// false the Images map is empty and the importer re-fetches remote
+	// URLs / loses upload:// images — mirroring includeBodies for PDFs.
 	sourceImageIdxByID := make(map[uuid.UUID]int)
 	if b.storage != nil {
 		siRows, err := b.queries.ListAllSourceImagesForExport(ctx, b.repoID)
@@ -146,8 +164,11 @@ func (b *BundleBuilder) Build(ctx context.Context, meta BundleMetadata) (*GraphB
 				AltText:     ptrStr(r.AltText),
 				ContentType: ptrStr(r.ContentType),
 			}
-			// Embed bytes for storage-backed images (no remote URL).
-			if r.StorageKey != nil && *r.StorageKey != "" && (r.Url == nil || *r.Url == "") {
+			// Embed bytes for storage-backed images (no remote URL)
+			// only when includeImages is set (default true). When
+			// false, the row is metadata-only and the importer
+			// re-fetches from the remote URL or drops upload:// images.
+			if b.includeImages && r.StorageKey != nil && *r.StorageKey != "" && (r.Url == nil || *r.Url == "") {
 				ref := fmt.Sprintf("img-%d", idx)
 				if err := b.embedImage(ctx, bundle, ref, *r.StorageKey, r.ContentType); err == nil {
 					row.ImageRef = ref

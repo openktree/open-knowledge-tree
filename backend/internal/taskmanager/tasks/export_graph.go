@@ -3,7 +3,9 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
@@ -29,13 +31,17 @@ type ExportGraphArgs struct {
 	Name          string   `json:"name"`
 	Description   string   `json:"description,omitempty"`
 	Tags          []string `json:"tags,omitempty"`
-	IncludeBodies bool     `json:"include_bodies,omitempty"` // embed source PDFs in the bundle
+	IncludeBodies bool     `json:"include_bodies,omitempty"` // embed source PDFs in the bundle (opt-in)
+	IncludeImages bool     `json:"include_images"`           // embed source images in the bundle (default true; the handler defaults a missing field to true)
 }
 
 func (ExportGraphArgs) Kind() string { return "export_graph" }
 
 func (ExportGraphArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: QueueExportGraph}
+	// MaxAttempts is capped at 2 so a known-OOM-prone large export
+	// doesn't auto-retry into a second host crash. An operator can
+	// re-trigger from the UI after fixing the root cause.
+	return river.InsertOpts{Queue: QueueExportGraph, MaxAttempts: 2}
 }
 
 // ExportGraphResult is the outcome of an export job, recorded as the
@@ -64,6 +70,7 @@ type ExportGraphWorker struct {
 	storageBackend  storage.FileStorage
 	embeddingModel  string
 	embeddingDims   int
+	tempDir         string // "" = OS default (os.CreateTemp)
 }
 
 func NewExportGraphWorker(
@@ -74,6 +81,7 @@ func NewExportGraphWorker(
 	storageBackend storage.FileStorage,
 	embeddingModel string,
 	embeddingDims int,
+	tempDir string,
 ) *ExportGraphWorker {
 	return &ExportGraphWorker{
 		registryClients: registryClients,
@@ -83,6 +91,7 @@ func NewExportGraphWorker(
 		storageBackend:  storageBackend,
 		embeddingModel:  embeddingModel,
 		embeddingDims:   embeddingDims,
+		tempDir:         tempDir,
 	}
 }
 
@@ -124,39 +133,80 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	}
 	queries := store.New(pool.Pool)
 
-	// Build the bundle.
-	builder := graph.NewBundleBuilder(queries, w.qdrant, w.storageBackend, repoID, w.embeddingModel, w.embeddingDims, args.IncludeBodies)
-	bundle, err := builder.Build(ctx, graph.BundleMetadata{
+	// Build the bundle in streaming mode: two passes through
+	// StreamBuild so the metadata.sha256 (the registry's dedup key)
+	// is populated in the pushed bytes without materializing the
+	// whole ~11 GB bundle in memory.
+	//
+	// Pass 1: stream to io.Discard with shaOverride="" — computes the
+	// canonical sha (over the bytes with embeddings/images/bodies
+	// zeroed, matching marshalCanonical) and returns it in
+	// stats.SHA256. No temp file written.
+	//
+	// Pass 2: stream to a temp file with shaOverride=stats.SHA256 —
+	// writes the dedup-correct bundle (metadata.sha256 populated) to
+	// disk, then push the temp file straight to the registry via
+	// PushGraphStream (no []byte buffering).
+	builder := graph.NewBundleBuilder(queries, w.qdrant, w.storageBackend, repoID, w.embeddingModel, w.embeddingDims, args.IncludeBodies, args.IncludeImages)
+	meta := graph.BundleMetadata{
 		Name:        args.Name,
 		Description: args.Description,
 		Owner:       "", // the registry fills this from the auth email
 		Tags:        args.Tags,
-	})
-	if err != nil {
-		return fmt.Errorf("export_graph: building bundle: %w", err)
 	}
 
-	// Gzip + push.
-	gz, err := graph.MarshalGzip(bundle)
+	// Pass 1: hash-only.
+	pass1Stats, err := builder.StreamBuild(ctx, meta, io.Discard, "")
 	if err != nil {
-		return fmt.Errorf("export_graph: gzipping bundle: %w", err)
+		return fmt.Errorf("export_graph: streaming bundle (pass 1 hash): %w", err)
 	}
-	result, err := client.PushGraph(ctx, gz)
+
+	// Pass 2: stream to a temp file with the real sha in metadata.
+	tmp, err := os.CreateTemp(w.tempDir, "okt-export-*.json.gz")
+	if err != nil {
+		return fmt.Errorf("export_graph: creating temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+	pass2Stats, err := builder.StreamBuild(ctx, meta, tmp, pass1Stats.SHA256)
+	if err != nil {
+		return fmt.Errorf("export_graph: streaming bundle (pass 2 write): %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("export_graph: closing temp file: %w", err)
+	}
+
+	// Push the temp file. Re-open for reading, then stream to the
+	// registry. Content-Length is known (stat the temp file) so the
+	// HTTP client can set it (avoids chunked encoding when possible).
+	info, err := os.Stat(tmpName)
+	if err != nil {
+		return fmt.Errorf("export_graph: stating temp file: %w", err)
+	}
+	tmpRead, err := os.Open(tmpName)
+	if err != nil {
+		return fmt.Errorf("export_graph: reopening temp file: %w", err)
+	}
+	defer tmpRead.Close()
+	result, err := client.PushGraphStream(ctx, tmpRead, info.Size())
 	if err != nil {
 		return fmt.Errorf("export_graph: pushing graph: %w", err)
 	}
 
 	log.Printf("export_graph: repo %s pushed graph %s (sources=%d facts=%d concepts=%d bytes=%d)",
 		args.RepositoryID, result.GraphID,
-		bundle.Metadata.SourceCount, bundle.Metadata.FactCount, bundle.Metadata.ConceptCount,
-		len(gz))
+		pass2Stats.SourceCount, pass2Stats.FactCount, pass2Stats.ConceptCount,
+		info.Size())
 
 	return river.RecordOutput(ctx, &ExportGraphResult{
 		RepositoryID: args.RepositoryID,
 		GraphID:      result.GraphID,
-		SourceCount:  bundle.Metadata.SourceCount,
-		FactCount:    bundle.Metadata.FactCount,
-		ConceptCount: bundle.Metadata.ConceptCount,
-		Bytes:        len(gz),
+		SourceCount:  pass2Stats.SourceCount,
+		FactCount:    pass2Stats.FactCount,
+		ConceptCount: pass2Stats.ConceptCount,
+		Bytes:        int(info.Size()),
 	})
 }

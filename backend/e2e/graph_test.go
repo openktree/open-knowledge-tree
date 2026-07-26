@@ -166,6 +166,79 @@ func TestGraph_DownloadRequiresPermission(t *testing.T) {
 	}
 }
 
+// TestGraph_DownloadIncludeImagesFalse verifies the include_images
+// query param is honored: ?include_images=false produces a bundle
+// with no "images" map (the section is omitted via omitempty when no
+// image refs are collected). The default test env wires no storage, so
+// no images are embedded regardless; this test confirms the param is
+// parsed without error and the bundle is still valid JSON. The
+// streaming builder (StreamBuild) replaced the in-memory Build on this
+// endpoint, so this also guards the stream path produces valid JSON
+// for the empty-repo case.
+func TestGraph_DownloadIncludeImagesFalse(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "graph-dl-img@example.com")
+	_, _, repoID := createRepository(t, admin, "GraphDlImg", "graph-dl-img", "desc")
+
+	resp, body := admin.do("GET", "/api/v1/repositories/"+repoID+"/export-graph/download?include_images=false", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("download: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("download: body is not valid gzip: %v", err)
+	}
+	jsonBytes, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatalf("download: gunzipping body: %v", err)
+	}
+	var bundle struct {
+		SchemaVersion int            `json:"schema_version"`
+		Images        map[string]any `json:"images"`
+	}
+	if err := json.Unmarshal(jsonBytes, &bundle); err != nil {
+		t.Fatalf("download: bundle is not valid JSON: %v", err)
+	}
+	if bundle.SchemaVersion != 1 {
+		t.Errorf("download: expected schema_version 1, got %d", bundle.SchemaVersion)
+	}
+	if bundle.Images != nil {
+		t.Errorf("download: expected no images map (include_images=false + no storage), got %v", bundle.Images)
+	}
+}
+
+// TestGraph_ExportAcceptsIncludeImages verifies the export endpoint
+// accepts the include_images field (default true) in the request body
+// and enqueues the job. The default test env wires no registry client,
+// so the handler returns 503 (notConfigured) after parsing the body —
+// which is enough to confirm the field is accepted without a 400 and
+// the RBAC gate fires. This guards the new IncludeImages arg plumbing
+// (handler → adapter → tasks.ExportGraphArgs) against regression.
+func TestGraph_ExportAcceptsIncludeImages(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "graph-export-img@example.com")
+	_, _, repoID := createRepository(t, admin, "GraphExportImg", "graph-export-img", "desc")
+
+	// include_images: false in the body — the handler should accept
+	// it (no 400) and reach the notConfigured fallback (503).
+	resp, body := admin.do("POST", "/api/v1/repositories/"+repoID+"/export-graph",
+		jsonBody(t, map[string]any{"name": "test", "include_images": false}))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("export (include_images=false): expected 503 (registry not configured), got %d: %s", resp.StatusCode, body)
+	}
+
+	// include_images: true (explicit) — same 503 (parsed, notConfigured).
+	resp, body = admin.do("POST", "/api/v1/repositories/"+repoID+"/export-graph",
+		jsonBody(t, map[string]any{"name": "test", "include_images": true}))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("export (include_images=true): expected 503 (registry not configured), got %d: %s", resp.StatusCode, body)
+	}
+}
+
 // serving a tiny graph bundle, wires it into the test env, and
 // exercises the import-to-new-repo happy path: POST /repositories/
 // import-graph creates a new repo + enqueues the import task. The

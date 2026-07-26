@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -43,6 +45,24 @@ func GraphKey(graphID string) string {
 // gracefully (it logs and falls back to the registry's PullGraph
 // endpoint, which re-reads from S3).
 func (r *Registry) PushGraph(ctx context.Context, meta *model.GraphMeta, bundle []byte) (*model.GraphPushResult, error) {
+	return r.PushGraphStream(ctx, meta, bytes.NewReader(bundle))
+}
+
+// PushGraphStream indexes a shared knowledge graph bundle from an
+// io.Reader (the gzipped bytes), avoiding the in-memory []byte buffer
+// that PushGraph requires. The stream variant is the streaming-safe
+// path used by the graph push handler for multi-GB bundles: the
+// handler peeks the metadata section from the head of the stream,
+// then hands the remainder (replayed via io.MultiReader) to this
+// method, which streams it straight to storage.
+//
+// Unlike PushGraph's fire-and-forget goroutine, PushGraphStream
+// waits for the storage write to complete before indexing the
+// metadata row — so a search hit always has a pullable object (no
+// 50–200ms 404 window). The cost is that the push waits on storage
+// latency; the object is overwrite-safe so a client retry after a
+// timeout just rewrites the same key.
+func (r *Registry) PushGraphStream(ctx context.Context, meta *model.GraphMeta, body io.Reader) (*model.GraphPushResult, error) {
 	if err := acquire(ctx, r.pushSem); err != nil {
 		return nil, fmt.Errorf("waiting for push concurrency slot: %w", err)
 	}
@@ -68,17 +88,13 @@ func (r *Registry) PushGraph(ctx context.Context, meta *model.GraphMeta, bundle 
 	s3Key := GraphKey(graphID)
 	meta.S3Key = s3Key
 
-	// Fire-and-forget: the S3 object is an overwrite-safe blob (the
-	// next push writes the same key). A failure here logs and the
-	// object is stale until the next push; the metadata DB is already
-	// consistent so a search will find the graph. A pull in the
-	// ~50–200ms window before S3 catches up gets a 404, which the OKT
-	// import path handles gracefully.
-	go func() {
-		if err := r.storage.Store(ctx, s3Key, bundle, "application/gzip"); err != nil {
-			log.Printf("registry: async Store for graph %s: %v", graphID, err)
-		}
-	}()
+	// Stream the bundle to storage synchronously. A failure returns
+	// an error to the caller (no stale metadata row gets indexed).
+	// The object is overwrite-safe, so a client retry rewrites the
+	// same key.
+	if _, err := r.storage.StoreStream(ctx, s3Key, body, "application/gzip"); err != nil {
+		return nil, fmt.Errorf("storing graph bundle: %w", err)
+	}
 
 	now := time.Now().UTC()
 	meta.CreatedAt = now

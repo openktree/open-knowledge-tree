@@ -45,6 +45,7 @@ from tqdm import tqdm
 
 import config
 from baselines import chunking, embeddings, qdrant_store
+from baselines import late_chunking, embeddings_long
 
 
 def _embed_and_upsert(
@@ -158,13 +159,106 @@ def build_propositions(rebuild: bool, embed_concurrency: int) -> None:
     _embed_and_upsert(chunks, coll, embed_concurrency)
 
 
+def build_late_chunks(rebuild: bool, embed_concurrency: int) -> None:
+    """Late-chunked passage collection (arXiv:2409.04701).
+
+    Splits each document into ~fact-sized windows, then passes each
+    document's full segment list to the Jina embeddings API with
+    late_chunking=true so the API runs the long-context forward pass over
+    the whole document and mean-pools each segment's tokens within the
+    contextualized representation. Each document is one API call; the
+    embed_concurrency controls how many documents are embedded in
+    parallel (capped by the Jina RPM limit).
+    """
+    print("\n=== Late Chunking: late_chunk collection ===")
+    coll = config.BASELINE_LATE_CHUNK_COLLECTION
+    if rebuild:
+        print(f"  dropping {coll} ...")
+        qdrant_store.drop_collection(coll)
+    qdrant_store.ensure_collections()
+    existing = qdrant_store.collection_count(coll)
+    if existing > 0 and not rebuild:
+        print(
+            f"  {coll} already has {existing} points; will upsert on top "
+            f"(idempotent — safe resume)"
+        )
+    print(
+        f"  windowing corpus into {config.BASELINE_LATE_CHUNK_WINDOW}-token "
+        f"segments ..."
+    )
+    chunks = late_chunking.chunk_late_windows()
+    avg = late_chunking.avg_segment_tokens(chunks)
+    print(
+        f"  {len(chunks)} late-chunk segments (avg {avg:.1f} tokens/segment)"
+    )
+    if not chunks:
+        print("  no segments; aborting", file=sys.stderr)
+        return
+    # Group segments by document so each API call late-pools one whole
+    # document. Embedding is per-document (not per-segment) — this is the
+    # defining difference from the naive chunk-then-embed baselines.
+    grouped = late_chunking.segments_by_doc(chunks)
+    print(f"  {len(grouped)} documents to late-chunk-embed")
+
+    def _one(doc_segments: tuple[dict, list[dict]]) -> int:
+        _meta, segs = doc_segments
+        seg_texts = [s["text"] for s in segs]
+        vectors, _ = embeddings_long.embed_document_late_chunked(seg_texts)
+        if len(vectors) != len(segs):
+            raise RuntimeError(
+                f"late-chunk embed count mismatch: {len(vectors)} != "
+                f"{len(segs)} for doc {segs[0]['doc_id']} (segments may "
+                f"exceed the model's 8192-token context window)"
+            )
+        points = []
+        for s, vec in zip(segs, vectors):
+            p = dict(s)
+            p["vector"] = vec
+            points.append(p)
+        qdrant_store.upsert_points(coll, points)
+        return len(points)
+
+    total = 0
+    started = time.time()
+    # The self-hosted model is a module-level singleton resident on the
+    # GPU; concurrent forward passes would contend for VRAM and the
+    # python GIL releases only inside the CUDA kernel launch, not enough
+    # to speed up sequential docs. Force serial (embed_concurrency=1) —
+    # the per-doc forward pass is the bottleneck and one-at-a-time keeps
+    # memory bounded.
+    if embed_concurrency > 1:
+        with ThreadPoolExecutor(max_workers=embed_concurrency) as ex:
+            futures = {ex.submit(_one, g): g for g in grouped}
+            for fut in tqdm(
+                as_completed(futures), total=len(futures), desc="late-chunk"
+            ):
+                total += fut.result()
+    else:
+        for g in tqdm(grouped, desc="late-chunk"):
+            total += _one(g)
+    elapsed = time.time() - started
+    print(
+        f"  indexed {total} points into {coll} in {elapsed:.0f}s "
+        f"({total/elapsed:.0f} pts/s)"
+    )
+    # Post-build validation (same collision check as the other baselines).
+    actual = qdrant_store.collection_count(coll)
+    if actual != total:
+        raise SystemExit(
+            f"  INDEX BUILD FAILED: {coll} has {actual} points but we "
+            f"upserted {total} chunks. Point-id collision detected — "
+            f"aborting. (expected {total}, got {actual})"
+        )
+    print(f"  validated: {actual} points == {total} chunks (no collision)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build baseline Qdrant collections")
     ap.add_argument(
         "--only",
-        choices=["passages", "propositions"],
+        choices=["passages", "propositions", "late_chunks"],
         default="",
-        help="build only one collection (default: both)",
+        help="build only one collection (default: all)",
     )
     ap.add_argument(
         "--rebuild",
@@ -183,9 +277,12 @@ def main() -> int:
         build_passages(args.rebuild, args.embed_concurrency)
     elif args.only == "propositions":
         build_propositions(args.rebuild, args.embed_concurrency)
+    elif args.only == "late_chunks":
+        build_late_chunks(args.rebuild, args.embed_concurrency)
     else:
         build_passages(args.rebuild, args.embed_concurrency)
         build_propositions(args.rebuild, args.embed_concurrency)
+        build_late_chunks(args.rebuild, args.embed_concurrency)
     print("\nDone. Collections ready for run_baseline.py.")
     return 0
 

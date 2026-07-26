@@ -41,8 +41,11 @@ from scipy import stats
 
 from okt_db import DEFAULT_DSN, DEFAULT_REPO_SLUG, load_graph
 
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RESULTS_DIR = Path(os.environ.get("OKT_RESULTS_DIR", Path(__file__).resolve().parent / "results"))
 W_THRESHOLDS = [1, 2, 5, 10]
+# W thresholds to skip (comma-separated ints via OKT_SKIP_W, e.g. "1" to skip W=1
+# community detection when the graph is too large for single-threaded Louvain).
+_SKIP_W = {int(x) for x in os.environ.get("OKT_SKIP_W", "").split(",") if x.strip()}
 
 
 def _broido_clauset_label(alpha: float, sigma: float) -> str:
@@ -140,14 +143,7 @@ def _community_structure(g: nx.Graph, concept_domains: dict[str, str]) -> dict:
     domain_set = sorted(set(domains))
     domain_to_id = {d: i for i, d in enumerate(domain_set)}
     domain_labels = np.array([domain_to_id[d] for d in domains])
-    try:
-        nmi = nx.algorithms.community.normalized_mutual_info_information(
-            comm_labels, domain_labels
-        )
-    except Exception:
-        # NetworkX 3.2 may not have this; compute NMI manually.
-        from sklearn.metrics import normalized_mutual_info_score
-        nmi = normalized_mutual_info_score(domain_labels, comm_labels)
+    nmi = _normalized_mutual_info(domain_labels, comm_labels)
     return {
         "modularity": round(float(modularity), 4),
         "n_communities": len(communities),
@@ -155,6 +151,46 @@ def _community_structure(g: nx.Graph, concept_domains: dict[str, str]) -> dict:
         "n_labeled_nodes": len(labeled_nodes),
         "n_domains": len(domain_set),
     }
+
+
+def _normalized_mutual_info(labels_true: np.ndarray, labels_pred: np.ndarray) -> float:
+    """Normalized mutual information (arithmetic mean), dependency-free.
+
+    NMI = 2 * I(X;Y) / (H(X) + H(Y)). Matches sklearn's
+    normalized_mutual_info_score(average_method='arithmetic').
+    """
+    def _entropy(labels: np.ndarray) -> float:
+        _, counts = np.unique(labels, return_counts=True)
+        p = counts / counts.sum()
+        return float(-(p * np.log(p)).sum())
+
+    h_x = _entropy(labels_true)
+    h_y = _entropy(labels_pred)
+    if h_x == 0.0 and h_y == 0.0:
+        return 1.0
+    # Contingency table via np.unique on the combined index.
+    n_classes = int(labels_true.max()) + 1
+    n_clusters = int(labels_pred.max()) + 1
+    combined = labels_true.astype(np.int64) * n_clusters + labels_pred.astype(np.int64)
+    _, counts = np.unique(combined, return_counts=True)
+    n = counts.sum()
+    p_xy = counts / n
+    # Marginals from the contingency implied by the marginals already computed.
+    p_x = np.bincount(labels_true, minlength=n_classes) / n
+    p_y = np.bincount(labels_pred, minlength=n_clusters) / n
+    # Mutual information: sum over nonzero joint cells.
+    # Rebuild the (i, j) coordinates for each nonzero count.
+    flat_idx = np.unique(combined)
+    rows = flat_idx // n_clusters
+    cols = flat_idx % n_clusters
+    mi = 0.0
+    for r, c, p in zip(rows, cols, p_xy):
+        if p > 0:
+            mi += p * np.log(p / (p_x[r] * p_y[c]))
+    denom = h_x + h_y
+    if denom == 0.0:
+        return 1.0
+    return float(2.0 * mi / denom)
 
 
 def _small_world(g: nx.Graph) -> dict:
@@ -382,6 +418,9 @@ async def run(dsn: str = DEFAULT_DSN, repo_slug: str = DEFAULT_REPO_SLUG) -> dic
     # Run the 7 measurements at each W threshold.
     results_by_w = {}
     for w in W_THRESHOLDS:
+        if w in _SKIP_W:
+            print(f"W>={w}: SKIPPED (OKT_SKIP_W)")
+            continue
         t_w = time.time()
         # Build the weighted concept graph at this W threshold. Only add nodes
         # that have at least one edge at this W — isolated concepts (degree 0

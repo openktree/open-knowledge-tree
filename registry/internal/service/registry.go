@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -30,6 +31,11 @@ const defaultRepoID = "default"
 type Storage interface {
 	StoreJSON(ctx context.Context, key string, data []byte) error
 	Store(ctx context.Context, key string, body []byte, contentType string) error
+	// StoreStream writes body to the backend without buffering the
+	// whole object in a []byte. Used by the graph push path for
+	// multi-GB bundles. Returns bytes written (-1 when the backend
+	// doesn't report it).
+	StoreStream(ctx context.Context, key string, body io.Reader, contentType string) (int64, error)
 	ReadAll(ctx context.Context, key string) ([]byte, string, error)
 	PresignedURL(ctx context.Context, key string, ttl time.Duration) (string, error)
 	PresignedPUTURL(ctx context.Context, key string, ttl time.Duration) (string, error)

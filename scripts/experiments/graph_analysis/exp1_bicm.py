@@ -46,7 +46,7 @@ from scipy.stats import poisson
 
 from okt_db import DEFAULT_DSN, DEFAULT_REPO_SLUG, load_graph
 
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RESULTS_DIR = Path(os.environ.get("OKT_RESULTS_DIR", Path(__file__).resolve().parent / "results"))
 
 
 def benjamini_hochberg(pvals: np.ndarray) -> np.ndarray:

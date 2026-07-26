@@ -58,20 +58,29 @@ def _ensure_collection(client: QdrantClient, name: str) -> None:
     collections = {c.name for c in client.get_collections().collections}
     if name in collections:
         return
+    # Late-chunk collection uses a different embedding model (jina v3,
+    # 1024-dim) than the passage/proposition collections (gemini, 3072-dim).
+    # Pick the dimension by collection name so each is created with the
+    # right vector size.
+    if name == config.BASELINE_LATE_CHUNK_COLLECTION:
+        dim = config.BASELINE_LATE_CHUNK_DIMENSIONS
+    else:
+        dim = config.BASELINE_EMBEDDING_DIMENSIONS
     client.create_collection(
         collection_name=name,
         vectors_config=qm.VectorParams(
-            size=config.BASELINE_EMBEDDING_DIMENSIONS,
+            size=dim,
             distance=qm.Distance.COSINE,
         ),
     )
 
 
 def ensure_collections() -> None:
-    """Create both baseline collections if missing. Idempotent."""
+    """Create all baseline collections if missing. Idempotent."""
     c = _client()
     _ensure_collection(c, config.BASELINE_PASSAGE_COLLECTION)
     _ensure_collection(c, config.BASELINE_PROPOSITION_COLLECTION)
+    _ensure_collection(c, config.BASELINE_LATE_CHUNK_COLLECTION)
 
 
 def drop_collection(name: str) -> None:
@@ -84,11 +93,18 @@ def drop_collection(name: str) -> None:
 
 
 def collection_count(name: str) -> int:
-    """Approximate point count in a collection (for the index-build log)."""
+    """Approximate point count in a collection (for the index-build log).
+
+    Uses get_collection (points_count) instead of count_points because
+    count_points is eventually-consistent and can return 0 immediately
+    after a large upsert, falsely tripping the collision check. The
+    get_collection endpoint reads the collection metadata which is
+    updated synchronously on upsert(wait=True).
+    """
     c = _client()
     try:
-        info = c.count_points(collection_name=name)
-        return int(info.count) if info and info.count else 0
+        info = c.get_collection(collection_name=name)
+        return int(info.points_count) if info and info.points_count else 0
     except Exception:  # noqa: BLE001
         return 0
 

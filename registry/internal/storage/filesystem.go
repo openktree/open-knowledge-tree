@@ -37,6 +37,22 @@ func (s *LocalStore) Store(ctx context.Context, key string, body []byte, content
 	return os.WriteFile(full, body, 0o644)
 }
 
+// StoreStream writes body to the file at key via io.Copy, avoiding
+// the in-memory []byte buffer that Store requires. Used by the graph
+// push handler for multi-GB bundles.
+func (s *LocalStore) StoreStream(ctx context.Context, key string, body io.Reader, contentType string) (int64, error) {
+	full := s.key(key)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return 0, err
+	}
+	f, err := os.Create(full)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return io.Copy(f, body)
+}
+
 func (s *LocalStore) Get(ctx context.Context, key string) (StoredFile, error) {
 	full := s.key(key)
 	f, err := os.Open(full)

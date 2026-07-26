@@ -56,11 +56,11 @@ from okt_db import DEFAULT_DSN, DEFAULT_REPO_SLUG
 from llm_judge import judge, judge_json, extract_json, OPENROUTER_MODEL
 from wikidata import batch_best_qids, WikidataHit
 
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RESULTS_DIR = Path(os.environ.get("OKT_RESULTS_DIR", Path(__file__).resolve().parent / "results"))
 OFFICIAL_CONTEXTS_PATH = Path(__file__).resolve().parents[3] / "backend" / "internal" / "providers" / "ontology" / "contexts.json"
 
-SAMPLE_SIZE = 200
-RECALL_SAMPLE = 100
+SAMPLE_SIZE = int(os.environ.get("OKT_SAMPLE_SIZE", "200"))
+RECALL_SAMPLE = int(os.environ.get("OKT_RECALL_SAMPLE", "100"))
 SEED = 42
 
 
@@ -117,6 +117,27 @@ async def audit_fragmentation(conn: asyncpg.Connection, repo_id: str) -> dict:
         name_to_aliases[name] = aliases
         all_names.append(name)
 
+    # Preload every (concept_name → fact_id) membership in ONE query so the
+    # pair-scans below do in-memory set ops instead of one DB query per pair.
+    # On the default repo (267k groups, 1.3M fact_concepts) this turns ~270k
+    # sequential queries into a single ~3s scan.
+    fact_rows = await conn.fetch(
+        """
+        SELECT lower(c.canonical_name) AS name,
+               array_agg(DISTINCT fc.fact_id::text) AS fact_ids
+        FROM okt_repository.fact_concepts fc
+        JOIN okt_repository.concepts c ON c.id = fc.concept_id
+        WHERE c.repository_id = $1
+        GROUP BY lower(c.canonical_name)
+        """,
+        repo_id,
+    )
+    for r in fact_rows:
+        name_to_facts[r["name"]] = set(r["fact_ids"] or [])
+
+    def _facts_of(name: str) -> set[str]:
+        return name_to_facts.get(name, set())
+
     # Build a reverse index: alias text → set of concept names that claim it.
     alias_to_names: dict[str, set[str]] = {}
     for name, aliases in name_to_aliases.items():
@@ -144,8 +165,8 @@ async def audit_fragmentation(conn: asyncpg.Connection, repo_id: str) -> dict:
                     if key in seen_pairs:
                         continue
                     seen_pairs.add(key)
-                    facts_a = await _get_facts_for_name(conn, repo_id, a)
-                    facts_b = await _get_facts_for_name(conn, repo_id, b)
+                    facts_a = _facts_of(a)
+                    facts_b = _facts_of(b)
                     overlap = len(facts_a & facts_b)
                     is_canonical_of_a = alias == a
                     is_canonical_of_b = alias == b
@@ -169,8 +190,8 @@ async def audit_fragmentation(conn: asyncpg.Connection, repo_id: str) -> dict:
                 if key in seen_pairs:
                     continue
                 seen_pairs.add(key)
-                facts_a = await _get_facts_for_name(conn, repo_id, name)
-                facts_b = await _get_facts_for_name(conn, repo_id, other)
+                facts_a = _facts_of(name)
+                facts_b = _facts_of(other)
                 overlap = len(facts_a & facts_b)
                 canonical_as_alias_pairs.append({
                     "name_a": name, "name_b": other,
@@ -210,33 +231,42 @@ async def audit_fragmentation(conn: asyncpg.Connection, repo_id: str) -> dict:
         "news", "media", "content", "article", "articles", "blog", "post",
         "video", "videos", "podcast", "show", "series", "episode",
     }
+    # Sorted-prefix scan: O(N log N) instead of O(N^2). Sort names, then for each
+    # name `a`, binary-search the range of names that start with `a + " "` and
+    # scan only that slice (names sharing a prefix are adjacent when sorted).
+    import bisect
+    sorted_names = sorted(all_names)
     substring_pairs: list[dict] = []
-    for a in all_names:
+    for a in sorted_names:
         if len(a) < 4:
             continue
-        for b in all_names:
+        prefix = a + " "
+        lo = bisect.bisect_left(sorted_names, prefix)
+        hi = bisect.bisect_left(sorted_names, prefix + "\xff")
+        for b in sorted_names[lo:hi]:
             if a == b:
                 continue
-            if b.startswith(a + " ") and len(b) <= len(a) * 1.5 and a != b:
-                # Check (e): the suffix after the prefix must not be a qualifier word.
-                suffix = b[len(a) + 1:].lower().strip()
-                if suffix in QUALIFIER_WORDS:
-                    continue
-                key = tuple(sorted([a, b]))
-                if key in seen_pairs:
-                    continue
-                facts_a = await _get_facts_for_name(conn, repo_id, a)
-                facts_b = await _get_facts_for_name(conn, repo_id, b)
-                overlap = len(facts_a & facts_b)
-                if overlap == 0:
-                    seen_pairs.add(key)
-                    substring_pairs.append({
-                        "name_a": a, "name_b": b,
-                        "detail": f'"{a}" is a prefix of "{b}" (suffix: "{suffix}")',
-                        "facts_a": len(facts_a), "facts_b": len(facts_b),
-                        "shared_facts": 0,
-                        "type": "prefix_no_overlap",
-                    })
+            if len(b) > len(a) * 1.5:
+                continue
+            # Check (e): the suffix after the prefix must not be a qualifier word.
+            suffix = b[len(a) + 1:].lower().strip()
+            if suffix in QUALIFIER_WORDS:
+                continue
+            key = tuple(sorted([a, b]))
+            if key in seen_pairs:
+                continue
+            facts_a = _facts_of(a)
+            facts_b = _facts_of(b)
+            overlap = len(facts_a & facts_b)
+            if overlap == 0:
+                seen_pairs.add(key)
+                substring_pairs.append({
+                    "name_a": a, "name_b": b,
+                    "detail": f'"{a}" is a prefix of "{b}" (suffix: "{suffix}")',
+                    "facts_a": len(facts_a), "facts_b": len(facts_b),
+                    "shared_facts": 0,
+                    "type": "prefix_no_overlap",
+                })
 
     all_pairs = shared_alias_pairs + canonical_as_alias_pairs + substring_pairs
     # Deduplicate by (name_a, name_b).
@@ -701,10 +731,12 @@ async def audit_context_mislabeling(conn: asyncpg.Connection, repo_id: str, mode
 # Orchestration
 # ---------------------------------------------------------------------------
 
-JUDGE_MODELS = [
-    "deepseek/deepseek-v4-flash",
-    "google/gemma-4-31b-it",
-]
+# The LLM judge model for the LLM-dependent audits (Failures 2, 3, 5).
+# Change this to rerun the experiment with a different judge model (e.g.
+# "google/gemma-4-31b-it" for a self-review by the extraction model, or
+# a future stronger model). The model name is stored in the results JSON
+# so each run is self-documenting.
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "deepseek/deepseek-v4-flash")
 
 
 async def run(dsn: str = DEFAULT_DSN, repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
@@ -714,17 +746,13 @@ async def run(dsn: str = DEFAULT_DSN, repo_slug: str = DEFAULT_REPO_SLUG) -> dic
         from okt_db import repo_id_for_slug
         repo_id = await repo_id_for_slug(conn, repo_slug)
         print(f"Repo: {repo_slug} ({repo_id})")
+        print(f"Judge model: {JUDGE_MODEL}")
 
-        # Model-independent audits (run once).
+        # Model-independent audits (run once, no LLM).
         print("Failure 1 — Under-merging (fragmentation)...")
         t1 = time.time()
         f1 = await audit_fragmentation(conn, repo_id)
-        print(f"  done in {time.time()-t1:.1f}s: {f1['n_fragmented_entities']} fragmented entities")
-
-        print("Failure 3 — Missing concepts (recall)...")
-        t3 = time.time()
-        f3 = await audit_recall(conn, repo_id, model=JUDGE_MODELS[0])
-        print(f"  done in {time.time()-t3:.1f}s: raw recall={f3['mean_raw_recall']}, adjusted={f3['mean_adjusted_recall']}, noise_rate={f3['mean_noise_rate']}")
+        print(f"  done in {time.time()-t1:.1f}s: {f1['n_fragmented_pairs']} fragmented pairs")
 
         print("Failure 3b — Hallucinated concepts (cross-contamination)...")
         t3b = time.time()
@@ -736,33 +764,34 @@ async def run(dsn: str = DEFAULT_DSN, repo_slug: str = DEFAULT_REPO_SLUG) -> dic
         f4 = await audit_dedup_severed(conn, repo_id)
         print(f"  done in {time.time()-t4:.1f}s: {f4.get('n_severed_facts_no_concepts', 'N/A')} severed facts")
 
-        # Model-dependent audits (run once per judge model).
-        f2_by_model = {}
-        f5_by_model = {}
-        for model in JUDGE_MODELS:
-            label = model.split("/")[-1]
-            print(f"\nFailure 2 — Over-merging (judge: {label})...")
-            t2 = time.time()
-            f2_by_model[label] = await audit_over_merging(conn, repo_id, model=model)
-            print(f"  done in {time.time()-t2:.1f}s: {f2_by_model[label]['n_over_merged']} over-merged")
+        # LLM-dependent audits (run once with the configured judge model).
+        print(f"Failure 2 — Over-merging (judge: {JUDGE_MODEL})...")
+        t2 = time.time()
+        f2 = await audit_over_merging(conn, repo_id, model=JUDGE_MODEL)
+        print(f"  done in {time.time()-t2:.1f}s: {f2['n_over_merged']} over-merged")
 
-            print(f"Failure 5 — Context mislabeling (judge: {label})...")
-            t5 = time.time()
-            f5_by_model[label] = await audit_context_mislabeling(conn, repo_id, model=model)
-            print(f"  done in {time.time()-t5:.1f}s: {f5_by_model[label]['n_mislabeled']} mislabeled")
+        print(f"Failure 3 — Missing concepts (recall, judge: {JUDGE_MODEL})...")
+        t3 = time.time()
+        f3 = await audit_recall(conn, repo_id, model=JUDGE_MODEL)
+        print(f"  done in {time.time()-t3:.1f}s: raw recall={f3['mean_raw_recall']}, adjusted={f3['mean_adjusted_recall']}, noise_rate={f3['mean_noise_rate']}")
+
+        print(f"Failure 5 — Context mislabeling (judge: {JUDGE_MODEL})...")
+        t5 = time.time()
+        f5 = await audit_context_mislabeling(conn, repo_id, model=JUDGE_MODEL)
+        print(f"  done in {time.time()-t5:.1f}s: {f5['n_mislabeled']} mislabeled")
 
         return {
             "experiment": "exp3_failure_audits",
             "repository": repo_slug,
             "repository_id": repo_id,
-            "judge_models": JUDGE_MODELS,
+            "judge_model": JUDGE_MODEL,
             "total_seconds": round(time.time() - t0, 1),
             "failure_1_fragmentation": f1,
-            "failure_2_over_merging_by_model": f2_by_model,
+            "failure_2_over_merging": f2,
             "failure_3_recall": f3,
             "failure_3b_hallucination": f3b,
             "failure_4_dedup_severed": f4,
-            "failure_5_context_mislabeling_by_model": f5_by_model,
+            "failure_5_context_mislabeling": f5,
         }
     finally:
         await conn.close()
@@ -771,25 +800,22 @@ async def run(dsn: str = DEFAULT_DSN, repo_slug: str = DEFAULT_REPO_SLUG) -> dic
 def _print_summary(result: dict) -> None:
     print(f"\n{'='*60}")
     print(f"Experiment 3 — Failure-mode audits (total: {result['total_seconds']}s)")
-    print(f"Judge models: {', '.join(result['judge_models'])}")
+    print(f"Judge model: {result['judge_model']}")
     print(f"{'='*60}\n")
 
     f1 = result["failure_1_fragmentation"]
-    print(f"Failure 1 — Under-merging (fragmentation): [Wikidata ground truth]")
-    print(f"  Sampled: {f1['n_sampled']}, mapped to Wikidata: {f1['n_mapped_to_wikidata']}")
-    print(f"  Fragmented entities: {f1['n_fragmented_entities']} (rate: {f1['fragmentation_rate']:.1%})")
+    print(f"Failure 1 — Under-merging (fragmentation): [intra-corpus alias detection]")
+    print(f"  Groups: {f1['n_concept_groups']}, fragmented pairs: {f1['n_fragmented_pairs']} (rate: {f1['fragmentation_rate']:.1%})")
     if f1["fragmented_examples"]:
-        print(f"  Examples:")
         for ex in f1["fragmented_examples"][:5]:
-            print(f"    {ex['qid']}: {ex['groups']}")
+            print(f"    [{ex['type']}] {ex['name_a']} <-> {ex['name_b']} (shared_facts={ex['shared_facts']})")
 
-    f2_models = result["failure_2_over_merging_by_model"]
+    f2 = result["failure_2_over_merging"]
     print(f"\nFailure 2 — Over-merging (false merges): [LLM judge]")
-    for label, f2 in f2_models.items():
-        print(f"  {label}: sampled={f2['n_sampled']}, over-merged={f2['n_over_merged']} (rate: {f2['over_merge_rate']:.1%})")
-        if f2["over_merged_examples"]:
-            for ex in f2["over_merged_examples"][:3]:
-                print(f"    {ex['name']}: {ex.get('entities', [])} — {ex.get('reason', '')[:80]}")
+    print(f"  Sampled: {f2['n_sampled']}, over-merged: {f2['n_over_merged']} (rate: {f2['over_merge_rate']:.1%})")
+    if f2["over_merged_examples"]:
+        for ex in f2["over_merged_examples"][:5]:
+            print(f"    {ex['name']}: {ex.get('entities', [])} — {ex.get('reason', '')[:80]}")
 
     f3 = result["failure_3_recall"]
     print(f"\nFailure 3 — Missing concepts (recall): [spaCy comparator + LLM noise classification]")
@@ -804,7 +830,7 @@ def _print_summary(result: dict) -> None:
         print(f"  Real miss examples: {f3['real_miss_examples'][:10]}")
 
     f3b = result["failure_3b_hallucination"]
-    print(f"\nFailure 3b — Hallucinated concepts (cross-contamination): [substring check]")
+    print(f"\nFailure 3b — Hallucinated concepts (cross-contamination): [alias-aware substring check]")
     print(f"  Checked: {f3b['n_concepts_checked']}, suspect: {f3b['n_suspect']} (rate: {f3b['suspect_rate']:.1%})")
     if f3b["suspects"]:
         print(f"  Top suspects:")
@@ -819,13 +845,12 @@ def _print_summary(result: dict) -> None:
         print(f"  Duplicate hash groups: {f4['n_duplicate_hash_groups']}")
         print(f"  Severed facts (no concepts): {f4['n_severed_facts_no_concepts']} ({f4['pct_severed']}%)")
 
-    f5_models = result["failure_5_context_mislabeling_by_model"]
-    print(f"\nFailure 5 — Context mislabeling: [LLM judge, {f5_models[list(f5_models.keys())[0]]['official_context_count']} official labels]")
-    for label, f5 in f5_models.items():
-        print(f"  {label}: sampled={f5['n_sampled']}, mislabeled={f5['n_mislabeled']} (rate: {f5['mislabeling_rate']:.1%})")
-        if f5["mislabeled_examples"]:
-            for ex in f5["mislabeled_examples"][:3]:
-                print(f"    {ex['name']}: assigned={ex['assigned_context']} → correct={ex['correct_context']}")
+    f5 = result["failure_5_context_mislabeling"]
+    print(f"\nFailure 5 — Context mislabeling: [LLM judge, {f5['official_context_count']} official labels]")
+    print(f"  Sampled: {f5['n_sampled']}, mislabeled: {f5['n_mislabeled']} (rate: {f5['mislabeling_rate']:.1%})")
+    if f5["mislabeled_examples"]:
+        for ex in f5["mislabeled_examples"][:5]:
+            print(f"    {ex['name']}: assigned={ex['assigned_context']} → correct={ex['correct_context']}")
 
 
 async def main() -> None:

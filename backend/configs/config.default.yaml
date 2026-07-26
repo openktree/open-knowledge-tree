@@ -248,6 +248,15 @@ task:
     # statement; 1 worker is plenty.
     audit_cleanup: 1
 
+  # export_graph-task-specific settings. The worker streams a
+  # whole-repository GraphBundle to a temp file, then pushes the
+  # gzipped bytes to the shared knowledge registry. temp_dir is where
+  # the temp file lives during the build; "" = OS default (os.CreateTemp,
+  # typically /tmp). Set it to a mounted volume in containerized prod
+  # so a multi-GB bundle doesn't fill the container's writable layer.
+  graph_export:
+    temp_dir: ""
+
 auth:
   jwt_secret: "change-me-in-production"
   token_ttl: 24h

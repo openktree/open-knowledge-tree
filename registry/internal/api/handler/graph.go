@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -62,39 +65,45 @@ type graphBundleEnvelope struct {
 }
 
 // Push handles POST /api/v1/graphs. The request body is a gzipped
-// JSON graph bundle. The handler ungzips, peeks at the metadata
-// section to populate the searchable index, then stores the raw
-// gzipped bytes in S3 (so pulls can stream the original bytes
-// without re-gzipping). Returns the resolved graph id.
+// JSON graph bundle. The handler buffers a head chunk, gunzips just
+// enough to decode the metadata section (for the searchable index),
+// then streams the full original gzipped body (buffered head + the
+// unread remainder of r.Body) straight to storage — no 2 GB cap, no
+// full-body buffer. Returns the resolved graph id.
+//
+// The metadata section is the 2nd JSON field (right after
+// schema_version), so a small head buffer (256 KB) is enough to
+// decode it for any realistic bundle. If the head is too small to
+// contain the full metadata object (pathological case: a multi-MB
+// description), the handler falls back to growing the buffer up to
+// maxPeekBytes (16 MB) before giving up with a 400.
 func (h *GraphHandler) Push(w http.ResponseWriter, r *http.Request) {
-	// Read the raw gzipped bytes first; these are stored verbatim.
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 2<<30)) // 2GB cap
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "reading request body: "+err.Error())
-		return
-	}
-	if len(bodyBytes) == 0 {
-		writeError(w, http.StatusBadRequest, "empty request body")
-		return
-	}
+	const (
+		initialPeek = 256 << 10  // 256 KB — covers schema_version + metadata
+		maxPeek     = 16 << 20   // 16 MB — backstop for pathological metadata
+	)
 
-	// Ungzip to peek at the metadata section. We re-gzip on the other
-	// side is NOT needed — we store the original gzipped bytes.
-	gz, err := gzip.NewReader(bytesReader(bodyBytes))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "body is not valid gzip: "+err.Error())
+	// Buffer the head so we can (a) gunzip + decode metadata from it
+	// and (b) replay it into the storage stream. We read greedily up
+	// to initialPeek, then more if needed.
+	br := bufio.NewReaderSize(r.Body, initialPeek)
+	head, err := br.Peek(initialPeek)
+	if err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "reading request body head: "+err.Error())
 		return
 	}
-	jsonBytes, err := io.ReadAll(gz)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "gunzipping bundle: "+err.Error())
-		return
-	}
-	gz.Close()
+	// If Peek returned less than initialPeek (short body or EOF),
+	// head is what's available; br holds nothing extra. If Peek
+	// returned the full initialPeek, br still holds those bytes
+	// (Peek doesn't consume) — we'll consume via the MultiReader
+	// below.
 
-	var env graphBundleEnvelope
-	if err := json.Unmarshal(jsonBytes, &env); err != nil {
-		writeError(w, http.StatusBadRequest, "bundle is not valid JSON: "+err.Error())
+	// Gunzip the head + decode the metadata envelope. We feed the
+	// head bytes to a gzip reader; if the gzip stream needs more
+	// bytes than the head to decode the metadata object, we grow.
+	env, consumedHead, err := peekMetadata(head, br, initialPeek, maxPeek)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if env.Metadata.Name == "" {
@@ -127,13 +136,91 @@ func (h *GraphHandler) Push(w http.ResponseWriter, r *http.Request) {
 		SHA256:        env.Metadata.SHA256,
 		SchemaVersion: env.SchemaVersion,
 	}
-	result, err := h.svc.PushGraph(r.Context(), meta, bodyBytes)
+
+	// The storage stream is: the original gzipped bytes from the
+	// very start (we consumed `consumedHead` bytes from br while
+	// peeking; br still holds the unconsumed remainder). We replay
+	// the consumed head + the rest of br. bufio.Reader.Peek doesn't
+	// consume, but our peekMetadata may have Consumed via Discard;
+	// the simplest correct replay is: bytes.NewReader(head[:nConsumed])
+	// + br (which still has the unconsumed peeked bytes + unread
+	// body). Since Peek keeps bytes in the buffer, br.Read() yields
+	// the full original stream from byte 0 — so we don't even need
+	// to replay the head. But peekMetadata may have called Discard
+	// to advance past gzip-frame boundaries. To be safe, replay the
+	// consumed bytes explicitly.
+	bodyStream := io.MultiReader(bytes.NewReader(consumedHead), br)
+	result, err := h.svc.PushGraphStream(r.Context(), meta, bodyStream)
 	if err != nil {
 		log.Printf("graph push: %v", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, result)
+}
+
+// peekMetadata gunzips the head bytes and decodes the
+// graphBundleEnvelope (schema_version + metadata). If the gzip
+// stream needs more bytes than head to fully decode the metadata
+// object, it reads more from br (the bufio reader over r.Body),
+// growing the buffer up to maxPeek. Returns the envelope, the raw
+// gzipped bytes consumed so far (to replay into the storage stream),
+// and an error.
+//
+// The consumed bytes are the head bytes that were fed to the gzip
+// reader; the caller replays them via io.MultiReader so storage gets
+// the full original gzipped stream.
+func peekMetadata(head []byte, br *bufio.Reader, initialPeek, maxPeek int) (graphBundleEnvelope, []byte, error) {
+	// Try decoding from the head first.
+	gz, err := gzip.NewReader(bytes.NewReader(head))
+	if err != nil {
+		return graphBundleEnvelope{}, nil, fmt.Errorf("body is not valid gzip: %w", err)
+	}
+	dec := json.NewDecoder(gz)
+	var env graphBundleEnvelope
+	// Read the opening '{' + "schema_version" + metadata object.
+	if err := dec.Decode(&env); err == nil {
+		// Success — head was enough. The consumed gzipped bytes are
+		// the whole head (the gzip reader may have read less, but
+		// replaying the full head + the rest of br is safe: the
+		// storage path gunzips from the start, so extra head bytes
+		// it already consumed are part of the gzip stream). We need
+		// to know how many bytes gz consumed to avoid replaying
+		// beyond them. gzip.Reader doesn't expose that, but since
+		// we feed head and the storage path re-reads from byte 0
+		// via br (which still has the peeked bytes), we return head
+		// as consumed and the caller uses io.MultiReader(head, br).
+		// BUT br still contains the head bytes (Peek doesn't
+		// consume), so replaying head + br would duplicate them.
+		// Fix: discard the peeked head from br so br starts after it.
+		_, _ = br.Discard(len(head))
+		return env, head, nil
+	}
+	// Head wasn't enough. Grow the buffer up to maxPeek, feeding the
+	// accumulating bytes to a fresh gzip reader each attempt (cheap
+	// for the small metadata prefix).
+	total := head
+	for len(total) < maxPeek {
+		chunk, err := br.Peek(len(total) + initialPeek)
+		if err != nil && err != io.EOF {
+			return graphBundleEnvelope{}, nil, fmt.Errorf("reading request body: %w", err)
+		}
+		total = chunk
+		gz, err := gzip.NewReader(bytes.NewReader(total))
+		if err != nil {
+			return graphBundleEnvelope{}, nil, fmt.Errorf("body is not valid gzip: %w", err)
+		}
+		dec := json.NewDecoder(gz)
+		if err := dec.Decode(&env); err == nil {
+			_, _ = br.Discard(len(total))
+			return env, total, nil
+		}
+		if len(chunk) < len(total)+initialPeek {
+			// EOF — no more bytes; the bundle is truncated.
+			return graphBundleEnvelope{}, nil, fmt.Errorf("bundle metadata truncated (could not decode within %d bytes)", len(total))
+		}
+	}
+	return graphBundleEnvelope{}, nil, fmt.Errorf("bundle metadata too large (exceeds %d byte peek limit)", maxPeek)
 }
 
 // List handles GET /api/v1/graphs. Supports ?limit=&offset=&q=&tag=.
@@ -224,26 +311,4 @@ func (h *GraphHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "graph deleted"})
-}
-
-// bytesReader wraps a []byte as an io.Reader without bytes.NewReader
-// (kept here to avoid an extra import alias collision; the stdlib
-// bytes.NewReader would work too, but this local helper keeps the
-// push handler self-contained).
-func bytesReader(b []byte) io.Reader {
-	return &byteReader{b: b}
-}
-
-type byteReader struct {
-	b []byte
-	i int
-}
-
-func (r *byteReader) Read(p []byte) (int, error) {
-	if r.i >= len(r.b) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.i:])
-	r.i += n
-	return n, nil
 }

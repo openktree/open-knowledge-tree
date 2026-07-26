@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +47,20 @@ func (m *mockStorage) Store(ctx context.Context, key string, data []byte, conten
 		}
 	}
 	return nil
+}
+
+// StoreStream reads body into a []byte and delegates to Store so the
+// mock records the call the same way. Real backends stream; the mock
+// buffers since tests use small payloads.
+func (m *mockStorage) StoreStream(ctx context.Context, key string, body io.Reader, contentType string) (int64, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return 0, err
+	}
+	if err := m.Store(ctx, key, data, contentType); err != nil {
+		return 0, err
+	}
+	return int64(len(data)), nil
 }
 
 func (m *mockStorage) Delete(ctx context.Context, key string) error {

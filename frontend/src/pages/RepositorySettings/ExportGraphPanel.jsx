@@ -28,6 +28,7 @@ export default function ExportGraphPanel(props) {
   const [busy, setBusy] = createSignal(false);
   const [downloading, setDownloading] = createSignal(false);
   const [includeBodies, setIncludeBodies] = createSignal(false);
+  const [includeImages, setIncludeImages] = createSignal(true);
 
   const handleExport = async () => {
     const slug = props.slug?.();
@@ -46,6 +47,7 @@ export default function ExportGraphPanel(props) {
         description: description().trim(),
         tags: tagList,
         include_bodies: includeBodies(),
+        include_images: includeImages(),
       });
       props.onAlert?.({
         variant: "success",
@@ -75,7 +77,12 @@ export default function ExportGraphPanel(props) {
     }
     setDownloading(true);
     try {
-      const blob = await api.downloadRepoGraph(slug, name().trim() || undefined, includeBodies());
+      const blob = await api.downloadRepoGraph(
+        slug,
+        name().trim() || undefined,
+        includeBodies(),
+        includeImages(),
+      );
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -153,6 +160,23 @@ export default function ExportGraphPanel(props) {
           <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
             <input
               type="checkbox"
+              checked={includeImages()}
+              onInput={(e) => setIncludeImages(e.currentTarget.checked)}
+              disabled={busy() || downloading()}
+              class="mt-0.5 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-900"
+            />
+            <span>
+              Include source images
+              <span class="block text-xs text-gray-400 dark:text-gray-500">
+                Embeds the stored source images (PDF page renders, mirrored inline) in the bundle so
+                they travel with the graph. On by default; turn off for a smaller, faster export
+                (the importer re-fetches remote images, and loses upload:// ones).
+              </span>
+            </span>
+          </label>
+          <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
               checked={includeBodies()}
               onInput={(e) => setIncludeBodies(e.currentTarget.checked)}
               disabled={busy() || downloading()}
@@ -163,7 +187,6 @@ export default function ExportGraphPanel(props) {
               <span class="block text-xs text-gray-400 dark:text-gray-500">
                 Embeds the stored source body files (PDFs) in the bundle so uploaded documents
                 travel with the graph. Increases bundle size significantly for repos with many PDFs.
-                Images are always included.
               </span>
             </span>
           </label>
