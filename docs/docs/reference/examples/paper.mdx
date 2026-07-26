@@ -1,0 +1,26 @@
+---
+id: paper
+sidebar_position: 1
+title: "Atomic Facts and Emergent Concept Graphs: A Fact-Based Architecture for Retrieval-Augmented Generation"
+description: The OKT paper — a self-referential deep dive on OKT's own atomic-fact decomposition, emergent concept graph, and fact-co-occurrence relations, written by OKT's research flow against its own repository. Every citation is clickable and carries a posture (supports / contradicts / related); direct cites ([D{N}], amber) are differentiated from auto-matched annotations ([N], blue).
+---
+
+import AnnotatedReport from "@site/src/components/AnnotatedReport";
+import snapshot from "./_parsed/paper.json";
+
+<AnnotatedReport
+  snapshot={snapshot}
+  generatorModel="GLM 5.2"
+  banner={
+    <>
+      <strong>This paper was built by the OKT system.</strong> It is OKT
+      researching itself — a research flow ran against OKT&apos;s own
+      repository to synthesize the system&apos;s mechanisms (atomic fact
+      decomposition, the emergent concept graph, fact-co-occurrence
+      relations) into a single document, with every claim traceable to a
+      fact and its sources. Treat it as a self-showcase of OKT&apos;s
+      research capabilities: a deep dive on system mechanisms, produced
+      end-to-end by those same mechanisms.
+    </>
+  }
+/>

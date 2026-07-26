@@ -47,6 +47,18 @@ const EXAMPLES = [
   },
 ];
 
+const DEEP_DIVE = {
+  title: "Atomic Facts and Emergent Concept Graphs",
+  to: "/docs/reference/examples/paper",
+  model: "GLM 5.2",
+  desc: "The OKT paper — written by OKT. A self-referential deep dive on OKT's own mechanisms: atomic fact decomposition, the emergent concept graph, and the fact-co-occurrence relations that fall out of it. A research flow ran against OKT's own repository to synthesize the system's mechanisms into a single document, with every claim traceable to a fact and its sources.",
+  bullets: [
+    "Self-showcase: OKT researching itself, end-to-end, with its own agentic flow.",
+    "Two citation kinds, visually differentiated — amber direct cites (researcher-chosen) vs blue auto-matched annotations (system-retrieved).",
+    "122 direct cites + 109 auto-matched annotations, every one clickable to its supporting fact and source URLs.",
+  ],
+};
+
 export default function Home(): React.ReactElement {
   const { siteConfig } = useDocusaurusContext();
   return (
@@ -74,6 +86,52 @@ export default function Home(): React.ReactElement {
         <section>
           <h2 style={{ textAlign: "center", marginBottom: "1.5rem" }}>The Data Pipeline at a Glance</h2>
           <PipelineDiagram />
+        </section>
+
+        <section style={{ padding: "2rem 0" }}>
+          <h2 style={{ textAlign: "center", marginBottom: "0.5rem" }}>Deep Dive on System Mechanisms</h2>
+          <p style={{ textAlign: "center", color: "var(--ifm-color-emphasis-600)", maxWidth: 640, margin: "0 auto 1.5rem" }}>
+            The OKT paper itself — written by OKT. A research flow ran against OKT&apos;s own repository to synthesize the
+            system&apos;s mechanisms into a single, fully-cited document. It is OKT showcasing its own research capabilities.
+          </p>
+          <Link
+            to={DEEP_DIVE.to}
+            className="card"
+            style={{
+              padding: "1.75rem",
+              textDecoration: "none",
+              display: "block",
+              border: "1px solid var(--ifm-color-primary)",
+              background: "var(--ifm-color-primary-very-soft, rgba(79,70,229,0.08))",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "0.75rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
+              <h3 style={{ margin: 0 }}>{DEEP_DIVE.title}</h3>
+              <span
+                style={{
+                  display: "inline-block",
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  padding: "0.15rem 0.6rem",
+                  borderRadius: 999,
+                  background: "var(--ifm-color-primary)",
+                  color: "#fff",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                OKT self-showcase
+              </span>
+            </div>
+            <span style={{ display: "inline-block", fontSize: "0.72rem", fontWeight: 700, padding: "0.1rem 0.5rem", borderRadius: 999, marginBottom: "0.6rem", background: "var(--ifm-color-primary-very-soft, rgba(79,70,229,0.12))", color: "var(--ifm-color-primary)" }}>
+              Synthesis model: {DEEP_DIVE.model}
+            </span>
+            <p style={{ color: "var(--ifm-color-emphasis-700)", fontSize: "0.95rem", margin: "0 0 0.75rem" }}>{DEEP_DIVE.desc}</p>
+            <ul style={{ margin: 0, paddingLeft: "1.25rem", color: "var(--ifm-color-emphasis-600)", fontSize: "0.88rem" }}>
+              {DEEP_DIVE.bullets.map((b) => (
+                <li key={b} style={{ marginBottom: "0.2rem" }}>{b}</li>
+              ))}
+            </ul>
+          </Link>
         </section>
 
         <section style={{ padding: "2rem 0" }}>

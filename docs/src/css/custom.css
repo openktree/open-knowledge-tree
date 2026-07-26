@@ -151,7 +151,20 @@
   color: var(--ifm-color-primary);
 }
 
-/* Citation superscript — clickable. */
+/* Citation superscript — clickable.
+ *
+ * Two kinds share the base .okt-cite rules:
+ *   - .okt-cite--auto    : auto-matched facts the system retrieved by
+ *                          embedding similarity (primary color, default)
+ *   - .okt-cite--direct  : direct cites the researcher / AI researcher
+ *                          explicitly chose from a source (amber accent,
+ *                          so the evidentiary backbone is visible at a
+ *                          glance). The "D" prefix in the visible text is
+ *                          the other tell.
+ *
+ * Posture colors (supports / contradicts / related) layer on top of the
+ * kind color and win for the visible chip.
+ */
 .okt-report-body .okt-cite {
   display: inline;
   cursor: pointer;
@@ -177,6 +190,28 @@
 [data-theme="dark"] .okt-report-body .okt-cite:hover {
   background: var(--ifm-color-primary);
   color: #0f0f12;
+}
+
+/* Direct-cite kind — amber accent so researcher-chosen evidence stands apart
+   from auto-matched annotations. Only applied when no posture color is also
+   present (posture colors override the kind color below). */
+.okt-report-body .okt-cite--direct:not(.okt-cite--supports):not(.okt-cite--contradicts):not(.okt-cite--related) {
+  color: #b45309; /* amber-700 */
+  background: rgba(245, 158, 11, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.35);
+}
+.okt-report-body .okt-cite--direct:not(.okt-cite--supports):not(.okt-cite--contradicts):not(.okt-cite--related):hover {
+  background: #b45309;
+  color: #fff;
+}
+[data-theme="dark"] .okt-report-body .okt-cite--direct:not(.okt-cite--supports):not(.okt-cite--contradicts):not(.okt-cite--related) {
+  color: #fbbf24; /* amber-400 */
+  background: rgba(245, 158, 11, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.4);
+}
+[data-theme="dark"] .okt-report-body .okt-cite--direct:not(.okt-cite--supports):not(.okt-cite--contradicts):not(.okt-cite--related):hover {
+  background: #b45309;
+  color: #fff;
 }
 
 /* Posture-colored citation superscripts. The base .okt-cite rules above
@@ -266,6 +301,80 @@
 [data-theme="dark"] .okt-cite-posture--related {
   color: #60a5fa;
   background: rgba(59, 130, 246, 0.2);
+}
+
+/* Kind label in the popover header — small uppercase pill that tells the
+   reader whether they are looking at a direct cite (researcher-chosen)
+   or an auto-matched annotation (system-retrieved). Pairs visually with
+   the inline chip color: amber for direct, primary for auto. */
+.okt-cite-popover__header .okt-cite-kind {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.okt-cite-kind--direct {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(180, 83, 9, 0.35);
+}
+.okt-cite-kind--auto {
+  color: var(--ifm-color-primary);
+  background: var(--ifm-color-primary-very-soft, rgba(79, 70, 229, 0.12));
+  border: 1px solid rgba(79, 70, 229, 0.25);
+}
+[data-theme="dark"] .okt-cite-kind--direct {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(251, 191, 36, 0.4);
+}
+[data-theme="dark"] .okt-cite-kind--auto {
+  color: #a5b4fc;
+  background: rgba(129, 140, 248, 0.16);
+  border-color: rgba(129, 140, 248, 0.35);
+}
+
+/* Direct-cite popovers get a subtle amber left-border to reinforce the
+   kind, even when the reader scrolled past the header. */
+.okt-cite-popover--direct {
+  border-left: 3px solid #f59e0b;
+}
+[data-theme="dark"] .okt-cite-popover--direct {
+  border-left-color: #fbbf24;
+}
+
+/* Unavailable-fact popover body — muted, italicized. */
+.okt-cite-popover__text--unavailable {
+  font-style: italic;
+  color: var(--ifm-color-emphasis-600);
+}
+
+/* Optional banner slot above the generator-model line. Used by the OKT
+   paper page to call out that the paper itself was produced by OKT. */
+.okt-report-banner {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--ifm-card-border-radius, 8px);
+  border: 1px solid var(--ifm-color-primary);
+  background: var(--ifm-color-primary-very-soft, rgba(79, 70, 229, 0.1));
+  color: var(--ifm-font-color-base);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.okt-report-banner :first-child {
+  margin-top: 0;
+}
+.okt-report-banner :last-child {
+  margin-bottom: 0;
+}
+.okt-report-banner strong {
+  color: var(--ifm-color-primary);
+}
+[data-theme="dark"] .okt-report-banner {
+  background: rgba(129, 140, 248, 0.12);
 }
 
 /* Popover — uses Docusaurus .card for the base surface. */
