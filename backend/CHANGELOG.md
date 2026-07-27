@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.2...api-v0.4.3) (2026-07-27)
+
+
+### Bug Fixes
+
+* **api:** import registry concepts verbatim when context label matches local vocab ([9b55a15](https://github.com/openktree/open-knowledge-tree/commit/9b55a1525c0af4ee21e8502e6841fb3c931c7b85))
+
 ## [0.4.2](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.1...api-v0.4.2) (2026-07-27)
 
 
