@@ -187,9 +187,12 @@ hub concepts, then walk the graph via `getRelatedConcepts` and
 `searchFacts(concept=...)` (see "Effective quick-search patterns" below).
 - **getConcept(repository, concept)** — Read a concept's definition. Use to
 understand a key concept before deciding workflow.
-- **getRelatedConcepts(repository, concept, limit?)** — See structural
+- **getRelatedConcepts(repository, concept, limit?, show_insignificant?)** — See structural
 neighbors of a concept. Use to map scope boundaries before splitting into
-multiple synthesizer runs.
+multiple synthesizer runs. Relations are banded by `shared_fact_count`:
+`stable` (≥6, statistically significant), `weak` (3..5), `insignificant` (<3,
+low significance, hidden by default). Pass `show_insignificant=true` to
+surface the insignificant band.
 - **getFact(repository, factId)** — Fact detail + provenance. Use to answer
 direct "what's the source for X" questions without spawning a subagent.
 - **getConceptSummaries(repository, concept)** — Summary slices for a
