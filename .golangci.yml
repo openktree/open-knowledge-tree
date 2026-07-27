@@ -1,50 +1,56 @@
 # Permissive golangci-lint config used by CI and `just lint`.
 # Goal: gate new breakage without retroactively churning the codebase.
 #
-# This is the golangci-lint **v1** schema. CI pins
-# golangci/golangci-lint-action@v6 with version v1.62 to match.
-# To upgrade to golangci-lint v2, bump the action to @v7+ and migrate
-# this file to the v2 schema (https://golangci-lint.run/usage/migration/).
+# This is the golangci-lint **v2** schema (migrated from v1 so the
+# linter can analyze Go 1.25 code — golangci-lint v1.62 was built
+# with go1.23 and refused to lint modules whose go.mod declares
+# go 1.25). CI pins golangci/golangci-lint-action@v7 with version
+# v2.12.2 to match. To downgrade back to v1, revert to the v1
+# schema (run / backend / registry go.mod would also need to drop
+# to go 1.23 or lower).
 #
 # Run separately per module:
 #   cd backend && golangci-lint run ./...
 #   cd registry && golangci-lint run ./...
-run:
-  timeout: 5m
-  # NOTE: do NOT set `go: "1.25"` here. golangci-lint v1.62 was built
-  # with go1.23 and refuses to lint when the config forces a newer Go
-  # version ("the Go language version (go1.23) used to build
-  # golangci-lint is lower than the targeted Go version (1.25)").
-  # Omitting `go:` makes golangci-lint read the target version from
-  # each module's go.mod, which avoids the build-version check. CI
-  # uses Go 1.25 + golangci-lint-action@v6 / version v1.62.
-
+version: "2"
 linters:
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -SA1029
+        - -ST1000
+        - -ST1003
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
   enable:
     - gofmt
     - goimports
-    - vet
-    - errcheck
-    - staticcheck
-    - ineffassign
-    - unused
-
-linters-settings:
-  # golangci-lint v1 expects local-prefixes as a comma-separated
-  # string (NOT a YAML list — a list triggers "expected type 'string',
-  # got unconvertible type '[]interface{}'" at config load and fails
-  # the lint gate before any linter runs). See
-  # https://golangci-lint.run/usage/linters/#goimports.
-  goimports:
-    local-prefixes: github.com/openktree/open-knowledge-tree/backend,github.com/openktree/knowledge-registry
-  staticcheck:
-    checks: ["all", "-ST1000", "-ST1003", "-SA1029"]
-
-issues:
-  exclude-use-default: true
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  exclude-rules:
-    # e2e tests legitimately use json.Unmarshal into ad-hoc structs
-    - path: _test\.go
-      linters: [errcheck]
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/openktree/open-knowledge-tree/backend
+        - github.com/openktree/knowledge-registry
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

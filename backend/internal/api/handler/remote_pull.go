@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -34,7 +35,7 @@ type RemotePullDeps struct {
 	// when pulling decompositions. Nil when the caller wants the
 	// legacy "no filter" behavior (the Service then returns all
 	// decompositions unfiltered).
-	Filter *registry.RelevanceFilter
+	Filter        *registry.RelevanceFilter
 	Queries       *store.Queries
 	SystemQueries *store.Queries
 	RepoID        pgtype.UUID

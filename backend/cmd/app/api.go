@@ -845,7 +845,9 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 
 	<-ctx.Done()
 	log.Println("shutting down API server...")
-	srv.Shutdown(context.Background())
+	if err := srv.Shutdown(context.Background()); err != nil {
+		log.Printf("api: server shutdown: %v", err)
+	}
 
 	if err := tm.Stop(context.Background()); err != nil {
 		log.Printf("task manager stop error: %v", err)

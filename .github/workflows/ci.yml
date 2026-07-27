@@ -80,15 +80,27 @@ jobs:
       # schema. Pin to golangci-lint-action@v6 (last major that
       # supports golangci-lint v1). To move to golangci-lint v2,
       # bump the action to @v7+ and migrate .golangci.yml to v2.
-      - uses: golangci/golangci-lint-action@v6
+      # golangci-lint v2.x: the .golangci.yml at repo root uses the
+      # v2 schema (migrated from v1 because v1.62 was built with
+      # go1.23 and cannot lint Go 1.25 modules). Pin to
+      # golangci-lint-action@v7 (v2-capable) with version v2.12.2.
+      # only-new-issues: true flags only issues in changed files —
+      # matches the v1 config's "gate new breakage without
+      # retroactively churning the codebase" intent. The codebase
+      # has ~280 pre-existing findings (gofmt/goimports drift +
+      # unused symbols) that v1 never surfaced because the config
+      # failed to load; only-new-issues avoids a forced sweep.
+      - uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.62
+          version: v2.12.2
           working-directory: backend
+          only-new-issues: true
           args: --timeout=5m
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.62
+          version: v2.12.2
           working-directory: registry
+          only-new-issues: true
           args: --timeout=5m
 
   frontend-lint:
