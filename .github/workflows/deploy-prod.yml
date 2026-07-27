@@ -30,8 +30,14 @@
 #     REGISTRY_AUTH_JWT_SECRET=<strong-random> \
 #     REGISTRY_AUTH_AUTH_MODE=closed
 #
-# Prereq: set FLY_API_TOKEN as a GitHub Actions secret in repo
-# settings. Until it exists this workflow fails at the deploy step.
+# Prereq: set FLY_API_TOKEN as a GitHub Actions secret on the `prod`
+# environment (repo Settings → Environments → prod). The repo-level
+# FLY_API_TOKEN is scoped to the dev Fly app; the prod environment's
+# token is the one this workflow uses (the deploy-prod job declares
+# `environment: prod`, so ${{ secrets.FLY_API_TOKEN }} resolves to the
+# env-scoped secret, not the repo-level one). Until the prod env
+# secret exists this workflow fails at the deploy step with
+# `Error: unauthorized` from Fly.
 #
 # Run from the Actions tab:
 #   Actions → deploy-prod → Run workflow → service=registry, version=registry-v1.0.0
@@ -57,6 +63,7 @@ permissions:
 jobs:
   deploy-prod:
     runs-on: ubuntu-latest
+    environment: prod
     env:
       SERVICE: ${{ github.event.inputs.service }}
       VERSION: ${{ github.event.inputs.version }}
