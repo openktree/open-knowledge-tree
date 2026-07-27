@@ -1,13 +1,18 @@
 # Builds and pushes the okt-api Docker image to GHCR on every
-# `api-v*` tag push from release-please, then deploys it to the
-# `okt-api-dev` Fly app (automatic dev deploy).
+# `api-v*` tag push from release-please.
+#
+# The OKT API is self-hosted (users run it locally / on their own
+# infra); there is no Fly-hosted API app. So this workflow only
+# builds and publishes the image — it does NOT deploy anywhere.
+# (The registry and frontend are the Fly-hosted services; see
+# release-registry.yml / release-frontend.yml for those.)
 #
 # linux/amd64 only for now. Also tags `:latest`. The Dockerfile does
 # the CGo compile (go-fitz / MuPDF) inside Alpine.
 #
-# Prod deploys are manual via deploy-prod.yml (workflow_dispatch),
-# which pulls a specific versioned image from GHCR and deploys it to
-# the `okt-api-prod` Fly app.
+# Prod (self-hosted) deploys are manual: an operator pulls
+# ghcr.io/openktree/api:<version> (or :latest) and runs it via
+# docker-compose / their own orchestrator.
 name: release-api
 
 on:
@@ -25,7 +30,6 @@ permissions:
 
 env:
   IMAGE: ghcr.io/openktree/api
-  FLY_APP: okt-api-dev
 
 jobs:
   release:
@@ -63,24 +67,3 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy-dev:
-    needs: release
-    runs-on: ubuntu-latest
-    if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
-    env:
-      VERSION: ${{ github.event.release.tag_name || github.event.inputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Deploy ${{ env.VERSION }} to ${{ env.FLY_APP }}
-        working-directory: backend
-        run: |
-          flyctl deploy --app "$FLY_APP" \
-            --image "$IMAGE:latest" \
-            --strategy rolling \
-            --yes
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

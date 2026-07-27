@@ -1,13 +1,19 @@
 # Builds and pushes the okt-frontend nginx Docker image to GHCR on
-# every `frontend-v*` tag push from release-please, then deploys it
-# to the `okt-frontend-dev` Fly app (automatic dev deploy).
+# every `frontend-v*` tag push from release-please.
+#
+# The OKT frontend is self-hosted (users run it locally / on their
+# own infra alongside the API); there is no Fly-hosted frontend app.
+# So this workflow only builds and publishes the image — it does NOT
+# deploy anywhere. (The registry is the only Fly-hosted service; see
+# release-registry.yml. Docs deploy to Cloudflare Pages via
+# docs-cloudflare.yml.)
 #
 # linux/amd64 only for now. Also tags `:latest`. The Dockerfile builds
 # the SolidJS app with Vite and serves the static bundle with nginx.
 #
-# Prod deploys are manual via deploy-prod.yml (workflow_dispatch),
-# which pulls a specific versioned image from GHCR and deploys it to
-# the `okt-frontend-prod` Fly app.
+# Prod (self-hosted) deploys are manual: an operator pulls
+# ghcr.io/openktree/frontend:<version> (or :latest) and runs it via
+# docker-compose / their own orchestrator.
 name: release-frontend
 
 on:
@@ -25,7 +31,6 @@ permissions:
 
 env:
   IMAGE: ghcr.io/openktree/frontend
-  FLY_APP: okt-frontend-dev
 
 jobs:
   release:
@@ -63,24 +68,3 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy-dev:
-    needs: release
-    runs-on: ubuntu-latest
-    if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
-    env:
-      VERSION: ${{ github.event.release.tag_name || github.event.inputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Deploy ${{ env.VERSION }} to ${{ env.FLY_APP }}
-        working-directory: frontend
-        run: |
-          flyctl deploy --app "$FLY_APP" \
-            --image "$IMAGE:latest" \
-            --strategy rolling \
-            --yes
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

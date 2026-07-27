@@ -1,13 +1,15 @@
 # Manual production deployment to Fly.io.
 #
 # Triggered on demand (workflow_dispatch). Promotes a specific
-# already-released image version to the prod Fly app for any of the
-# three Fly-hosted services (api, registry, frontend). Docs is NOT
-# here — docs deploys to Cloudflare Pages automatically (see
-# docs-cloudflare.yml).
+# already-released image version to the prod Fly app for the
+# registry (the only Fly-hosted OKT service). The API and frontend
+# are self-hosted (users run them locally / on their own infra), so
+# they are NOT deployable here — their release-* workflows only
+# build + push images to GHCR. Docs deploys to Cloudflare Pages
+# automatically (see docs-cloudflare.yml).
 #
 # Inputs:
-#   service   - one of api, registry, frontend
+#   service   - one of registry (the only Fly-hosted service)
 #   version   - the release tag to promote (e.g. registry-v1.0.0).
 #               Must match the chosen service. The image tag (1.0.0)
 #               is derived from the tag.
@@ -16,13 +18,9 @@
 #   registry  - uses registry/fly.prod.toml (Postgres + filesystem
 #               storage). The Postgres cluster okt-registry-prod-db
 #               must be running in the same Fly org.
-#   api       - uses backend/fly.toml (todo: prod variant).
-#   frontend  - uses frontend/fly.toml (todo: prod variant).
 #
-# Prereq: create the prod Fly apps and set their secrets:
-#   flyctl apps create okt-api-prod --org okt-1
+# Prereq: create the prod Fly app and set its secrets:
 #   flyctl apps create okt-registry-prod --org okt-1
-#   flyctl apps create okt-frontend-prod --org okt-1
 #   flyctl postgres create --name okt-registry-prod-db --org okt-1 \
 #     --region iad --vm-size shared-cpu-1x --vm-memory 512 \
 #     --volume-size 1 --initial-cluster-size 1 --detach
@@ -46,7 +44,7 @@ on:
         description: 'Service to deploy'
         required: true
         type: choice
-        options: [api, registry, frontend]
+        options: [registry]
       version:
         description: 'Release tag to promote (e.g. registry-v1.0.0)'
         required: true

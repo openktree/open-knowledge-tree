@@ -24,10 +24,13 @@ linters:
     - unused
 
 linters-settings:
+  # golangci-lint v1 expects local-prefixes as a comma-separated
+  # string (NOT a YAML list — a list triggers "expected type 'string',
+  # got unconvertible type '[]interface{}'" at config load and fails
+  # the lint gate before any linter runs). See
+  # https://golangci-lint.run/usage/linters/#goimports.
   goimports:
-    local-prefixes:
-      - github.com/openktree/open-knowledge-tree/backend
-      - github.com/openktree/knowledge-registry
+    local-prefixes: github.com/openktree/open-knowledge-tree/backend,github.com/openktree/knowledge-registry
   staticcheck:
     checks: ["all", "-ST1000", "-ST1003", "-SA1029"]
 
