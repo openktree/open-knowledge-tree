@@ -16,6 +16,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
 	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
@@ -559,6 +560,18 @@ func (h *Handler) SetRemoteRegistryServices(
 	h.remote.SetRegistryServices(svc)
 	h.remote.SetAcceptedHashesResolver(acceptedHashes)
 	h.remote.SetInboundMapperFactory(inboundMapper)
+}
+
+// SetRemoteQdrantStore wires the Qdrant vector store + the local
+// embedding config's model id onto the remote handler so the sync
+// PullSource can import pre-computed embeddings from the registry
+// decomposition (skipping embed_facts re-embedding when the models
+// match). Called once during wiring, after the Qdrant store + embedding
+// provider are built. Nil qdrant = no embedding import.
+func (h *Handler) SetRemoteQdrantStore(q *qdrantstore.Store, embeddingModel string) {
+	if h.remote != nil {
+		h.remote.SetQdrantStore(q, embeddingModel)
+	}
 }
 
 // SetGraphExportEnqueuer wires the task enqueuer the graph handler

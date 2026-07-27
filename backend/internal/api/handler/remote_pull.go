@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
+	"github.com/openktree/open-knowledge-tree/backend/internal/registryimport"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -58,6 +60,20 @@ type RemotePullDeps struct {
 	// Service applies it during the pull. Kept for the legacy
 	// fallback path.
 	PullFilter *registry.SyncLevelFilter
+	// Qdrant is the vector store for fact + concept embeddings.
+	// When non-nil AND the decomposition carries embeddings whose
+	// model matches EmbeddingModel, the pull imports the pre-computed
+	// vectors directly (skipping the embed_facts re-embedding step).
+	// Nil = no vector import (embed_facts will re-embed from scratch).
+	Qdrant *qdrantstore.Store
+	// EmbeddingModel is the local embedding config's model id (e.g.
+	// "google/gemini-embedding-2"). Used to guard the embedding
+	// import: when the decomposition's embedding model doesn't match
+	// (after BareModelID normalization), the vectors are in a foreign
+	// space and the import is skipped so embed_facts re-embeds with
+	// the correct model. Empty = skip the model guard (import
+	// regardless — for tests that don't care about the model).
+	EmbeddingModel string
 }
 
 // RemoteInboundMapper is the minimal slice of the inbound context
@@ -161,6 +177,7 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 
 	importedFacts := 0
 	importedConcepts := 0
+	importedEmbeddings := 0
 
 	// autoAdd seeds a repository_contexts row for the auto_add
 	// policy. It needs the system pool (repository_contexts lives in
@@ -246,8 +263,13 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 			decomp = d
 		}
 
-		// Track fact content_hash → local fact_id for link resolution.
+		// Track fact content_hash → local fact_id for link + embedding
+		// resolution. Track concept key → local concept_id for
+		// embedding resolution (re-queried via GetConceptByNameContext
+		// because CreateConcept uses ON CONFLICT DO NOTHING and
+		// returns nothing on conflict).
 		factIDByHash := make(map[string]pgtype.UUID, len(decomp.Facts))
+		conceptIDByKey := make(map[string]pgtype.UUID, len(decomp.Concepts))
 		// Track skipped (name, registryContext) pairs so the link
 		// loop drops links to skipped concepts. Only populated on
 		// the legacy path; the Service path already dropped them.
@@ -306,7 +328,17 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 				Context:       localContext,
 				Description:   desc,
 			}); err != nil {
-				continue
+				// ON CONFLICT DO NOTHING returns no rows; re-query
+				// to get the concept ID for embedding resolution.
+			}
+			// Resolve the concept ID (handles both the insert and
+			// the conflict case) so we can mark it embedded later.
+			if concept, err := deps.Queries.GetConceptByNameContext(ctx, store.GetConceptByNameContextParams{
+				RepositoryID:  deps.RepoID,
+				CanonicalName: c.CanonicalName,
+				Context:       localContext,
+			}); err == nil {
+				conceptIDByKey[c.CanonicalName+"\x00"+localContext] = concept.ID
 			}
 			importedConcepts++
 		}
@@ -347,21 +379,38 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 				continue
 			}
 		}
+
+		// Import pre-computed embeddings from this decomposition into
+		// Qdrant + mark facts/concepts embedded in Postgres. When the
+		// decomposition carries embeddings whose model matches the
+		// local embedding config, this skips the expensive embed_facts
+		// re-embedding step (the vectors are already in the right
+		// space). When the model doesn't match or Qdrant isn't wired,
+		// the import is skipped and embed_facts re-embeds from scratch.
+		embeddedCount := registryimport.ImportEmbeddings(
+			ctx, decomp, factIDByHash, conceptIDByKey,
+			deps.Qdrant, deps.Queries, deps.RepoID,
+			deps.EmbeddingModel, "remote:",
+		)
+		if embeddedCount > 0 {
+			importedEmbeddings += embeddedCount
+		}
 	}
 
-	if importedFacts > 0 && deps.DedupEnqueuer != nil {
+	if importedFacts > 0 && deps.DedupEnqueuer != nil && importedEmbeddings == 0 {
 		if err := deps.DedupEnqueuer.EnqueueEmbedFacts(ctx, uuidFromPgtype(deps.RepoID), uuidFromPgtype(srcID)); err != nil {
 			log.Printf("remote: enqueueing embed_facts for pulled source: %v", err)
 		}
 	}
 
 	return PullResult{
-		SourceID:         uuidFromPgtype(srcID),
-		Title:            title,
-		URL:              urlVal,
-		DOI:              doi,
-		ImportedFacts:    importedFacts,
-		ImportedConcepts: importedConcepts,
+		SourceID:           uuidFromPgtype(srcID),
+		Title:              title,
+		URL:                urlVal,
+		DOI:                doi,
+		ImportedFacts:      importedFacts,
+		ImportedConcepts:   importedConcepts,
+		ImportedEmbeddings: importedEmbeddings,
 	}, nil
 }
 
@@ -369,12 +418,13 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 // to both the HTTP handler (which JSON-encodes it to the client) and
 // the batch worker (which aggregates across the batch).
 type PullResult struct {
-	SourceID         string  `json:"source_id"`
-	Title            string  `json:"title"`
-	URL              string  `json:"url"`
-	DOI              *string `json:"doi"`
-	ImportedFacts    int     `json:"imported_facts"`
-	ImportedConcepts int     `json:"imported_concepts"`
+	SourceID           string  `json:"source_id"`
+	Title              string  `json:"title"`
+	URL                string  `json:"url"`
+	DOI                *string `json:"doi"`
+	ImportedFacts      int     `json:"imported_facts"`
+	ImportedConcepts   int     `json:"imported_concepts"`
+	ImportedEmbeddings int     `json:"imported_embeddings"`
 }
 
 // ResolveFactExtractionModelID returns the bare model id the repo

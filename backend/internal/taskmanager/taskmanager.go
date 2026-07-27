@@ -324,7 +324,7 @@ func New(
 	// page). It reuses handler.PullOneRemoteSource + the inbound
 	// context mapper so bulk pulls honor the repo's unmapped-context
 	// policy.
-	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup, psResolver, cfg.Providers.Decomposition.FactExtraction.Model))
+	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup, psResolver, cfg.Providers.Decomposition.FactExtraction.Model, qdrantStore, cfg.Providers.Embedding.Model))
 	// Graph export/import. The re-embed enqueuer adapter is wired
 	// after the client exists (same pattern as pullRemoteBatchDedup).
 	// Export builds a whole-repo bundle and pushes it to the registry;

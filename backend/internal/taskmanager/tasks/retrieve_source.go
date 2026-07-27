@@ -33,6 +33,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/search"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
+	"github.com/openktree/open-knowledge-tree/backend/internal/registryimport"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -888,14 +889,12 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 		// import loop so the embedding loop can resolve concept
 		// points to local UUIDs.
 		conceptIDByKey := make(map[string]pgtype.UUID, len(decomp.Concepts))
-		// embKey → local UUID (fact or concept), built during the
-		// fact/concept import loops so the embedding loop can upsert
-		// Qdrant points with local UUIDs.
-		localUUIDByEmbKey := make(map[string]pgtype.UUID)
 		// The actual embedding model used by this decomposition's
 		// vectors (read from EmbeddingData.Model, not decomp.ModelID
 		// which is the extraction model). All embeddings in one
-		// decomposition share the same model.
+		// decomposition share the same model. Used for the reconciler's
+		// mismatch detection (the embedding import itself reads the
+		// model from decomp.Embeddings.Model via the shared helper).
 		var decompEmbModel string
 		var decompEmbDims int
 		if decomp.Embeddings != nil {
@@ -1046,106 +1045,17 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 		// we resolve by matching the key's UUID portion against the
 		// fact's content_hash → local ID map, or by iterating
 		// concepts for concept keys.
-		if decomp.Embeddings != nil {
-			for embKey := range decomp.Embeddings.Vectors {
-				parts := strings.SplitN(embKey, ":", 2)
-				if len(parts) != 2 {
-					continue
-				}
-				// The push path keys fact embeddings by
-				// "fact:<content_hash>" so we can resolve them
-				// via factIDByHash. Concept embeddings are keyed
-				// by "concept:<uuid>" and matched best-effort.
-				var localID pgtype.UUID
-				var found bool
-				if parts[0] == "fact" {
-					if fID, ok := factIDByHash[parts[1]]; ok {
-						localID = fID
-						found = true
-					}
-				}
-				if found {
-					localUUIDByEmbKey[embKey] = localID
-				}
-			}
-		}
-
-		// Import embeddings into Qdrant using LOCAL UUIDs.
-		if w.qdrant != nil && decomp.Embeddings != nil {
-			var factPoints []qdrantstore.FactPoint
-			var conceptPoints []qdrantstore.ConceptPoint
-			for embKey, values := range decomp.Embeddings.Vectors {
-				localID, ok := localUUIDByEmbKey[embKey]
-				if !ok {
-					continue
-				}
-				localUUID, err := uuid.Parse(pgUUIDToString(localID))
-				if err != nil {
-					continue
-				}
-				vec := make([]float32, len(values))
-				for i, v := range values {
-					vec[i] = float32(v)
-				}
-				parts := strings.SplitN(embKey, ":", 2)
-				switch parts[0] {
-				case "fact":
-					factPoints = append(factPoints, qdrantstore.FactPoint{
-						ID:           localUUID,
-						Vector:       vec,
-						RepositoryID: pgtypeToUUID(repoID),
-						Status:       "new",
-					})
-				case "concept":
-					conceptPoints = append(conceptPoints, qdrantstore.ConceptPoint{
-						ID:           localUUID,
-						Vector:       vec,
-						RepositoryID: pgtypeToUUID(repoID),
-					})
-				}
-			}
-			if len(factPoints) > 0 {
-				if err := w.qdrant.UpsertFactVectors(ctx, factPoints); err != nil {
-					log.Printf("retrieve_source: upserting fact vectors: %v", err)
-				}
-			}
-			if len(conceptPoints) > 0 {
-				if err := w.qdrant.UpsertConceptVectors(ctx, conceptPoints); err != nil {
-					log.Printf("retrieve_source: upserting concept vectors: %v", err)
-				}
-			}
-			// Mark facts and concepts as embedded in Postgres. Use
-			// the actual embedding model (emb.Model), not the
-			// generation model (decomp.ModelID), so the reconciler
-			// can detect a mismatch with the local embedding config.
-			embModelPtr := strPtrOrNil(decompEmbModel)
-			for _, f := range decomp.Facts {
-				if fID, ok := factIDByHash[f.ContentHash]; ok {
-					if _, err := queries.MarkFactEmbedded(ctx, store.MarkFactEmbeddedParams{
-						ID:            fID,
-						EmbeddedModel: embModelPtr,
-					}); err != nil {
-						log.Printf("retrieve_source: marking fact embedded: %v", err)
-					}
-				}
-			}
-			for _, c := range decomp.Concepts {
-				if c.CanonicalName == "" {
-					continue
-				}
-				conceptKey := c.CanonicalName + "\x00" + c.Context
-				conceptID, ok := conceptIDByKey[conceptKey]
-				if !ok {
-					continue
-				}
-				if _, err := queries.MarkConceptEmbedded(ctx, store.MarkConceptEmbeddedParams{
-					ID:            conceptID,
-					EmbeddedModel: embModelPtr,
-				}); err != nil {
-					log.Printf("retrieve_source: marking concept embedded: %v", err)
-				}
-			}
-		}
+		// Import pre-computed embeddings from the registry
+		// decomposition into Qdrant + mark facts/concepts embedded
+		// in Postgres. The helper handles the embedding model
+		// compatibility guard, vector upsert, and embedded_at +
+		// embedded_model marking. Shared with the pull_all and
+		// remote_pull paths via the registryimport package.
+		registryimport.ImportEmbeddings(
+			ctx, decomp, factIDByHash, conceptIDByKey,
+			w.qdrant, queries, repoID,
+			"", "retrieve_source:",
+		)
 
 		// Track the embedding model for the reconciler's mismatch
 		// detection.

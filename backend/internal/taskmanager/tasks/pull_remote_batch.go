@@ -12,6 +12,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -53,6 +54,8 @@ type PullRemoteBatchWorker struct {
 	dedupEnqueuer     handler.RemoteDedupEnqueuer
 	promptsetResolver *PromptsetResolver
 	defaultFactModel  string
+	qdrant            *qdrantstore.Store
+	embeddingModel    string
 }
 
 func NewPullRemoteBatchWorker(
@@ -63,6 +66,8 @@ func NewPullRemoteBatchWorker(
 	dedupEnqueuer handler.RemoteDedupEnqueuer,
 	promptsetResolver *PromptsetResolver,
 	defaultFactModel string,
+	qdrant *qdrantstore.Store,
+	embeddingModel string,
 ) *PullRemoteBatchWorker {
 	return &PullRemoteBatchWorker{
 		registryClients:   registryClients,
@@ -72,6 +77,8 @@ func NewPullRemoteBatchWorker(
 		dedupEnqueuer:     dedupEnqueuer,
 		promptsetResolver: promptsetResolver,
 		defaultFactModel:  defaultFactModel,
+		qdrant:            qdrant,
+		embeddingModel:    embeddingModel,
 	}
 }
 
@@ -181,15 +188,17 @@ func (w *PullRemoteBatchWorker) Work(ctx context.Context, job *river.Job[PullRem
 			continue
 		}
 		pr, err := handler.PullOneRemoteSource(ctx, handler.RemotePullDeps{
-			Service:       svc,
-			Client:        rc,
-			Filter:        filter,
-			Queries:       queries,
-			SystemQueries: w.systemQueries,
-			RepoID:        repoID,
-			Mapper:        mapper,
-			DedupEnqueuer: w.dedupEnqueuer,
-			PullFilter:    pullFilter,
+			Service:        svc,
+			Client:         rc,
+			Filter:         filter,
+			Queries:        queries,
+			SystemQueries:  w.systemQueries,
+			RepoID:         repoID,
+			Mapper:         mapper,
+			DedupEnqueuer:  w.dedupEnqueuer,
+			PullFilter:     pullFilter,
+			Qdrant:         w.qdrant,
+			EmbeddingModel: w.embeddingModel,
 		}, remoteID)
 		if err != nil {
 			log.Printf("pull_remote_batch: repo %s source %s: %v", args.RepositoryID, remoteID, err)

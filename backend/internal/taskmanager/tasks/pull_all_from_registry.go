@@ -19,6 +19,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
+	"github.com/openktree/open-knowledge-tree/backend/internal/registryimport"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -368,7 +369,6 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 		// and Qdrant point mapping (local UUIDs, not remote).
 		factIDByHash := make(map[string]pgtype.UUID, len(decomp.Facts))
 		conceptIDByKey := make(map[string]pgtype.UUID, len(decomp.Concepts))
-		localUUIDByEmbKey := make(map[string]pgtype.UUID)
 		var decompEmbModel string
 		var decompEmbDims int
 		if decomp.Embeddings != nil {
@@ -506,95 +506,15 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 			}
 		}
 
-		// Resolve embedding keys to local UUIDs. The push path
-		// keys fact embeddings by "fact:<content_hash>" so we can
-		// match via factIDByHash. Concept embeddings are keyed by
-		// "concept:<uuid>" and matched best-effort.
-		if decomp.Embeddings != nil {
-			for embKey := range decomp.Embeddings.Vectors {
-				parts := strings.SplitN(embKey, ":", 2)
-				if len(parts) == 2 && parts[0] == "fact" {
-					if fID, ok := factIDByHash[parts[1]]; ok {
-						localUUIDByEmbKey[embKey] = fID
-					}
-				}
-			}
-		}
-
-		// Import embeddings into Qdrant using LOCAL UUIDs.
-		if w.qdrant != nil && decomp.Embeddings != nil {
-			var factPoints []qdrantstore.FactPoint
-			var conceptPoints []qdrantstore.ConceptPoint
-			for embKey, values := range decomp.Embeddings.Vectors {
-				localID, ok := localUUIDByEmbKey[embKey]
-				if !ok {
-					continue
-				}
-				localUUID, err := uuid.Parse(pgUUIDToString(localID))
-				if err != nil {
-					continue
-				}
-				vec := make([]float32, len(values))
-				for i, v := range values {
-					vec[i] = float32(v)
-				}
-				parts := strings.SplitN(embKey, ":", 2)
-				switch parts[0] {
-				case "fact":
-					factPoints = append(factPoints, qdrantstore.FactPoint{
-						ID:           localUUID,
-						Vector:       vec,
-						RepositoryID: pgtypeToUUID(repoID),
-						Status:       "new",
-					})
-				case "concept":
-					conceptPoints = append(conceptPoints, qdrantstore.ConceptPoint{
-						ID:           localUUID,
-						Vector:       vec,
-						RepositoryID: pgtypeToUUID(repoID),
-					})
-				}
-			}
-			if len(factPoints) > 0 {
-				if err := w.qdrant.UpsertFactVectors(ctx, factPoints); err != nil {
-					log.Printf("pull_all_from_registry: upserting fact vectors: %v", err)
-				}
-			}
-			if len(conceptPoints) > 0 {
-				if err := w.qdrant.UpsertConceptVectors(ctx, conceptPoints); err != nil {
-					log.Printf("pull_all_from_registry: upserting concept vectors: %v", err)
-				}
-			}
-			// Mark facts and concepts as embedded. Use the actual
-			// embedding model (emb.Model), not the generation model.
-			embModelPtr := strPtrOrNil(decompEmbModel)
-			for _, f := range decomp.Facts {
-				if fID, ok := factIDByHash[f.ContentHash]; ok {
-					if _, err := queries.MarkFactEmbedded(ctx, store.MarkFactEmbeddedParams{
-						ID:            fID,
-						EmbeddedModel: embModelPtr,
-					}); err != nil {
-						log.Printf("pull_all_from_registry: marking fact embedded: %v", err)
-					}
-				}
-			}
-			for _, c := range decomp.Concepts {
-				if c.CanonicalName == "" {
-					continue
-				}
-				conceptKey := c.CanonicalName + "\x00" + c.Context
-				conceptID, ok := conceptIDByKey[conceptKey]
-				if !ok {
-					continue
-				}
-				if _, err := queries.MarkConceptEmbedded(ctx, store.MarkConceptEmbeddedParams{
-					ID:            conceptID,
-					EmbeddedModel: embModelPtr,
-				}); err != nil {
-					log.Printf("pull_all_from_registry: marking concept embedded: %v", err)
-				}
-			}
-		}
+		// Import pre-computed embeddings from the registry
+		// decomposition into Qdrant + mark facts/concepts embedded
+		// in Postgres. Shared with retrieve_source and remote_pull
+		// via the registryimport package.
+		registryimport.ImportEmbeddings(
+			ctx, decomp, factIDByHash, conceptIDByKey,
+			w.qdrant, queries, repoID,
+			"", "pull_all_from_registry:",
+		)
 		if decompEmbModel != "" {
 			stats.ImportedEmbModels = append(stats.ImportedEmbModels, decompEmbModel)
 			stats.ImportedEmbDims = append(stats.ImportedEmbDims, decompEmbDims)

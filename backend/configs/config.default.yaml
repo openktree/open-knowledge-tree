@@ -825,7 +825,7 @@ providers:
   # worker run; MaxConceptsPerRun is the chunk size for fan-out
   # (extract_concepts enqueues one SummarizeConcepts job per chunk).
   summarization:
-    enabled: false
+    enabled: true
     provider: "openrouter"
     model: "google/gemma-4-31b-it"
     batch_size: 20
@@ -875,7 +875,7 @@ providers:
   # prune_threshold: re-prune an established concept's aliases only
   # when >= X new aliases have accumulated since the last refinement.
   refinement:
-    enabled: false
+    enabled: true
     provider: "openrouter"
     model: "google/gemma-4-31b-it"
     max_candidates_per_run: 40

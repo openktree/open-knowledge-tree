@@ -763,6 +763,12 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	// per-repo override — so a repo that enabled a model in Settings
 	// still imported 0 facts on the sync pull.
 	h.SetRemoteRegistryServices(registryServices, tm.AcceptedHashesResolver(), tm.InboundMapperFactory())
+	// Wire the Qdrant store + embedding config model so the sync
+	// PullSource imports pre-computed embeddings from the registry
+	// decomposition (skipping embed_facts re-embedding when the
+	// models match). Nil qdrantStore = no embedding import (the
+	// embed_facts re-embeds from scratch — the legacy behavior).
+	h.SetRemoteQdrantStore(qdrantStore, cfg.Providers.Embedding.Model)
 	// Wire the graph export/import enqueuers (Shared Graphs feature).
 	// The graph handler also needs the registry client map (wired via
 	// SetRegistryClients above) and the storage backend (for the

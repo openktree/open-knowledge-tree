@@ -8,10 +8,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/riverqueue/river"
+
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
-	"github.com/riverqueue/river"
 )
 
 const QueueContributeAll = "contribute_source"
@@ -78,7 +79,19 @@ func (w *ContributeAllWorker) Work(ctx context.Context, job *river.Job[Contribut
 		return fmt.Errorf("contribute_all: no pool for database %q", dbName)
 	}
 
-	sourceIDs, err := w.listProcessedSourceIDs(ctx, pool.Pool)
+	// Read the repo's push level so we only push sources that have
+	// the data the push level requires. At "concepts" we require
+	// fact_concepts links (extract_concepts has run); at "facts" we
+	// only require stable facts. This prevents pushing decompositions
+	// with concepts but 0 links — which made pulling repos re-run
+	// extract_concepts via LLM even though the concepts were already
+	// in the registry.
+	requireLinks := false
+	if syncLevels, err := w.systemQueries.GetRepositorySyncLevels(ctx, repoID); err == nil {
+		requireLinks = registry.ParseSyncLevel(syncLevels.RegistryPushLevel) == registry.SyncLevelConcepts
+	}
+
+	sourceIDs, err := w.listProcessedSourceIDs(ctx, pool.Pool, requireLinks)
 	if err != nil {
 		return fmt.Errorf("contribute_all: listing processed sources: %w", err)
 	}
@@ -117,12 +130,23 @@ func (w *ContributeAllWorker) Work(ctx context.Context, job *river.Job[Contribut
 	})
 }
 
-func (w *ContributeAllWorker) listProcessedSourceIDs(ctx context.Context, db pgxpoolLike) ([]string, error) {
-	rows, err := db.Query(ctx, `
+func (w *ContributeAllWorker) listProcessedSourceIDs(ctx context.Context, db pgxpoolLike, requireLinks bool) ([]string, error) {
+	query := `
 		SELECT DISTINCT fs.source_id
 		FROM okt_repository.facts f
 		JOIN okt_repository.fact_sources fs ON fs.fact_id = f.id
-		WHERE f.status = 'stable'`)
+		WHERE f.status = 'stable'`
+	if requireLinks {
+		// At "concepts" push level, only push sources where
+		// extract_concepts has run and created fact_concepts links.
+		// Sources without links would produce decompositions with
+		// concepts but 0 links — useless for pulling repos (they'd
+		// re-run extract_concepts via LLM even though the concepts
+		// are already in the registry).
+		query += `
+		  AND EXISTS (SELECT 1 FROM okt_repository.fact_concepts fc WHERE fc.fact_id = f.id)`
+	}
+	rows, err := db.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("querying processed source ids: %w", err)
 	}

@@ -659,8 +659,18 @@ func newRemoteEnvWithRegistryAndDedup(t *testing.T, registryURL string, allowedM
 		},
 	}
 	providersCfg.Decomposition.FactExtraction.Model = defaultFactModel
+	// Default embedding model for the compatibility guard. Tests
+	// that exercise the mismatch path override this via
+	// env.Config.Providers.Embedding.Model + a re-wire.
+	providersCfg.Embedding.Model = "gemini-embedding-2"
 	registryClients := registry.NewClientMap(providersCfg)
 	remote := handler.NewRemote(registryClients, providersCfg)
+	// Wire the embedding model onto the remote handler so the
+	// embedding import guard works (nil qdrant — no Qdrant in e2e;
+	// ImportEmbeddings returns 0 when qdrant is nil, so embed_facts
+	// is always enqueued, which is the correct behavior for tests
+	// without a real vector store).
+	remote.SetQdrantStore(nil, providersCfg.Embedding.Model)
 	dedupEnqueuer := &recordingDedupEnqueuer{}
 	remote.SetDedupEnqueuer(dedupEnqueuer)
 	h.SetRemote(remote)
@@ -1086,5 +1096,73 @@ func TestRemote_PullSource_AutoWhitelistFactModel(t *testing.T) {
 	}
 	if calls := dedup.Calls(); len(calls) != 1 {
 		t.Errorf("embed_facts enqueue calls = %d, want 1", len(calls))
+	}
+}
+
+// TestRemote_PullSource_EmbeddingModelMismatch verifies the embedding
+// model compatibility guard: the decomposition carries embeddings
+// with a model that doesn't match the local embedding config. The
+// import is skipped (vectors in a foreign space) and embed_facts is
+// enqueued to re-embed with the correct model.
+func TestRemote_PullSource_EmbeddingModelMismatch(t *testing.T) {
+	const (
+		sourceID    = "src-embmismatch"
+		modelID     = "gemma-4-31b-it"
+		factContent = "A fact with embeddings from a different model."
+		factHash    = "hash-embmismatch-1"
+	)
+	sourcePkg := fmt.Sprintf(
+		`{"source":{"id":%q,"url":"https://example.com/embmismatch","title":"EmbMismatch","sha256":"","doi":"","s3_key":""},"decompositions":[{"model_id":%q,"fact_count":1,"has_embeddings":true,"embedding_model":"text-embedding-3-small"}]}`,
+		sourceID, modelID,
+	)
+	decompPkg := fmt.Sprintf(
+		`{"model_id":%q,"facts":[{"content":%q,"content_hash":%q,"confidence":0.9,"sentence_index":0}],"concepts":[],"embeddings":{"model":"text-embedding-3-small","dimensions":1536,"vectors":{"fact:%s":[0.1,0.2,0.3]}}}`,
+		modelID, factContent, factHash, factHash,
+	)
+
+	stubRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sources/"+sourceID):
+			_, _ = w.Write([]byte(sourcePkg))
+		case strings.HasSuffix(r.URL.Path, "/decompositions/"+modelID):
+			_, _ = w.Write([]byte(decompPkg))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(stubRegistry.Close)
+
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"*"}, "gemma-4-31b-it")
+	env.Config.Providers.Embedding.Model = "gemini-embedding-2"
+	env.Config.Providers.Registry = config.RegistryConfig{
+		ID:            "default",
+		URL:           stubRegistry.URL,
+		AuthMode:      "none",
+		AllowedModels: []string{"*"},
+	}
+
+	admin := bootstrapSysAdmin(t, env, "remote-pull-embmismatch@example.com")
+	_, _, repoID := createRepository(t, admin, "RemotePullEmbMismatch", "remote-pull-embmismatch", "desc")
+
+	resp, raw := admin.do("POST", "/api/v1/repositories/"+repoID+"/remote/"+sourceID+"/pull", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pull source: expected 200, got %d, body %s", resp.StatusCode, string(raw))
+	}
+	var res struct {
+		ImportedFacts      int `json:"imported_facts"`
+		ImportedEmbeddings int `json:"imported_embeddings"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("decode pull response: %v", err)
+	}
+	if res.ImportedFacts == 0 {
+		t.Errorf("imported_facts = 0, want > 0 (facts should import regardless of embedding model)")
+	}
+	if res.ImportedEmbeddings != 0 {
+		t.Errorf("imported_embeddings = %d, want 0 (model mismatch should skip embedding import)", res.ImportedEmbeddings)
+	}
+	if calls := dedup.Calls(); len(calls) != 1 {
+		t.Errorf("embed_facts enqueue calls = %d, want 1 (embedding model mismatch → re-embed)", len(calls))
 	}
 }

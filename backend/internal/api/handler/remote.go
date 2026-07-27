@@ -17,6 +17,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
@@ -98,6 +99,15 @@ type Remote struct {
 	// the sync pull so it honors the repo's unmapped_context_policy.
 	// Nil = import contexts verbatim (legacy behavior).
 	inboundMapperFactory RemoteInboundMapperFactory
+	// qdrant is the vector store for embedding import. When non-nil,
+	// the sync PullSource imports pre-computed embeddings from the
+	// registry decomposition (skipping embed_facts re-embedding).
+	// Nil = no embedding import (embed_facts re-embeds from scratch).
+	qdrant *qdrantstore.Store
+	// embeddingModel is the local embedding config's model id, used
+	// to guard the embedding import (skip when the decomposition's
+	// embedding model doesn't match — different vector space).
+	embeddingModel string
 	// audit records ingestion_start events for remote pulls. Set
 	// via SetAuditRecorder; nil in tests that don't exercise the
 	// audit pipeline. When nil, PullSource/PullBatch skip the
@@ -195,6 +205,17 @@ func (h *Remote) SetAcceptedHashesResolver(r RemoteAcceptedHashesResolver) {
 // verbatim (the legacy behavior before context mapping shipped).
 func (h *Remote) SetInboundMapperFactory(f RemoteInboundMapperFactory) {
 	h.inboundMapperFactory = f
+}
+
+// SetQdrantStore wires the Qdrant vector store + the local embedding
+// config's model id so the sync PullSource can import pre-computed
+// embeddings from the registry decomposition (skipping the embed_facts
+// re-embedding step when the models match). Called by api.Handler
+// after the task manager is constructed. Nil qdrant = no embedding
+// import (embed_facts re-embeds from scratch).
+func (h *Remote) SetQdrantStore(q *qdrantstore.Store, embeddingModel string) {
+	h.qdrant = q
+	h.embeddingModel = embeddingModel
 }
 
 // resolveClient resolves the per-repo registry client from the
@@ -454,12 +475,14 @@ func (h *Remote) PullSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deps := RemotePullDeps{
-		Client:        client,
-		Queries:       queries,
-		SystemQueries: h.store,
-		RepoID:        repoID,
-		DedupEnqueuer: h.dedupEnqueuer,
-		PullFilter:    pullFilter,
+		Client:         client,
+		Queries:        queries,
+		SystemQueries:  h.store,
+		RepoID:         repoID,
+		DedupEnqueuer:  h.dedupEnqueuer,
+		PullFilter:     pullFilter,
+		Qdrant:         h.qdrant,
+		EmbeddingModel: h.embeddingModel,
 	}
 
 	// Take the filter-aware path when the ServiceMap is wired. This
