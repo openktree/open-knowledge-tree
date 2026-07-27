@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.1...registry-v0.5.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* **registry:** stop json.Decode from pulling the whole bundle through gzip ([39d83b4](https://github.com/openktree/open-knowledge-tree/commit/39d83b4a4f94e84a9036a21ad0b7630f7074eefa))
+
 ## [0.5.1](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.0...registry-v0.5.1) (2026-07-27)
 
 
