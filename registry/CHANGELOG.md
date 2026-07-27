@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.0...registry-v0.5.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **registry:** stream graph bundle metadata decode to avoid bufio buffer-full 400 ([f47023d](https://github.com/openktree/open-knowledge-tree/commit/f47023d34f550268ca6ce753ca8e9a0711c643e0))
+
 ## [0.5.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.4.0...registry-v0.5.0) (2026-07-27)
 
 
