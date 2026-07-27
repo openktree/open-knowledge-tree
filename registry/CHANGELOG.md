@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.3.0...registry-v1.4.0) (2026-07-27)
+
+
+### Features
+
+* **graph:** streaming export + late-chunking baseline + kgqa experiment ([544c797](https://github.com/openktree/open-knowledge-tree/commit/544c7976bcb565ce683e980f61cedc300a4f8815))
+
 ## [1.3.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.2.0...registry-v1.3.0) (2026-07-22)
 
 
