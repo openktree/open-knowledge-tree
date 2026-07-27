@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/openktree/open-knowledge-tree/compare/api-v1.3.0...api-v1.3.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **api:** honor allowed_models + per-repo override on sync registry pull ([729023b](https://github.com/openktree/open-knowledge-tree/commit/729023bba5238d2883fa589acd33b34f1f1c828f))
+
 ## [1.3.0](https://github.com/openktree/open-knowledge-tree/compare/api-v1.2.0...api-v1.3.0) (2026-07-27)
 
 
