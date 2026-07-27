@@ -58,6 +58,7 @@ const sidebars = {
             "reference/examples/males",
             "reference/examples/females",
             "reference/examples/mkultra",
+            "reference/examples/shadowfleet",
           ],
         },
         "reference/expected-cost",
