@@ -205,12 +205,12 @@ jobs:
           psql "postgres://okt:okt_test@localhost:5433/okt?sslmode=disable" -c \
             "CREATE DATABASE okt_tasks"
       # The e2e suite takes ~4min on a warm local runner (233s) but
-      # CI's shared runner is slower + has no warm Go build cache, so
-      # the previous 300s (5min) budget was too tight — the suite
-      # timed out at 5m0s on every CI run. 600s (10min) gives the
-      # suite headroom on a cold runner. Skip the SERPER_API_KEY-gated
+      # CI's shared runner is slower + has no warm Go build cache.
+      # With summarization + refinement enabled (more tests exercise
+      # the full task chain), the suite grew beyond 600s on CI.
+      # 900s (15min) gives headroom. Skip the SERPER_API_KEY-gated
       # test; add the secret to enable it.
-      - run: go test -tags=e2e -count=1 -timeout=600s -skip TestSerperSearchProvider_Search ./e2e/...
+      - run: go test -tags=e2e -count=1 -timeout=900s -skip TestSerperSearchProvider_Search ./e2e/...
 
   registry:
     needs: changes
