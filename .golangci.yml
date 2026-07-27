@@ -11,7 +11,13 @@
 #   cd registry && golangci-lint run ./...
 run:
   timeout: 5m
-  go: "1.25"
+  # NOTE: do NOT set `go: "1.25"` here. golangci-lint v1.62 was built
+  # with go1.23 and refuses to lint when the config forces a newer Go
+  # version ("the Go language version (go1.23) used to build
+  # golangci-lint is lower than the targeted Go version (1.25)").
+  # Omitting `go:` makes golangci-lint read the target version from
+  # each module's go.mod, which avoids the build-version check. CI
+  # uses Go 1.25 + golangci-lint-action@v6 / version v1.62.
 
 linters:
   enable:
