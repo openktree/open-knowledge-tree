@@ -1,10 +1,10 @@
 package handler
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -65,47 +65,58 @@ type graphBundleEnvelope struct {
 }
 
 // Push handles POST /api/v1/graphs. The request body is a gzipped
-// JSON graph bundle. The handler buffers a head chunk, gunzips just
-// enough to decode the metadata section (for the searchable index),
-// then streams the full original gzipped body (buffered head + the
-// unread remainder of r.Body) straight to storage — no 2 GB cap, no
-// full-body buffer. Returns the resolved graph id.
+// JSON graph bundle. The handler streams r.Body through a gzip reader
+// and a json.Decoder just long enough to decode the leading
+// schema_version + metadata fields (the only fields the registry
+// indexes), then hands the full original gzipped stream — the bytes
+// the gzip reader consumed (captured via a tee) plus the unread
+// remainder of r.Body — to PushGraphStream for storage. No 2 GB cap,
+// no full-body buffer; the only in-memory state is the small
+// compressed prefix consumed while decoding the metadata object.
+// Returns the resolved graph id.
 //
 // The metadata section is the 2nd JSON field (right after
-// schema_version), so a small head buffer (256 KB) is enough to
-// decode it for any realistic bundle. If the head is too small to
-// contain the full metadata object (pathological case: a multi-MB
-// description), the handler falls back to growing the buffer up to
-// maxPeekBytes (16 MB) before giving up with a 400.
+// schema_version), so the gzip + json layers pull only a few KB of
+// compressed bytes in the common case. A 16 MB backstop rejects
+// pathological bundles whose metadata alone exceeds that, preserving
+// the previous maxPeek safety bound.
 func (h *GraphHandler) Push(w http.ResponseWriter, r *http.Request) {
-	const (
-		initialPeek = 256 << 10  // 256 KB — covers schema_version + metadata
-		maxPeek     = 16 << 20   // 16 MB — backstop for pathological metadata
-	)
+	const maxMetadataCompressedBytes = 16 << 20 // 16 MB — backstop for pathological metadata
 
-	// Buffer the head so we can (a) gunzip + decode metadata from it
-	// and (b) replay it into the storage stream. We read greedily up
-	// to initialPeek, then more if needed.
-	br := bufio.NewReaderSize(r.Body, initialPeek)
-	head, err := br.Peek(initialPeek)
-	if err != nil && err != io.EOF {
-		writeError(w, http.StatusBadRequest, "reading request body head: "+err.Error())
-		return
-	}
-	// If Peek returned less than initialPeek (short body or EOF),
-	// head is what's available; br holds nothing extra. If Peek
-	// returned the full initialPeek, br still holds those bytes
-	// (Peek doesn't consume) — we'll consume via the MultiReader
-	// below.
+	// replay captures the compressed bytes the gzip reader pulls from
+	// r.Body, so we can prepend them to the unread tail of r.Body and
+	// hand storage a complete gzip stream starting at byte 0.
+	var replay bytes.Buffer
+	// A bounded wrapper around replay enforces the backstop: if the
+	// gzip reader asks for more compressed bytes than the metadata
+	// object should ever need, we abort with a clear error rather
+	// than buffering unbounded data.
+	bounded := &limitedReader{r: io.TeeReader(r.Body, &replay), max: maxMetadataCompressedBytes}
 
-	// Gunzip the head + decode the metadata envelope. We feed the
-	// head bytes to a gzip reader; if the gzip stream needs more
-	// bytes than the head to decode the metadata object, we grow.
-	env, consumedHead, err := peekMetadata(head, br, initialPeek, maxPeek)
+	gz, err := gzip.NewReader(bounded)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, "body is not valid gzip: "+err.Error())
 		return
 	}
+	dec := json.NewDecoder(gz)
+	var env graphBundleEnvelope
+	// Decode reads only the leading '{', "schema_version", and the
+	// "metadata" object, then stops — the gzip reader pulls only as
+	// many compressed bytes as that prefix requires.
+	if err := dec.Decode(&env); err != nil {
+		if errors.Is(err, errLimitExceeded) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("bundle metadata too large (exceeds %d byte compressed limit)", maxMetadataCompressedBytes))
+			return
+		}
+		writeError(w, http.StatusBadRequest, "decoding bundle metadata: "+err.Error())
+		return
+	}
+	// Close the gzip reader so its underlying read is fully flushed
+	// into replay. We discard the reader (do not read its remaining
+	// uncompressed bytes — those belong to the rest of the bundle,
+	// which storage will re-decompress from the replayed stream).
+	_ = gz.Close()
+
 	if env.Metadata.Name == "" {
 		writeError(w, http.StatusBadRequest, "bundle metadata.name is required")
 		return
@@ -137,19 +148,11 @@ func (h *GraphHandler) Push(w http.ResponseWriter, r *http.Request) {
 		SchemaVersion: env.SchemaVersion,
 	}
 
-	// The storage stream is: the original gzipped bytes from the
-	// very start (we consumed `consumedHead` bytes from br while
-	// peeking; br still holds the unconsumed remainder). We replay
-	// the consumed head + the rest of br. bufio.Reader.Peek doesn't
-	// consume, but our peekMetadata may have Consumed via Discard;
-	// the simplest correct replay is: bytes.NewReader(head[:nConsumed])
-	// + br (which still has the unconsumed peeked bytes + unread
-	// body). Since Peek keeps bytes in the buffer, br.Read() yields
-	// the full original stream from byte 0 — so we don't even need
-	// to replay the head. But peekMetadata may have called Discard
-	// to advance past gzip-frame boundaries. To be safe, replay the
-	// consumed bytes explicitly.
-	bodyStream := io.MultiReader(bytes.NewReader(consumedHead), br)
+	// Storage gets: the compressed bytes the gzip reader already
+	// consumed (replayed from the tee buffer) + the unread remainder
+	// of r.Body. Together this is the complete original gzipped
+	// bundle from byte 0.
+	bodyStream := io.MultiReader(bytes.NewReader(replay.Bytes()), r.Body)
 	result, err := h.svc.PushGraphStream(r.Context(), meta, bodyStream)
 	if err != nil {
 		log.Printf("graph push: %v", err)
@@ -159,68 +162,38 @@ func (h *GraphHandler) Push(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
-// peekMetadata gunzips the head bytes and decodes the
-// graphBundleEnvelope (schema_version + metadata). If the gzip
-// stream needs more bytes than head to fully decode the metadata
-// object, it reads more from br (the bufio reader over r.Body),
-// growing the buffer up to maxPeek. Returns the envelope, the raw
-// gzipped bytes consumed so far (to replay into the storage stream),
-// and an error.
-//
-// The consumed bytes are the head bytes that were fed to the gzip
-// reader; the caller replays them via io.MultiReader so storage gets
-// the full original gzipped stream.
-func peekMetadata(head []byte, br *bufio.Reader, initialPeek, maxPeek int) (graphBundleEnvelope, []byte, error) {
-	// Try decoding from the head first.
-	gz, err := gzip.NewReader(bytes.NewReader(head))
-	if err != nil {
-		return graphBundleEnvelope{}, nil, fmt.Errorf("body is not valid gzip: %w", err)
+// errLimitExceeded is returned by limitedReader.Read when the wrapped
+// reader has produced more than max bytes. It is distinct from any
+// gzip/json error so the Push handler can map it to a clear 400.
+var errLimitExceeded = errors.New("metadata compressed size exceeds backstop limit")
+
+// limitedReader wraps an io.Reader and returns errLimitExceeded once
+// more than max bytes have been read. Used by Push to bound the
+// compressed-prefix buffer captured while decoding the bundle metadata.
+type limitedReader struct {
+	r   io.Reader
+	n   int64
+	max int64
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	if l.n >= l.max {
+		return 0, errLimitExceeded
 	}
-	dec := json.NewDecoder(gz)
-	var env graphBundleEnvelope
-	// Read the opening '{' + "schema_version" + metadata object.
-	if err := dec.Decode(&env); err == nil {
-		// Success — head was enough. The consumed gzipped bytes are
-		// the whole head (the gzip reader may have read less, but
-		// replaying the full head + the rest of br is safe: the
-		// storage path gunzips from the start, so extra head bytes
-		// it already consumed are part of the gzip stream). We need
-		// to know how many bytes gz consumed to avoid replaying
-		// beyond them. gzip.Reader doesn't expose that, but since
-		// we feed head and the storage path re-reads from byte 0
-		// via br (which still has the peeked bytes), we return head
-		// as consumed and the caller uses io.MultiReader(head, br).
-		// BUT br still contains the head bytes (Peek doesn't
-		// consume), so replaying head + br would duplicate them.
-		// Fix: discard the peeked head from br so br starts after it.
-		_, _ = br.Discard(len(head))
-		return env, head, nil
+	remaining := l.max - l.n
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
 	}
-	// Head wasn't enough. Grow the buffer up to maxPeek, feeding the
-	// accumulating bytes to a fresh gzip reader each attempt (cheap
-	// for the small metadata prefix).
-	total := head
-	for len(total) < maxPeek {
-		chunk, err := br.Peek(len(total) + initialPeek)
-		if err != nil && err != io.EOF {
-			return graphBundleEnvelope{}, nil, fmt.Errorf("reading request body: %w", err)
-		}
-		total = chunk
-		gz, err := gzip.NewReader(bytes.NewReader(total))
-		if err != nil {
-			return graphBundleEnvelope{}, nil, fmt.Errorf("body is not valid gzip: %w", err)
-		}
-		dec := json.NewDecoder(gz)
-		if err := dec.Decode(&env); err == nil {
-			_, _ = br.Discard(len(total))
-			return env, total, nil
-		}
-		if len(chunk) < len(total)+initialPeek {
-			// EOF — no more bytes; the bundle is truncated.
-			return graphBundleEnvelope{}, nil, fmt.Errorf("bundle metadata truncated (could not decode within %d bytes)", len(total))
-		}
+	n, err := l.r.Read(p)
+	l.n += int64(n)
+	if err == nil && l.n >= l.max {
+		// Don't surface the limit as an error mid-read; let the
+		// caller ask for one more byte so the next Read returns
+		// errLimitExceeded cleanly. This avoids truncating a valid
+		// read that happens to land exactly on the boundary.
+		return n, nil
 	}
-	return graphBundleEnvelope{}, nil, fmt.Errorf("bundle metadata too large (exceeds %d byte peek limit)", maxPeek)
+	return n, err
 }
 
 // List handles GET /api/v1/graphs. Supports ?limit=&offset=&q=&tag=.
