@@ -110,19 +110,30 @@ func NewOutboundContextMapperForTest(localToRegistry map[string]string, registry
 // InboundContextMapper translates registry concept contexts to the
 // repo's local vocabulary on pull. Built once per pull_all Work call.
 //
-// Unmapped registry contexts are handled per the repo's
-// unmapped_context_policy (skip | auto_add | catch_all).
+// Unmapped registry contexts are resolved in this order:
+//  1. An explicit mapping row (registry_context → local_context) wins.
+//  2. When no mapping row exists but the registry label (case-insensitively)
+//     is already a local repository_context, the concept imports
+//     verbatim under that local context. This mirrors the outbound
+//     mapper's "label exists in vocab → verbatim" rule and is what
+//     lets two repos that share the default context ontology pull
+//     each other's concepts with zero mapping rows.
+//  3. Otherwise the unmapped_context_policy applies (skip | auto_add |
+//     catch_all). This is only for genuine context divergence.
 type InboundContextMapper struct {
 	registryToLocal map[string]string // lower(registry) → local
+	localSet        map[string]string // lower(local) → original-cased local label
 	policy          string            // skip | auto_add | catch_all
 	catchAll        string            // local context for catch_all ("" when not set)
 }
 
 // NewInboundContextMapper loads the repo's reverse mapping + the
-// unmapped-context policy. Returns a mapper ready for mapContext.
+// local context vocab + the unmapped-context policy. Returns a mapper
+// ready for mapContext.
 func NewInboundContextMapper(ctx context.Context, systemQueries *store.Queries, repoID pgtype.UUID) (*InboundContextMapper, error) {
 	m := &InboundContextMapper{
 		registryToLocal: map[string]string{},
+		localSet:        map[string]string{},
 		policy:          "skip",
 	}
 	rows, err := systemQueries.ListRepositoryContextMappings(ctx, repoID)
@@ -131,6 +142,13 @@ func NewInboundContextMapper(ctx context.Context, systemQueries *store.Queries, 
 	}
 	for _, r := range rows {
 		m.registryToLocal[strings.ToLower(r.RegistryContext)] = r.LocalContext
+	}
+	localCtxs, err := systemQueries.ListRepositoryContexts(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("listing repository contexts: %w", err)
+	}
+	for _, c := range localCtxs {
+		m.localSet[strings.ToLower(c.Context)] = c.Context
 	}
 	policy, err := systemQueries.GetUnmappedContextPolicy(ctx, repoID)
 	if err != nil {
@@ -156,6 +174,14 @@ func (m *InboundContextMapper) MapContext(registryContext string, autoAdd func(s
 	rc := strings.ToLower(registryContext)
 	if localCtx, ok := m.registryToLocal[rc]; ok {
 		return localCtx, true
+	}
+	// Unmapped but the label matches a local context (case-insensitively)
+	// → import verbatim under the local-cased label. This is the
+	// shared-default-ontology fast path: two repos with the same
+	// context vocab need zero mapping rows to pull each other's
+	// concepts. Falls through to the policy only on genuine divergence.
+	if localLabel, ok := m.localSet[rc]; ok {
+		return localLabel, true
 	}
 	switch m.policy {
 	case "skip":

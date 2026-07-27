@@ -361,6 +361,99 @@ func TestContextMapping_InboundWorker_SkipPolicy(t *testing.T) {
 	}
 }
 
+// TestContextMapping_InboundWorker_VerbatimMatch verifies the
+// inbound mapper's shared-default-ontology fast path: when the repo
+// has no explicit mapping rows but the registry context label is
+// already a local repository_context (case-insensitively), the
+// concept imports verbatim under the local-cased label — even under
+// the skip policy. This is the fix for the "facts but no concepts"
+// symptom where two repos that share the default dbpedia L3 ontology
+// couldn't pull each other's concepts without manual mapping rows.
+// The unmapped_context_policy is only for genuine context divergence.
+func TestContextMapping_InboundWorker_VerbatimMatch(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+	admin := bootstrapSysAdmin(t, env, "ctxmap-verbatim@example.com")
+	_, _, repoID := createRepository(t, admin, "CtxMapVerbatim", "ctxmap-verbatim", "desc")
+	queries := store.New(env.DB)
+	repoUUID := pgRepoID(t, repoID)
+
+	// The default seed gives the repo the dbpedia L3 ontology, which
+	// includes "Politician" (capitalised). No mapping rows are added.
+	// The default unmapped_context_policy is "skip".
+
+	// A registry context that matches a local context (case-insensitively)
+	// → import verbatim under the local-cased label, bypassing skip.
+	mapper, err := tasks.NewInboundContextMapper(context.Background(), queries, repoUUID)
+	if err != nil {
+		t.Fatalf("building mapper: %v", err)
+	}
+	got, ok := mapper.MapContext("politician", nil)
+	if !ok || got != "Politician" {
+		t.Errorf("verbatim match: mapContext(politician) = (%q, %v), want (Politician, true)", got, ok)
+	}
+	// Exact-case match also imports verbatim.
+	got, ok = mapper.MapContext("Politician", nil)
+	if !ok || got != "Politician" {
+		t.Errorf("exact-case match: mapContext(Politician) = (%q, %v), want (Politician, true)", got, ok)
+	}
+	// A registry context absent from the local vocab is still skipped
+	// (genuine divergence) under the skip policy.
+	got, ok = mapper.MapContext("PhantomLabel", nil)
+	if ok || got != "" {
+		t.Errorf("unmapped-absent: mapContext(PhantomLabel) = (%q, %v), want (\"\", false)", got, ok)
+	}
+
+	// Add an explicit mapping that overrides the verbatim rule:
+	// registry "Politician" → local "Person". The explicit mapping
+	// wins over the verbatim-match fast path.
+	personBody, _ := json.Marshal(map[string]string{"context": "Person"})
+	admin.do("POST", "/api/v1/repositories/"+repoID+"/settings/contexts", personBody)
+	mapBody, _ := json.Marshal(map[string]string{"local_context": "Person", "registry_context": "Politician"})
+	admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/context-mappings", mapBody)
+	mapper, err = tasks.NewInboundContextMapper(context.Background(), queries, repoUUID)
+	if err != nil {
+		t.Fatalf("rebuilding mapper after mapping: %v", err)
+	}
+	got, ok = mapper.MapContext("Politician", nil)
+	if !ok || got != "Person" {
+		t.Errorf("explicit mapping should win: mapContext(Politician) = (%q, %v), want (Person, true)", got, ok)
+	}
+
+	// auto_add should not fire for a label that already matches a
+	// local context (the verbatim path short-circuits before autoAdd).
+	autoBody, _ := json.Marshal(map[string]interface{}{"policy": "auto_add"})
+	admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/unmapped-policy", autoBody)
+	// Remove the explicit mapping so only the verbatim path applies.
+	admin.do("DELETE", "/api/v1/repositories/"+repoID+"/settings/context-mappings/Person", nil)
+	mapper, err = tasks.NewInboundContextMapper(context.Background(), queries, repoUUID)
+	if err != nil {
+		t.Fatalf("rebuilding mapper after auto_add: %v", err)
+	}
+	called := false
+	got, ok = mapper.MapContext("Place", func(label string) { called = true })
+	if !ok || got != "Place" {
+		t.Errorf("auto_add + verbatim: mapContext(Place) = (%q, %v), want (Place, true)", got, ok)
+	}
+	if called {
+		t.Errorf("auto_add + verbatim: autoAdd should not fire for a label already in the local vocab")
+	}
+	// auto_add DOES fire for a genuinely novel label.
+	called = false
+	got, ok = mapper.MapContext("NovelRegistryLabel", func(label string) {
+		called = true
+		if label != "NovelRegistryLabel" {
+			t.Errorf("autoAdd label = %q, want NovelRegistryLabel", label)
+		}
+	})
+	if !ok || got != "NovelRegistryLabel" {
+		t.Errorf("auto_add + novel: mapContext(NovelRegistryLabel) = (%q, %v), want (NovelRegistryLabel, true)", got, ok)
+	}
+	if !called {
+		t.Errorf("auto_add + novel: autoAdd callback was not invoked")
+	}
+}
+
 // TestContextMapping_OutboundWorker verifies the outbound context
 // mapper logic directly: a mapped local context → its registry
 // target; an unmapped local context in the registry vocab → verbatim;
