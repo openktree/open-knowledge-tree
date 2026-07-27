@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.3...api-v0.5.0) (2026-07-27)
+
+
+### Features
+
+* **api:** enable all tasks by default + import registry embeddings + guard contribute_all ([2896b16](https://github.com/openktree/open-knowledge-tree/commit/2896b16f2089bfed0ce4544c74dfcd7f372aca9a))
+
 ## [0.4.3](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.2...api-v0.4.3) (2026-07-27)
 
 
