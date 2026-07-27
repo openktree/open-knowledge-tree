@@ -100,15 +100,21 @@ func (h *GraphHandler) Push(w http.ResponseWriter, r *http.Request) {
 	}
 	dec := json.NewDecoder(gz)
 	var env graphBundleEnvelope
-	// Decode reads only the leading '{', "schema_version", and the
-	// "metadata" object, then stops — the gzip reader pulls only as
-	// many compressed bytes as that prefix requires.
-	if err := dec.Decode(&env); err != nil {
+	// Walk the top-level JSON object token-by-token and decode only
+	// the "schema_version" and "metadata" values, then stop. A
+	// straight dec.Decode(&env) would read to the top-level closing
+	// '}' to validate trailing fields it doesn't care about — pulling
+	// the entire bundle (sources, facts, embeddings, …) through the
+	// gzip reader and tripping the 16 MB backstop on any real bundle.
+	// The token walk pulls only as many compressed bytes as the
+	// metadata prefix requires, leaving the rest of the bundle in
+	// r.Body for storage to stream.
+	if err := decodeMetadata(dec, &env); err != nil {
 		if errors.Is(err, errLimitExceeded) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("bundle metadata too large (exceeds %d byte compressed limit)", maxMetadataCompressedBytes))
 			return
 		}
-		writeError(w, http.StatusBadRequest, "decoding bundle metadata: "+err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// Close the gzip reader so its underlying read is fully flushed
@@ -166,6 +172,58 @@ func (h *GraphHandler) Push(w http.ResponseWriter, r *http.Request) {
 // reader has produced more than max bytes. It is distinct from any
 // gzip/json error so the Push handler can map it to a clear 400.
 var errLimitExceeded = errors.New("metadata compressed size exceeds backstop limit")
+
+// decodeMetadata walks the leading JSON tokens of dec and populates
+// env.SchemaVersion + env.Metadata only, then returns. It exists to
+// avoid the json.Decoder.Decode(&struct) behavior of reading to the
+// top-level closing '}' (which would pull the whole bundle through
+// the gzip reader). The top-level object is expected to be of the
+// shape {"schema_version": N, "metadata": {...}, ...}; we read
+// keys in order and stop as soon as "metadata" is decoded. Fields
+// appearing before "metadata" (only "schema_version" in the current
+// bundle schema) are decoded into env; any other pre-metadata key
+// is skipped via a json.RawMessage decode. Returns an error wrapping
+// errLimitExceeded if the limitedReader backstop trips, or the raw
+// json/gzip error otherwise.
+func decodeMetadata(dec *json.Decoder, env *graphBundleEnvelope) error {
+	t, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("reading bundle open token: %w", err)
+	}
+	if d, ok := t.(json.Delim); !ok || d != '{' {
+		return fmt.Errorf("bundle is not a JSON object (got %v)", t)
+	}
+	for dec.More() {
+		t, err = dec.Token()
+		if err != nil {
+			return fmt.Errorf("reading bundle field key: %w", err)
+		}
+		key, ok := t.(string)
+		if !ok {
+			return fmt.Errorf("unexpected non-string bundle field key: %v", t)
+		}
+		switch key {
+		case "schema_version":
+			if err := dec.Decode(&env.SchemaVersion); err != nil {
+				return fmt.Errorf("decoding bundle schema_version: %w", err)
+			}
+		case "metadata":
+			if err := dec.Decode(&env.Metadata); err != nil {
+				return fmt.Errorf("decoding bundle metadata: %w", err)
+			}
+			return nil
+		default:
+			// Skip the value of any field we don't need that appears
+			// before "metadata". A json.RawMessage decode consumes
+			// exactly one JSON value without surfacing its shape.
+			var raw json.RawMessage
+			if err := dec.Decode(&raw); err != nil {
+				return fmt.Errorf("skipping bundle field %q: %w", key, err)
+			}
+		}
+	}
+	return fmt.Errorf("bundle metadata field not found (reached end of object)")
+}
 
 // limitedReader wraps an io.Reader and returns errLimitExceeded once
 // more than max bytes have been read. Used by Push to bound the

@@ -265,6 +265,44 @@ func TestGraphPush_MetadataLargerThan256KB(t *testing.T) {
 	}
 }
 
+// TestGraphPush_BigBundleSmallMetadata is the regression case for the
+// bug where dec.Decode(&env) pulled the entire bundle through the
+// gzip reader (reading to the top-level closing '}' to validate
+// trailing fields), tripping the 16 MB compressed backstop on any
+// real bundle. The token-walk decodeMetadata stops after the
+// "metadata" value, so a bundle with a tiny metadata prefix but a
+// multi-MB trailing payload must now succeed even when the total
+// compressed size is far beyond the backstop. This is the prod case:
+// the OKT export_graph worker's bundle exceeded 16 MB compressed and
+// was rejected with "bundle metadata too large".
+func TestGraphPush_BigBundleSmallMetadata(t *testing.T) {
+	env := newGraphTestEnv(t)
+
+	// ~20 MB of compressed trailing payload — comfortably past the
+	// 16 MB backstop that the old dec.Decode(&env) tripped. The
+	// metadata prefix is tiny, so the token walk pulls only a few
+	// KB of compressed bytes for it and leaves the 20 MB tail in
+	// r.Body for storage to stream.
+	big := strings.Repeat("a", 20<<20) // 20 MB
+	trailing := []byte(`"sources":[{"idx":0,"payload":"` + big + `"}]`)
+	bundle := makeGzipBundle(t, graphBundleEnvelope{
+		SchemaVersion: 1,
+		Metadata: graphMetaSection{
+			Name:        "Big Bundle Small Meta",
+			SourceCount: 1,
+		},
+	}, trailing)
+
+	rec := env.pushBundle(bundle)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for big-bundle/small-metadata, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Storage must have received the full original gzipped bytes.
+	if !bytes.Equal(env.storage.data, bundle) {
+		t.Errorf("storage bytes != request bytes (stored=%d, sent=%d)", len(env.storage.data), len(bundle))
+	}
+}
+
 // TestGraphPush_NotGzip verifies the handler rejects a non-gzip body
 // with 400 (preserves the old error posture for malformed requests).
 func TestGraphPush_NotGzip(t *testing.T) {
