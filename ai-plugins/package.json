@@ -1,6 +1,6 @@
 {
   "name": "@okt/ai-plugins",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Open Knowledge Tree research agents for Claude Code, GitHub Copilot (VS Code), Codex CLI, and opencode.",
   "license": "MIT",
   "homepage": "https://github.com/anomalyco/open-knowledge-tree-go",
@@ -9,7 +9,16 @@
     "url": "https://github.com/anomalyco/open-knowledge-tree-go.git",
     "directory": "ai-plugins"
   },
-  "keywords": ["okt", "research", "synthesis", "agents", "claude-code", "copilot", "codex", "opencode"],
+  "keywords": [
+    "okt",
+    "research",
+    "synthesis",
+    "agents",
+    "claude-code",
+    "copilot",
+    "codex",
+    "opencode"
+  ],
   "type": "module",
   "exports": {
     ".": "./opencode/index.ts"
