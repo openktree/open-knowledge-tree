@@ -1,20 +1,20 @@
 # Changelog
 
-## [1.4.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.3.0...registry-v1.4.0) (2026-07-27)
+## [0.5.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.4.0...registry-v0.5.0) (2026-07-27)
 
 
 ### Features
 
 * **graph:** streaming export + late-chunking baseline + kgqa experiment ([544c797](https://github.com/openktree/open-knowledge-tree/commit/544c7976bcb565ce683e980f61cedc300a4f8815))
 
-## [1.3.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.2.0...registry-v1.3.0) (2026-07-22)
+## [0.4.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.3.0...registry-v0.4.0) (2026-07-22)
 
 
 ### Features
 
 * **synthesis:** retry synthesize_concept on LLM/write failures + per-concept resynthesize endpoint ([3fa0d28](https://github.com/openktree/open-knowledge-tree/commit/3fa0d28d34c5b2418846309f081fe04bca6d8253))
 
-## [1.2.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.1.0...registry-v1.2.0) (2026-07-19)
+## [0.3.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.2.0...registry-v0.3.0) (2026-07-19)
 
 
 ### Features
@@ -28,7 +28,7 @@
 * **registry:** scale prod VM to shared-cpu-2x / 4GB ([d8f8dea](https://github.com/openktree/open-knowledge-tree/commit/d8f8dea2fc91daeb57aa46be78df9e676516b752))
 * **registry:** surface decode errors and drop 30s ReadTimeout ([a412c74](https://github.com/openktree/open-knowledge-tree/commit/a412c74c404cba61593b8086232d342996b6723a))
 
-## [1.1.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v1.0.0...registry-v1.1.0) (2026-07-18)
+## [0.2.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.1.0...registry-v0.2.0) (2026-07-18)
 
 
 ### Features
@@ -41,7 +41,7 @@
 * **registry:** replace minio-go with aws-sdk-go-v2 for R2 compatibility ([b903c4f](https://github.com/openktree/open-knowledge-tree/commit/b903c4f7daea823421d506eb4af9f01f817533c9))
 * **registry:** restore [build] image line in fly.toml for pipeline deploys ([990d4bb](https://github.com/openktree/open-knowledge-tree/commit/990d4bbdfbaff10263b71358cada1634ea643bd6))
 
-## 1.0.0 (2026-07-17)
+## [0.1.0] (2026-07-17)
 
 
 ### Features

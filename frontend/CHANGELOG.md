@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.3.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v1.2.0...frontend-v1.3.0) (2026-07-27)
+## [0.4.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.3.0...frontend-v0.4.0) (2026-07-27)
 
 
 ### Features
@@ -29,7 +29,7 @@
 * **graph:** treat props.graph as value not function in import dialog ([191a3fd](https://github.com/openktree/open-knowledge-tree/commit/191a3fd9b996bd381aff478089e57f0941758d21))
 * **modals:** show error + id on 404 instead of freezing; add source URLs ([3db8cd6](https://github.com/openktree/open-knowledge-tree/commit/3db8cd6d15b4c7c4b63876a231d6b5c458f3f89a))
 
-## [1.2.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v1.1.0...frontend-v1.2.0) (2026-07-19)
+## [0.3.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.2.0...frontend-v0.3.0) (2026-07-19)
 
 
 ### Features
@@ -37,7 +37,7 @@
 * **promptset:** split registry-compatibility hash from catalog hash ([8f1d2af](https://github.com/openktree/open-knowledge-tree/commit/8f1d2af510e3fe4963c3a81e1e3f822586411c64))
 * **registry:** per-repo contributor identity for registry attribution ([45f28ae](https://github.com/openktree/open-knowledge-tree/commit/45f28aebe4cdeb6f350930f4115138c189052675))
 
-## [1.1.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v1.0.0...frontend-v1.1.0) (2026-07-19)
+## [0.2.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.1.0...frontend-v0.2.0) (2026-07-19)
 
 
 ### Features
@@ -50,7 +50,7 @@
 
 * **ui:** route decomp fetch through backend, skip direct R2 fetch ([bccb39a](https://github.com/openktree/open-knowledge-tree/commit/bccb39af65e21de719495a4c39b88a1452b33a9a))
 
-## 1.0.0 (2026-07-18)
+## [0.1.0] (2026-07-18)
 
 
 ### Features

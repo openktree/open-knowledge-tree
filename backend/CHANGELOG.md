@@ -1,13 +1,13 @@
 # Changelog
 
-## [1.3.1](https://github.com/openktree/open-knowledge-tree/compare/api-v1.3.0...api-v1.3.1) (2026-07-27)
+## [0.4.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.0...api-v0.4.1) (2026-07-27)
 
 
 ### Bug Fixes
 
 * **api:** honor allowed_models + per-repo override on sync registry pull ([729023b](https://github.com/openktree/open-knowledge-tree/commit/729023bba5238d2883fa589acd33b34f1f1c828f))
 
-## [1.3.0](https://github.com/openktree/open-knowledge-tree/compare/api-v1.2.0...api-v1.3.0) (2026-07-27)
+## [0.4.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.3.0...api-v0.4.0) (2026-07-27)
 
 
 ### Features
@@ -34,7 +34,7 @@
 * **graph:** use correct tier value for new repo creation ([971ace3](https://github.com/openktree/open-knowledge-tree/commit/971ace37ecb36c7e3f82e3c66d249f10dfd36b25))
 * **summarize:** propagate enqueue errors to River instead of swallowing ([7ccebd5](https://github.com/openktree/open-knowledge-tree/commit/7ccebd5f8ab1ffaab784f12f135afa0ef0e785c1))
 
-## [1.2.0](https://github.com/openktree/open-knowledge-tree/compare/api-v1.1.0...api-v1.2.0) (2026-07-19)
+## [0.3.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.2.0...api-v0.3.0) (2026-07-19)
 
 
 ### Features
@@ -42,7 +42,7 @@
 * **promptset:** split registry-compatibility hash from catalog hash ([8f1d2af](https://github.com/openktree/open-knowledge-tree/commit/8f1d2af510e3fe4963c3a81e1e3f822586411c64))
 * **registry:** per-repo contributor identity for registry attribution ([45f28ae](https://github.com/openktree/open-knowledge-tree/commit/45f28aebe4cdeb6f350930f4115138c189052675))
 
-## [1.1.0](https://github.com/openktree/open-knowledge-tree/compare/api-v1.0.0...api-v1.1.0) (2026-07-19)
+## [0.2.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.1.0...api-v0.2.0) (2026-07-19)
 
 
 ### Features
@@ -57,7 +57,7 @@
 
 * **api:** pin runtime Alpine to 3.24 to match builder MuPDF SONAME ([f6418ae](https://github.com/openktree/open-knowledge-tree/commit/f6418aec0b001dbbbde0c956de4a310cb86c7b71))
 
-## 1.0.0 (2026-07-18)
+## [0.1.0] (2026-07-18)
 
 
 ### Features

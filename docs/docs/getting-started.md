@@ -112,7 +112,7 @@ The compose file boots three [Byparr](https://github.com/ThePhaseless/Byparr) in
 By default the compose file pulls `latest`. Pin a specific version for reproducibility — add this line to your `.env`:
 
 ```
-OKT_TAG=v1.0.0
+OKT_TAG=v0.1.0
 ```
 
 ## Stop the stack
