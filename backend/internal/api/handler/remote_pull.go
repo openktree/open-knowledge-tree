@@ -200,6 +200,28 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 		}
 	}
 
+	// Surface the silent 0-imports failure: when the registry has
+	// decompositions for this source but the allowed_models filter
+	// stripped them all, log the mismatch so the operator can see
+	// WHY the pull returned 0 facts (instead of a silent 200 with
+	// imported_facts=0). The common cause is a per-repo whitelist
+	// that doesn't include the fact-extraction model id the
+	// registry stores decompositions under.
+	if len(decompRefs) == 0 && len(pkg.Decompositions) > 0 {
+		registryModels := make([]string, 0, len(pkg.Decompositions))
+		for _, dr := range pkg.Decompositions {
+			registryModels = append(registryModels, dr.ModelID)
+		}
+		var allowed []string
+		if deps.Filter != nil {
+			allowed = deps.Filter.AllowedModels
+		} else if deps.Client != nil {
+			allowed = deps.Client.AllowedModels()
+		}
+		log.Printf("remote: pull of source %s imported 0 decompositions: registry has %v but allowed_models=%v matched none (bare-name match applies; consider [\"*\"] or the repo's fact-extraction model)",
+			pkg.Source.ID, registryModels, allowed)
+	}
+
 	for _, dr := range decompRefs {
 		var decomp *registry.DecompositionPackage
 		if deps.Service != nil && deps.Filter != nil {
@@ -353,6 +375,52 @@ type PullResult struct {
 	DOI              *string `json:"doi"`
 	ImportedFacts    int     `json:"imported_facts"`
 	ImportedConcepts int     `json:"imported_concepts"`
+}
+
+// ResolveFactExtractionModelID returns the bare model id the repo
+// uses for fact extraction (the model whose decompositions the repo
+// contributes to the registry). Mirrors contribute_source.go's
+// resolution: per-repo fact_extraction model setting →
+// defaultFactModel fallback → "default". The returned id is
+// BareModelID-stripped so it matches the registry's bare-name keys.
+//
+// Used by the pull path to auto-whitelist the repo's own extraction
+// model so a repo can always pull decompositions produced by its own
+// fact-extraction model, even when its allowed_models whitelist
+// doesn't list it. See PullSource.
+func ResolveFactExtractionModelID(ctx context.Context, systemQueries *store.Queries, repoID pgtype.UUID, defaultFactModel string) string {
+	modelID := defaultFactModel
+	if systemQueries != nil {
+		if setting, err := systemQueries.GetRepositoryModelSetting(ctx, store.GetRepositoryModelSettingParams{
+			RepositoryID: repoID,
+			TaskKind:     "fact_extraction",
+		}); err == nil && setting.ModelID != nil && *setting.ModelID != "" {
+			modelID = *setting.ModelID
+		}
+	}
+	if modelID == "" {
+		modelID = "default"
+	}
+	return registry.BareModelID(modelID)
+}
+
+// AutoWhitelistFactModel appends the repo's resolved fact-extraction
+// model id to the allowed_models list (deduped) so the pull path
+// always admits decompositions produced by the repo's own
+// extraction model. A repo with allowed_models=["gemma4:31b"]
+// (image model) still pulls its fact-extraction model's
+// decompositions because the fact-extraction model is auto-added.
+// Returns the input list unchanged when modelID is empty.
+func AutoWhitelistFactModel(allowed []string, modelID string) []string {
+	if modelID == "" {
+		return allowed
+	}
+	for _, m := range allowed {
+		if registry.BareModelID(m) == modelID {
+			return allowed // already present
+		}
+	}
+	return append(allowed, modelID)
 }
 
 // applyInboundContext routes a registry context through the mapper

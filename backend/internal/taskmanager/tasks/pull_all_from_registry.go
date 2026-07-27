@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/riverqueue/river"
+
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
@@ -18,7 +20,6 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
-	"github.com/riverqueue/river"
 )
 
 const QueuePullAllFromRegistry = "pull_all_from_registry"
@@ -48,6 +49,7 @@ type PullAllFromRegistryWorker struct {
 	reconciler        *CacheReconciler
 	dedupEnqueuer     handler.RemoteDedupEnqueuer
 	promptsetResolver *PromptsetResolver
+	defaultFactModel  string
 }
 
 func NewPullAllFromRegistryWorker(
@@ -59,6 +61,7 @@ func NewPullAllFromRegistryWorker(
 	reconciler *CacheReconciler,
 	dedupEnqueuer handler.RemoteDedupEnqueuer,
 	promptsetResolver *PromptsetResolver,
+	defaultFactModel string,
 ) *PullAllFromRegistryWorker {
 	return &PullAllFromRegistryWorker{
 		registryClients:   registryClients,
@@ -69,6 +72,7 @@ func NewPullAllFromRegistryWorker(
 		reconciler:        reconciler,
 		dedupEnqueuer:     dedupEnqueuer,
 		promptsetResolver: promptsetResolver,
+		defaultFactModel:  defaultFactModel,
 	}
 }
 
@@ -327,8 +331,11 @@ func (w *PullAllFromRegistryWorker) tryPullOne(
 			log.Printf("pull_all_from_registry: auto-adding context %q: %v", registryLabel, err)
 		}
 	}
+	allowedModels := resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels())
+	factModel := handler.ResolveFactExtractionModelID(ctx, w.systemQueries, repoID, w.defaultFactModel)
+	allowedModels = handler.AutoWhitelistFactModel(allowedModels, factModel)
 	filter := &registry.RelevanceFilter{
-		AllowedModels:      resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels()),
+		AllowedModels:      allowedModels,
 		AcceptedPromptsets: acceptedHashes,
 		DefaultAccepted:    promptset.DefaultRegistryHashes,
 		SyncLevel:          pullFilter,

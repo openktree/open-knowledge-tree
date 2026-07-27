@@ -250,7 +250,7 @@ func New(
 	// system pool still runs (every repo inherits the built-in
 	// philosophy).
 	psResolver := tasks.NewPromptsetResolver(cfg, systemQueries, promptsetResolver)
-	river.AddWorker(workers, tasks.NewRetrieveSourceWorker(searchProviders, fetchStrategy, registry, systemQueries, storageBackend, registryClients, registryCacheProvider, qdrantStore, reconciler, psResolver))
+	river.AddWorker(workers, tasks.NewRetrieveSourceWorker(searchProviders, fetchStrategy, registry, systemQueries, storageBackend, registryClients, registryCacheProvider, qdrantStore, reconciler, psResolver, cfg.Providers.Decomposition.FactExtraction.Model))
 	river.AddWorker(workers, tasks.NewSourceDecompositionWorker(chunkingProvider, factExtractor, imageExtractor, cfg.Providers.Decomposition.FactExtraction, cfg.Providers.Decomposition.ImageExtraction, registry, systemQueries, storageBackend, modelResolver, psResolver))
 	// Embedding + dedup + concept-extraction + cleanup chain. Each is
 	// a no-op when its dependency (embeddingProvider / qdrantStore /
@@ -318,13 +318,13 @@ func New(
 	// that doesn't already exist locally, then delta-checks existing
 	// local sources for new decompositions. A no-op when the registry
 	// client is disabled.
-	river.AddWorker(workers, tasks.NewPullAllFromRegistryWorker(registryClients, registryCacheProvider, registry, systemQueries, qdrantStore, reconciler, pullRemoteBatchDedup, psResolver))
+	river.AddWorker(workers, tasks.NewPullAllFromRegistryWorker(registryClients, registryCacheProvider, registry, systemQueries, qdrantStore, reconciler, pullRemoteBatchDedup, psResolver, cfg.Providers.Decomposition.FactExtraction.Model))
 	// Pull_remote_batch pulls a list of remote registry source IDs
 	// (the "Pull page" / "Pull all results" buttons on the Remote
 	// page). It reuses handler.PullOneRemoteSource + the inbound
 	// context mapper so bulk pulls honor the repo's unmapped-context
 	// policy.
-	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup, psResolver))
+	river.AddWorker(workers, tasks.NewPullRemoteBatchWorker(registryClients, registryServices, registry, systemQueries, pullRemoteBatchDedup, psResolver, cfg.Providers.Decomposition.FactExtraction.Model))
 	// Graph export/import. The re-embed enqueuer adapter is wired
 	// after the client exists (same pattern as pullRemoteBatchDedup).
 	// Export builds a whole-repo bundle and pushes it to the registry;

@@ -9,12 +9,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/riverqueue/river"
+
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
-	"github.com/riverqueue/river"
 )
 
 const QueueContributeSource = "contribute_source"
@@ -40,13 +41,13 @@ type ContributeSourceResult struct {
 type ContributeSourceWorker struct {
 	river.WorkerDefaults[ContributeSourceArgs]
 
-	registryClients      *registry.ClientMap
-	qdrant               *qdrantstore.Store
-	registry             *dbpool.Registry
-	systemQueries        *store.Queries
-	modelResolver        *ModelResolver
-	promptsetResolver    *PromptsetResolver
-	defaultFactModel     string
+	registryClients   *registry.ClientMap
+	qdrant            *qdrantstore.Store
+	registry          *dbpool.Registry
+	systemQueries     *store.Queries
+	modelResolver     *ModelResolver
+	promptsetResolver *PromptsetResolver
+	defaultFactModel  string
 }
 
 func NewContributeSourceWorker(
@@ -219,12 +220,23 @@ func (w *ContributeSourceWorker) Work(ctx context.Context, job *river.Job[Contri
 	}
 
 	// The decomposition's ModelID is the EXTRACTION model (e.g.
-	// "google/gemma-4-31b-it"), not the embedding model. This is
-	// the key the registry uses to store and retrieve
-	// decompositions — a source can have multiple decompositions
-	// from different extraction models. The embedding model is
-	// recorded separately on the EmbeddingData so pulling repos
-	// know which model produced the vectors.
+	// "gemma-4-31b-it"), not the embedding model. This is the key
+	// the registry uses to store and retrieve decompositions — a
+	// source can have multiple decompositions from different
+	// extraction models. The embedding model is recorded separately
+	// on the EmbeddingData so pulling repos know which model
+	// produced the vectors.
+	//
+	// We stamp the BARE model name (stripped of the provider prefix)
+	// so the registry is provider-agnostic: a decomposition produced
+	// via OpenRouter's "google/gemma-4-31b-it" and one produced via
+	// Ollama's "gemma4:31b" can both be keyed under "gemma-4-31b-it"
+	// (or their respective bare names), and a pulling repo's
+	// allowed_models whitelist matches on the bare name regardless
+	// of which provider the contributing repo used. Old registry
+	// decompositions that carry the provider prefix (e.g.
+	// "google/gemma-4-31b-it") still match a bare-name whitelist
+	// because IsAllowed normalizes both sides via BareModelID.
 	extractionModel := w.defaultFactModel
 	if w.modelResolver != nil {
 		if r := w.modelResolver.Resolve(ctx, repoID, TaskKindFactExtraction); r.ModelID != "" {
@@ -234,6 +246,7 @@ func (w *ContributeSourceWorker) Work(ctx context.Context, job *river.Job[Contri
 	if extractionModel == "" {
 		extractionModel = "default"
 	}
+	extractionModel = registry.BareModelID(extractionModel)
 
 	// Resolve the repo's effective REGISTRY-compatibility hash so
 	// the registry can tag the decomposition with the philosophy

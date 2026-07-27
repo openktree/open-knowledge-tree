@@ -6,12 +6,13 @@ import (
 	"log"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/riverqueue/river"
+
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
-	"github.com/riverqueue/river"
 )
 
 const QueuePullRemoteBatch = "pull_remote_batch"
@@ -25,8 +26,8 @@ const QueuePullRemoteBatch = "pull_remote_batch"
 // each ID. A per-source error is logged and skipped; the batch
 // continues so one bad source doesn't fail the whole job.
 type PullRemoteBatchArgs struct {
-	RepositoryID     string   `json:"repository_id"`
-	RemoteSourceIDs  []string `json:"remote_source_ids"`
+	RepositoryID    string   `json:"repository_id"`
+	RemoteSourceIDs []string `json:"remote_source_ids"`
 }
 
 func (PullRemoteBatchArgs) Kind() string { return "pull_remote_batch" }
@@ -36,10 +37,10 @@ func (PullRemoteBatchArgs) InsertOpts() river.InsertOpts {
 }
 
 type PullRemoteBatchResult struct {
-	RepositoryID string `json:"repository_id"`
-	Pulled       int    `json:"pulled"`
-	Skipped      int    `json:"skipped"`
-	ImportedFacts int   `json:"imported_facts"`
+	RepositoryID  string `json:"repository_id"`
+	Pulled        int    `json:"pulled"`
+	Skipped       int    `json:"skipped"`
+	ImportedFacts int    `json:"imported_facts"`
 }
 
 type PullRemoteBatchWorker struct {
@@ -51,6 +52,7 @@ type PullRemoteBatchWorker struct {
 	systemQueries     *store.Queries
 	dedupEnqueuer     handler.RemoteDedupEnqueuer
 	promptsetResolver *PromptsetResolver
+	defaultFactModel  string
 }
 
 func NewPullRemoteBatchWorker(
@@ -60,6 +62,7 @@ func NewPullRemoteBatchWorker(
 	systemQueries *store.Queries,
 	dedupEnqueuer handler.RemoteDedupEnqueuer,
 	promptsetResolver *PromptsetResolver,
+	defaultFactModel string,
 ) *PullRemoteBatchWorker {
 	return &PullRemoteBatchWorker{
 		registryClients:   registryClients,
@@ -68,6 +71,7 @@ func NewPullRemoteBatchWorker(
 		systemQueries:     systemQueries,
 		dedupEnqueuer:     dedupEnqueuer,
 		promptsetResolver: promptsetResolver,
+		defaultFactModel:  defaultFactModel,
 	}
 }
 
@@ -146,8 +150,16 @@ func (w *PullRemoteBatchWorker) Work(ctx context.Context, job *river.Job[PullRem
 	if w.promptsetResolver != nil {
 		acceptedHashes = w.promptsetResolver.AcceptedRegistryHashes(ctx, repoID)
 	}
+	// Auto-whitelist the repo's own fact-extraction model so a repo
+	// can always pull decompositions produced by its own extraction
+	// model, mirroring the sync PullSource handler. The auto-added id
+	// is the bare name (provider prefix stripped) so it matches both
+	// old prefixed registry decompositions and new bare ones.
+	allowedModels := resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels())
+	factModel := handler.ResolveFactExtractionModelID(ctx, w.systemQueries, repoID, w.defaultFactModel)
+	allowedModels = handler.AutoWhitelistFactModel(allowedModels, factModel)
 	filter := &registry.RelevanceFilter{
-		AllowedModels:      resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels()),
+		AllowedModels:      allowedModels,
 		AcceptedPromptsets: acceptedHashes,
 		DefaultAccepted:    promptset.DefaultRegistryHashes,
 		SyncLevel:          pullFilter,
@@ -169,15 +181,15 @@ func (w *PullRemoteBatchWorker) Work(ctx context.Context, job *river.Job[PullRem
 			continue
 		}
 		pr, err := handler.PullOneRemoteSource(ctx, handler.RemotePullDeps{
-			Service:        svc,
-			Client:         rc,
-			Filter:         filter,
-			Queries:        queries,
-			SystemQueries:  w.systemQueries,
-			RepoID:         repoID,
-			Mapper:         mapper,
-			DedupEnqueuer:  w.dedupEnqueuer,
-			PullFilter:     pullFilter,
+			Service:       svc,
+			Client:        rc,
+			Filter:        filter,
+			Queries:       queries,
+			SystemQueries: w.systemQueries,
+			RepoID:        repoID,
+			Mapper:        mapper,
+			DedupEnqueuer: w.dedupEnqueuer,
+			PullFilter:    pullFilter,
 		}, remoteID)
 		if err != nil {
 			log.Printf("pull_remote_batch: repo %s source %s: %v", args.RepositoryID, remoteID, err)

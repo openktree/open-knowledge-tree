@@ -20,6 +20,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/riverqueue/river"
+
+	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
 	"github.com/openktree/open-knowledge-tree/backend/internal/concepts"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
@@ -31,7 +34,6 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
-	"github.com/riverqueue/river"
 )
 
 // QueueRetrieveSource is the River queue name used for the
@@ -159,16 +161,17 @@ type RetrieveSourceResult struct {
 type RetrieveSourceWorker struct {
 	river.WorkerDefaults[RetrieveSourceArgs]
 
-	searchProviders  map[string]search.SearchProvider
-	fetchStrategy    *fetch.FetchStrategy
-	registry         *dbpool.Registry
-	systemQueries    *store.Queries
-	storage          storage.FileStorage
-	registryClients  *registry.ClientMap
-	registryCache    *registry.RegistryCacheProvider
-	qdrant           *qdrantstore.Store
-	reconciler       *CacheReconciler
+	searchProviders   map[string]search.SearchProvider
+	fetchStrategy     *fetch.FetchStrategy
+	registry          *dbpool.Registry
+	systemQueries     *store.Queries
+	storage           storage.FileStorage
+	registryClients   *registry.ClientMap
+	registryCache     *registry.RegistryCacheProvider
+	qdrant            *qdrantstore.Store
+	reconciler        *CacheReconciler
 	promptsetResolver *PromptsetResolver
+	defaultFactModel  string
 }
 
 // NewRetrieveSourceWorker builds a worker. The search provider map
@@ -203,6 +206,7 @@ func NewRetrieveSourceWorker(
 	qdrant *qdrantstore.Store,
 	reconciler *CacheReconciler,
 	promptsetResolver *PromptsetResolver,
+	defaultFactModel string,
 ) *RetrieveSourceWorker {
 	return &RetrieveSourceWorker{
 		searchProviders:   searchProviders,
@@ -215,6 +219,7 @@ func NewRetrieveSourceWorker(
 		qdrant:            qdrant,
 		reconciler:        reconciler,
 		promptsetResolver: promptsetResolver,
+		defaultFactModel:  defaultFactModel,
 	}
 }
 
@@ -467,17 +472,17 @@ func (w *RetrieveSourceWorker) Work(ctx context.Context, job *river.Job[Retrieve
 		if client == nil {
 			log.Printf("retrieve_source: no river client on context; source_decomposition not enqueued for source %s (row is fetched)", result.SourceID)
 		} else {
-		chainCtx, chainCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if _, err := client.Insert(chainCtx, SourceDecompositionArgs{
-			SourceID:     result.SourceID,
-			RepositoryID: args.RepositoryID,
-		}, &river.InsertOpts{
-			Queue: QueueSourceDecomposition,
-			Metadata: MarshalMetadata(JobMetadata{
-				RepositoryID: args.RepositoryID,
+			chainCtx, chainCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if _, err := client.Insert(chainCtx, SourceDecompositionArgs{
 				SourceID:     result.SourceID,
-			}),
-		}); err != nil {
+				RepositoryID: args.RepositoryID,
+			}, &river.InsertOpts{
+				Queue: QueueSourceDecomposition,
+				Metadata: MarshalMetadata(JobMetadata{
+					RepositoryID: args.RepositoryID,
+					SourceID:     result.SourceID,
+				}),
+			}); err != nil {
 				log.Printf("retrieve_source: enqueueing source_decomposition for source %s failed: %v", result.SourceID, err)
 			} else {
 				log.Printf("retrieve_source: enqueued source_decomposition for source %s", result.SourceID)
@@ -584,7 +589,7 @@ func (w *RetrieveSourceWorker) linkSourceToInvestigation(ctx context.Context, re
 	}
 	if err := queries.AddInvestigationSource(ctx, store.AddInvestigationSourceParams{
 		InvestigationID: invID,
-		SourceID:         sourceID,
+		SourceID:        sourceID,
 	}); err != nil {
 		log.Printf("retrieve_source: linking source %s to investigation %s failed: %v", sourceIDStr, investigationIDStr, err)
 		return
@@ -715,6 +720,8 @@ func (w *RetrieveSourceWorker) buildRelevanceFilter(
 ) *registry.RelevanceFilter {
 	rc, _, _ := w.registryClients.Client(regID)
 	allowedModels := resolveAllowedModels(ctx, w.systemQueries, repoID, rc.AllowedModels())
+	factModel := handler.ResolveFactExtractionModelID(ctx, w.systemQueries, repoID, w.defaultFactModel)
+	allowedModels = handler.AutoWhitelistFactModel(allowedModels, factModel)
 
 	syncLevels, err := w.systemQueries.GetRepositorySyncLevels(ctx, repoID)
 	var pullFilter *registry.SyncLevelFilter
@@ -950,13 +957,13 @@ func (w *RetrieveSourceWorker) importFromRegistry(
 			stats.Created++
 		}
 
-	// Import concepts + aliases.
-	for _, c := range decomp.Concepts {
-		if c.CanonicalName == "" {
-			continue
-		}
-		touchedNameKeys = append(touchedNameKeys, strings.ToLower(c.CanonicalName))
-		desc := strPtrOrNil(c.Context)
+		// Import concepts + aliases.
+		for _, c := range decomp.Concepts {
+			if c.CanonicalName == "" {
+				continue
+			}
+			touchedNameKeys = append(touchedNameKeys, strings.ToLower(c.CanonicalName))
+			desc := strPtrOrNil(c.Context)
 			if _, err := queries.CreateConcept(ctx, store.CreateConceptParams{
 				RepositoryID:  repoID,
 				CanonicalName: c.CanonicalName,

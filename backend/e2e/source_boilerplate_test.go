@@ -72,7 +72,7 @@ func TestRetrieveSourceWorkerBoilerplateGuardFailed(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -117,10 +117,10 @@ func TestRetrieveSourceWorkerBoilerplateGuardFailed(t *testing.T) {
 	// The source row must be status='failed' with
 	// parse_status='failed', not 'fetched'/'ok'.
 	var (
-		rowStatus  string
-		rowParse   *string
-		rowError   *string
-		rowParsed  *string
+		rowStatus string
+		rowParse  *string
+		rowError  *string
+		rowParsed *string
 	)
 	row := env.DB.QueryRow(ctx, `
 		SELECT status, parse_status, error, parsed_text
@@ -173,7 +173,7 @@ func TestRetrieveSourceWorkerRealArticlePassesGuard(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

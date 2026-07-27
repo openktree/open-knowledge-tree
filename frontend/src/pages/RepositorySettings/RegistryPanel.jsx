@@ -209,7 +209,14 @@ export default function RegistryPanel(props) {
                 class="text-sm px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50"
               >
                 <option value="">Add model…</option>
-                <For each={catalog()}>{(m) => <option value={m.id}>{m.id}</option>}</For>
+                <For each={catalog()}>
+                  {(m) => (
+                    <option value={m.bare_id || m.id}>
+                      {m.bare_id || m.id}
+                      {m.bare_id && m.bare_id !== m.id ? ` (${m.provider})` : ""}
+                    </option>
+                  )}
+                </For>
               </select>
             </div>
           </div>

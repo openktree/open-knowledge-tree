@@ -346,7 +346,7 @@ func TestStorage_GetSourceReturnsStorageKey(t *testing.T) {
 		t.Fatalf("get source: status %d, body %s", resp.StatusCode, body)
 	}
 	var parsed struct {
-		Source map[string]any `json:"source"`
+		Source map[string]any   `json:"source"`
 		Images []map[string]any `json:"images"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -422,7 +422,7 @@ func TestStorage_RetrieveSourceWorkerMirrorsImage(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
 	fs := env.Storage
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, queries, fs, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, queries, fs, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

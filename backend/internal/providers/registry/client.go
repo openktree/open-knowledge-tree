@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -202,13 +203,13 @@ func (c *Client) PullSource(ctx context.Context, sourceID string) (*SourcePackag
 }
 
 type DecompositionPackage struct {
-	ModelID          string            `json:"model_id"`
-	PromptsetHash    string            `json:"promptset_hash,omitempty"`
-	Facts            []FactData        `json:"facts,omitempty"`
-	Concepts         []ConceptData     `json:"concepts,omitempty"`
-	Embeddings       *EmbeddingData    `json:"embeddings,omitempty"`
-	ConceptEmbeddings *EmbeddingData   `json:"concept_embeddings,omitempty"`
-	Links            []FactConceptLink `json:"links,omitempty"`
+	ModelID           string            `json:"model_id"`
+	PromptsetHash     string            `json:"promptset_hash,omitempty"`
+	Facts             []FactData        `json:"facts,omitempty"`
+	Concepts          []ConceptData     `json:"concepts,omitempty"`
+	Embeddings        *EmbeddingData    `json:"embeddings,omitempty"`
+	ConceptEmbeddings *EmbeddingData    `json:"concept_embeddings,omitempty"`
+	Links             []FactConceptLink `json:"links,omitempty"`
 }
 
 type FactConceptLink struct {
@@ -218,19 +219,19 @@ type FactConceptLink struct {
 }
 
 type FactData struct {
-	Content      string   `json:"content"`
-	ContentHash  string   `json:"content_hash"`
-	Confidence   float64  `json:"confidence"`
-	SentenceIdx  int      `json:"sentence_index"`
-	ImageURL     string   `json:"image_url,omitempty"`
-	ImageCaption string   `json:"image_caption,omitempty"`
+	Content      string  `json:"content"`
+	ContentHash  string  `json:"content_hash"`
+	Confidence   float64 `json:"confidence"`
+	SentenceIdx  int     `json:"sentence_index"`
+	ImageURL     string  `json:"image_url,omitempty"`
+	ImageCaption string  `json:"image_caption,omitempty"`
 }
 
 type ConceptData struct {
-	CanonicalName string   `json:"canonical_name"`
-	Context       string   `json:"context"`
-	Aliases       []string `json:"aliases,omitempty"`
-	OntologyClass string   `json:"ontology_class,omitempty"`
+	CanonicalName string    `json:"canonical_name"`
+	Context       string    `json:"context"`
+	Aliases       []string  `json:"aliases,omitempty"`
+	OntologyClass string    `json:"ontology_class,omitempty"`
 	Embedding     []float64 `json:"embedding,omitempty"`
 }
 
@@ -393,7 +394,7 @@ func (c *Client) PushSource(ctx context.Context, sourceURL, doi, sha256, title, 
 		"sha256": sha256,
 		"title":  title,
 		"content": map[string]interface{}{
-			"text":    parsedText,
+			"text":     parsedText,
 			"markdown": parsedMarkdown,
 		},
 	}
@@ -547,9 +548,34 @@ func (c *Client) AllowedModels() []string {
 	return c.models
 }
 
+// BareModelID strips the provider prefix from a model id, returning
+// the bare model name that's stable across providers. OpenRouter ids
+// carry the provider as a path prefix (e.g. "google/gemma-4-31b-it"
+// -> "gemma-4-31b-it"); Ollama ids are already bare (e.g.
+// "gemma4:31b"). The bare name is what the allowed_models whitelist
+// matches against so a whitelist entry works regardless of which
+// provider the contributing repo used to produce the decomposition.
+//
+// The registry used to store decompositions under the full prefixed
+// id (e.g. "google/gemma-4-31b-it"); new contributions stamp the
+// bare name (see contribute_source). Both old and new decompositions
+// match a whitelist via BareModelID normalization on both sides of
+// the comparison, so existing registry data keeps working without a
+// migration.
+func BareModelID(modelID string) string {
+	if i := strings.LastIndex(modelID, "/"); i >= 0 {
+		return modelID[i+1:]
+	}
+	return modelID
+}
+
 // IsAllowed reports whether a model id is in the given whitelist.
 // The list follows the same rules as Client.IsAllowedModel: ["*"]
-// allows all, an empty list allows none, otherwise exact match.
+// allows all, an empty list allows none, otherwise bare-name match.
+// Both the whitelist entry and the decomposition's model_id are
+// normalized via BareModelID before comparing, so a whitelist entry
+// "gemma-4-31b-it" matches a decomposition stored as
+// "google/gemma-4-31b-it" (old shape) or "gemma-4-31b-it" (new shape).
 // This is the package-level helper the import workers use with a
 // per-repo resolved list (which may be the per-repo override or the
 // global registry config fallback).
@@ -557,8 +583,9 @@ func IsAllowed(models []string, modelID string) bool {
 	if len(models) == 0 {
 		return false
 	}
+	bare := BareModelID(modelID)
 	for _, m := range models {
-		if m == "*" || m == modelID {
+		if m == "*" || BareModelID(m) == bare {
 			return true
 		}
 	}

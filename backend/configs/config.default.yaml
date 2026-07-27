@@ -777,9 +777,14 @@ providers:
     # the registry serves. The previous default ([] = allow none)
     # silently filtered every decomposition on pull, so a fresh
     # install imported 0 facts from the registry until the operator
-    # configured a whitelist. Set to a concrete list (e.g.
-    # ["google/gemma-4-31b-it"]) to restrict pulls to specific
-    # extraction models.
+    # configured a whitelist. Set to a concrete list of BARE model
+    # names (e.g. ["gemma-4-31b-it"]) to restrict pulls to specific
+    # extraction models. The provider prefix is stripped before
+    # matching, so "google/gemma-4-31b-it" (OpenRouter) and
+    # "gemma4:31b" (Ollama) both match a whitelist entry of
+    # "gemma-4-31b-it". The repo's own fact-extraction model is
+    # always auto-whitelisted so a repo can always pull decompositions
+    # it produced itself.
     allowed_models: ["*"]
   # Knowledge Registry — multi-registry list (optional). When set,
   # each repository can pick which registry it uses (cache lookup on

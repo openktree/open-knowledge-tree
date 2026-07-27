@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
@@ -595,7 +596,7 @@ func (r *recordingDedupEnqueuer) Calls() []dedupCall {
 // (the same path the batch worker takes) and the test can assert an
 // embed_facts job was enqueued. Returns the env + the recording
 // enqueuer so the test can assert on the calls.
-func newRemoteEnvWithRegistryAndDedup(t *testing.T, registryURL string, allowedModels []string) (*testutil.TestEnv, *recordingDedupEnqueuer) {
+func newRemoteEnvWithRegistryAndDedup(t *testing.T, registryURL string, allowedModels []string, defaultFactModel string) (*testutil.TestEnv, *recordingDedupEnqueuer) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -657,6 +658,7 @@ func newRemoteEnvWithRegistryAndDedup(t *testing.T, registryURL string, allowedM
 			AllowedModels: allowedModels,
 		},
 	}
+	providersCfg.Decomposition.FactExtraction.Model = defaultFactModel
 	registryClients := registry.NewClientMap(providersCfg)
 	remote := handler.NewRemote(registryClients, providersCfg)
 	dedupEnqueuer := &recordingDedupEnqueuer{}
@@ -759,7 +761,7 @@ func TestRemote_PullSource_ImportsFacts(t *testing.T) {
 
 	// allowed_models=["*"] mirrors the fixed config.default.yaml
 	// default: admit decompositions from any extraction model.
-	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"*"})
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"*"}, "")
 
 	admin := bootstrapSysAdmin(t, env, "remote-pull-imports@example.com")
 	_, _, repoID := createRepository(t, admin, "RemotePullImports", "remote-pull-imports", "desc")
@@ -823,7 +825,7 @@ func TestRemote_PullSource_DeniesDisallowedModel(t *testing.T) {
 
 	// allowed_models=["some-other-model"] excludes the
 	// decomposition's model, so the filter must strip it.
-	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"some-other-model"})
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"some-other-model"}, "")
 
 	admin := bootstrapSysAdmin(t, env, "remote-pull-deny@example.com")
 	_, _, repoID := createRepository(t, admin, "RemotePullDeny", "remote-pull-deny", "desc")
@@ -890,7 +892,7 @@ func TestRemote_PullSource_PerRepoOverrideHonored(t *testing.T) {
 
 	// Global allowed_models is restrictive; the per-repo override
 	// (set below via PUT /settings/registry) admits the model.
-	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"some-other-model"})
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"some-other-model"}, "")
 
 	// Populate cfg.Providers.Registry so the settings handler's
 	// AnyRegistryConfigured / RegistryByID validation passes (the
@@ -936,5 +938,153 @@ func TestRemote_PullSource_PerRepoOverrideHonored(t *testing.T) {
 	}
 	if calls := dedup.Calls(); len(calls) != 1 {
 		t.Errorf("embed_facts enqueue calls = %d, want 1 (tasks must start on pull)", len(calls))
+	}
+}
+
+// TestRemote_PullSource_BareNameMatch verifies the bare-model-name
+// matching in IsAllowed: the registry stores a decomposition under
+// the full prefixed id "google/gemma-4-31b-it" (the old shape, before
+// contribute_source started stripping the provider prefix), and the
+// per-repo whitelist is ["gemma-4-31b-it"] (the bare name). The pull
+// must import facts because IsAllowed normalizes both sides via
+// BareModelID before comparing. This locks backward compatibility:
+// old registry decompositions with the provider prefix still match
+// a bare-name whitelist.
+func TestRemote_PullSource_BareNameMatch(t *testing.T) {
+	const (
+		sourceID    = "src-barename"
+		modelID     = "google/gemma-4-31b-it" // old prefixed shape (registry stores this)
+		factContent = "A fact stored under a prefixed model id."
+		factHash    = "hash-barename-1"
+	)
+	sourcePkg := fmt.Sprintf(
+		`{"source":{"id":%q,"url":"https://example.com/barename","title":"BareName","sha256":"","doi":"","s3_key":""},"decompositions":[{"model_id":%q,"fact_count":1,"has_embeddings":false}]}`,
+		sourceID, modelID,
+	)
+	decompPkg := fmt.Sprintf(
+		`{"model_id":%q,"facts":[{"content":%q,"content_hash":%q,"confidence":0.9,"sentence_index":0}],"concepts":[]}`,
+		modelID, factContent, factHash,
+	)
+
+	stubRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sources/"+sourceID):
+			_, _ = w.Write([]byte(sourcePkg))
+		case strings.HasSuffix(r.URL.Path, "/decompositions/"+modelID):
+			_, _ = w.Write([]byte(decompPkg))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(stubRegistry.Close)
+
+	// Global allowed_models is the bare name (what the picker now
+	// offers). IsAllowed strips the prefix from the registry's
+	// "google/gemma-4-31b-it" and compares to "gemma-4-31b-it" → match.
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"gemma-4-31b-it"}, "")
+
+	admin := bootstrapSysAdmin(t, env, "remote-pull-barename@example.com")
+	_, _, repoID := createRepository(t, admin, "RemotePullBareName", "remote-pull-barename", "desc")
+
+	resp, raw := admin.do("POST", "/api/v1/repositories/"+repoID+"/remote/"+sourceID+"/pull", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pull source: expected 200, got %d, body %s", resp.StatusCode, string(raw))
+	}
+	var res struct {
+		ImportedFacts int `json:"imported_facts"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("decode pull response: %v", err)
+	}
+	if res.ImportedFacts == 0 {
+		t.Errorf("imported_facts = 0, want > 0 (bare-name whitelist [gemma-4-31b-it] must match registry decomposition google/gemma-4-31b-it via BareModelID normalization)")
+	}
+	if calls := dedup.Calls(); len(calls) != 1 {
+		t.Errorf("embed_facts enqueue calls = %d, want 1", len(calls))
+	}
+}
+
+// TestRemote_PullSource_AutoWhitelistFactModel verifies the
+// auto-whitelist: the repo's allowed_models is ["some-image-model"]
+// (doesn't match the registry's fact-extraction model), but the
+// repo's fact_extraction model setting resolves to "gemma-4-31b-it".
+// The pull path auto-adds the repo's own fact-extraction model to
+// the whitelist, so the registry's decomposition (stored under
+// "gemma-4-31b-it" or "google/gemma-4-31b-it") is admitted. This is
+// the "if in use, autowhitelisted" behavior: a repo can always pull
+// decompositions produced by its own extraction model.
+func TestRemote_PullSource_AutoWhitelistFactModel(t *testing.T) {
+	const (
+		sourceID    = "src-autowl"
+		modelID     = "gemma-4-31b-it" // new bare shape (contribute_source strips prefix)
+		factContent = "A fact the repo's own extraction model produced."
+		factHash    = "hash-autowl-1"
+	)
+	sourcePkg := fmt.Sprintf(
+		`{"source":{"id":%q,"url":"https://example.com/autowl","title":"AutoWL","sha256":"","doi":"","s3_key":""},"decompositions":[{"model_id":%q,"fact_count":1,"has_embeddings":false}]}`,
+		sourceID, modelID,
+	)
+	decompPkg := fmt.Sprintf(
+		`{"model_id":%q,"facts":[{"content":%q,"content_hash":%q,"confidence":0.9,"sentence_index":0}],"concepts":[]}`,
+		modelID, factContent, factHash,
+	)
+
+	stubRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sources/"+sourceID):
+			_, _ = w.Write([]byte(sourcePkg))
+		case strings.HasSuffix(r.URL.Path, "/decompositions/"+modelID):
+			_, _ = w.Write([]byte(decompPkg))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(stubRegistry.Close)
+
+	// Global allowed_models is an image model that does NOT match the
+	// registry's fact-extraction model. The auto-whitelist must add
+	// the repo's fact-extraction model (resolved from the per-task
+	// setting or the default) so the pull still imports.
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"some-image-model"}, modelID)
+	// Set the registry config so SetRegistrySettings validation
+	// passes (the test sets the per-repo allowed_models below).
+	env.Config.Providers.Registry = config.RegistryConfig{
+		ID:            "default",
+		URL:           stubRegistry.URL,
+		AuthMode:      "none",
+		AllowedModels: []string{"some-image-model"},
+	}
+	admin := bootstrapSysAdmin(t, env, "remote-pull-autowl@example.com")
+	_, _, repoID := createRepository(t, admin, "RemotePullAutoWL", "remote-pull-autowl", "desc")
+
+	// Set the per-repo allowed_models to the image model (the foot-gun
+	// case). The auto-whitelist must still admit the fact-extraction
+	// model's decomposition.
+	regBody, _ := json.Marshal(map[string]any{
+		"enabled":        true,
+		"allowed_models": []string{"some-image-model"},
+	})
+	resp, raw := admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/registry", regBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set registry settings: status %d, body %s", resp.StatusCode, string(raw))
+	}
+
+	resp, raw = admin.do("POST", "/api/v1/repositories/"+repoID+"/remote/"+sourceID+"/pull", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pull source: expected 200, got %d, body %s", resp.StatusCode, string(raw))
+	}
+	var res struct {
+		ImportedFacts int `json:"imported_facts"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("decode pull response: %v", err)
+	}
+	if res.ImportedFacts == 0 {
+		t.Errorf("imported_facts = 0, want > 0 (repo's own fact-extraction model must be auto-whitelisted even when allowed_models lists a non-matching image model)")
+	}
+	if calls := dedup.Calls(); len(calls) != 1 {
+		t.Errorf("embed_facts enqueue calls = %d, want 1", len(calls))
 	}
 }

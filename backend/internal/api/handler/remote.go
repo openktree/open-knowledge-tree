@@ -514,8 +514,20 @@ func (h *Remote) PullSource(w http.ResponseWriter, r *http.Request) {
 		}
 
 		deps.Service = svc
+		// Auto-whitelist the repo's own fact-extraction model so a
+		// repo can always pull decompositions produced by its own
+		// extraction model, even when its allowed_models whitelist
+		// doesn't list it (the common foot-gun: a user whitelists
+		// the image-extraction model id instead of the
+		// fact-extraction one). The auto-added id is the bare name
+		// (provider prefix stripped) so it matches both old
+		// prefixed registry decompositions and new bare ones via
+		// IsAllowed's BareModelID normalization.
+		allowedModels := resolveAllowedModels(r.Context(), h.store, repoID, rcCfg.AllowedModels)
+		factModel := ResolveFactExtractionModelID(r.Context(), h.store, repoID, h.cfg.Decomposition.FactExtraction.Model)
+		allowedModels = AutoWhitelistFactModel(allowedModels, factModel)
 		deps.Filter = &registry.RelevanceFilter{
-			AllowedModels:      resolveAllowedModels(r.Context(), h.store, repoID, rcCfg.AllowedModels),
+			AllowedModels:      allowedModels,
 			AcceptedPromptsets: acceptedHashes,
 			DefaultAccepted:    promptset.DefaultRegistryHashes,
 			SyncLevel:          pullFilter,

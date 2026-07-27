@@ -117,7 +117,7 @@ func TestRetrieveSourceWorkerPersistsParsedHTML(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -150,12 +150,12 @@ func TestRetrieveSourceWorkerPersistsParsedHTML(t *testing.T) {
 	// parse and must preserve the heading structure the parser
 	// surfaced (an ATX heading marker `#` for the <h1>).
 	var (
-		parsedTitle     *string
-		parsedText      *string
-		parsedAuthor    *string
-		parsedSitename  *string
-		parseStatus     *string
-		parsedMarkdown  *string
+		parsedTitle    *string
+		parsedText     *string
+		parsedAuthor   *string
+		parsedSitename *string
+		parseStatus    *string
+		parsedMarkdown *string
 	)
 	row := env.DB.QueryRow(ctx, `
 		SELECT parsed_title, parsed_text, parsed_author, parsed_sitename, parse_status, parsed_markdown
@@ -329,7 +329,7 @@ func TestRetrieveSourceWorkerFiltersChromeImages(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -445,7 +445,7 @@ func TestRetrieveSourceWorkerPersistsParsedPDF(t *testing.T) {
 			content_parsing.NewFitzPDFParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -536,11 +536,11 @@ func TestRetrieveSourceWorkerPersistsParsedPDF(t *testing.T) {
 	var pages []int32
 	for rows.Next() {
 		var (
-			kind    string
-			pageNo  *int32
-			width   *int32
-			height  *int32
-			bytesN  *int32
+			kind   string
+			pageNo *int32
+			width  *int32
+			height *int32
+			bytesN *int32
 		)
 		if err := rows.Scan(&kind, &pageNo, &width, &height, &bytesN); err != nil {
 			t.Fatalf("scan: %v", err)
@@ -596,7 +596,7 @@ func TestRetrieveSourceWorkerMarksParseFailed(t *testing.T) {
 	registry := testutil.NewForTestPool(env.DB)
 	systemQueries := store.New(env.DB)
 	strategy := fetch.NewFetchStrategy(fetch.NewFetchResolutionProvider())
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -735,7 +735,7 @@ func TestRetrieveSourceWorkerPersistsPublishedAtFromParser(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -826,7 +826,7 @@ func TestRetrieveSourceWorkerPublishedAtNullWhenAbsent(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()
@@ -917,7 +917,7 @@ func TestRetrieveSourceWorkerPublishedAtFromCaller(t *testing.T) {
 			content_parsing.NewTrafilaturaParser(),
 		),
 	)
-	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil)
+	worker := tasks.NewRetrieveSourceWorker(nil, strategy, registry, systemQueries, nil, nil, nil, nil, nil, nil, "")
 
 	driver := riverpgxv5.New(env.DB)
 	workers := river.NewWorkers()

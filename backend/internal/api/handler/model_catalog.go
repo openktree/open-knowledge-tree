@@ -15,10 +15,10 @@ const (
 	TaskKindFactExtraction    = "fact_extraction"
 	TaskKindImageExtraction   = "image_extraction"
 	TaskKindConceptExtraction = "concept_extraction"
-	TaskKindRefinement       = "alias_generation"
-	TaskKindSummarization      = "summarization"
-	TaskKindSynthesis          = "synthesis"
-	TaskKindReportAnnotation   = "report_annotation"
+	TaskKindRefinement        = "alias_generation"
+	TaskKindSummarization     = "summarization"
+	TaskKindSynthesis         = "synthesis"
+	TaskKindReportAnnotation  = "report_annotation"
 )
 
 // AllTaskKinds is the ordered list shown in the UI.
@@ -47,10 +47,21 @@ func NewModelCatalog(models []config.AIModelConfig) *ModelCatalog {
 }
 
 // CatalogModel is one entry in the model catalog exposed to the UI.
+//
+// ID is the full configured model id (e.g. "google/gemma-4-31b-it")
+// used by the per-task model picker (SetModelSetting validates
+// against it). BareID is the provider-prefix-stripped name (e.g.
+// "gemma-4-31b-it") the allowed_models registry picker uses — the
+// registry stores decompositions under the bare name (see
+// contribute_source + IsAllowed's BareModelID normalization), so a
+// whitelist entry of the bare name matches decompositions from any
+// provider. The frontend RegistryPanel uses m.bare_id as the
+// <option value>; ModelsPanel uses m.id for per-task assignments.
 type CatalogModel struct {
-	ID            string  `json:"id"`
-	Provider      string  `json:"provider"`
-	InputCostPer1M float64 `json:"input_cost_per_1m"`
+	ID              string  `json:"id"`
+	BareID          string  `json:"bare_id"`
+	Provider        string  `json:"provider"`
+	InputCostPer1M  float64 `json:"input_cost_per_1m"`
 	OutputCostPer1M float64 `json:"output_cost_per_1m"`
 }
 
@@ -60,6 +71,7 @@ func (c *ModelCatalog) All() []CatalogModel {
 	for _, m := range c.models {
 		out = append(out, CatalogModel{
 			ID:              m.ID,
+			BareID:          bareModelID(m.ID),
 			Provider:        m.Provider,
 			InputCostPer1M:  m.InputCostPer1M,
 			OutputCostPer1M: m.OutputCostPer1M,
@@ -67,6 +79,19 @@ func (c *ModelCatalog) All() []CatalogModel {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// bareModelID strips the provider prefix from a model id. Mirrors
+// registry.BareModelID but kept local to avoid importing the
+// providers package into the handler's model_catalog (which only
+// depends on config). The two must stay in lockstep.
+func bareModelID(modelID string) string {
+	for i := len(modelID) - 1; i >= 0; i-- {
+		if modelID[i] == '/' {
+			return modelID[i+1:]
+		}
+	}
+	return modelID
 }
 
 // IsValid reports whether a model id is in the catalog.
