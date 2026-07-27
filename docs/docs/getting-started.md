@@ -120,13 +120,13 @@ OKT_TAG=v1.0.0
 Press **Ctrl+C** in the terminal where it's running, or from another terminal:
 
 ```bash
-docker compose -f https://raw.githubusercontent.com/openktree/open-knowledge-tree-go/main/docker-compose.yml down
+docker compose -f https://raw.githubusercontent.com/openktree/open-knowledge-tree/main/docker-compose.yml down
 ```
 
 Data persists in Docker volumes between restarts. Add `-v` to wipe everything:
 
 ```bash
-docker compose -f https://raw.githubusercontent.com/openktree/open-knowledge-tree-go/main/docker-compose.yml down -v
+docker compose -f https://raw.githubusercontent.com/openktree/open-knowledge-tree/main/docker-compose.yml down -v
 ```
 
 ## Developing from source

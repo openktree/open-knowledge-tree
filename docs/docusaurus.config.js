@@ -7,8 +7,8 @@ const config = {
   url: "https://open-knowledge-tree.dev",
   baseUrl: "/",
   favicon: "img/favicon.ico",
-  organizationName: "open-knowledge-tree",
-  projectName: "open-knowledge-tree-go",
+  organizationName: "openktree",
+  projectName: "open-knowledge-tree",
 
   presets: [
     [
@@ -17,7 +17,7 @@ const config = {
       {
         docs: {
           sidebarPath: "./sidebars.js",
-          editUrl: "https://github.com/open-knowledge-tree/open-knowledge-tree-go/edit/main/docs/",
+          editUrl: "https://github.com/openktree/open-knowledge-tree/edit/main/docs/",
         },
         blog: false,
         theme: {
@@ -66,7 +66,7 @@ const config = {
             position: "left",
           },
           {
-            href: "https://github.com/open-knowledge-tree/open-knowledge-tree-go",
+            href: "https://github.com/openktree/open-knowledge-tree",
             label: "GitHub",
             position: "right",
           },
