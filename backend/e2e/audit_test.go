@@ -257,12 +257,19 @@ func TestAuditSettingsChange(t *testing.T) {
 // assertAuditRow waits briefly for the async audit writer (RecordAsync
 // runs on a background goroutine) then checks that a row matching
 // the (actor, action, object, repo) tuple exists. Returns the detail
-// JSONB so the caller can assert on the payload.
+// JSONB so the caller can assert on the payload. An empty repoID
+// matches system-scope rows (repository_id IS NULL).
 func assertAuditRow(t *testing.T, env *testutil.TestEnv, actorID, action, object, repoID string) []byte {
 	t.Helper()
 	// Audit is async (RecordAsync); wait briefly for the writer.
 	time.Sleep(150 * time.Millisecond)
 	var detail []byte
+	var repoArg any
+	if repoID == "" {
+		repoArg = nil
+	} else {
+		repoArg = repoID
+	}
 	err := env.DB.QueryRow(context.Background(),
 		`SELECT detail FROM okt_system.permission_audit
 		  WHERE actor_user_id = $1
@@ -270,7 +277,7 @@ func assertAuditRow(t *testing.T, env *testutil.TestEnv, actorID, action, object
 		    AND object = $3
 		    AND ($4::uuid IS NULL OR repository_id = $4)
 		  ORDER BY occurred_at DESC LIMIT 1`,
-		actorID, action, object, repoID,
+		actorID, action, object, repoArg,
 	).Scan(&detail)
 	if err != nil {
 		t.Fatalf("expected audit row (action=%s object=%s repo=%s) attributed to %s, missing: %v", action, object, repoID, actorID, err)
