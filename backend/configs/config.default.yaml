@@ -773,7 +773,14 @@ providers:
     auth_mode: ""
     api_key: ""
     read_api_key: ""
-    allowed_models: []
+    # Default ["*"] = accept decompositions from any extraction model
+    # the registry serves. The previous default ([] = allow none)
+    # silently filtered every decomposition on pull, so a fresh
+    # install imported 0 facts from the registry until the operator
+    # configured a whitelist. Set to a concrete list (e.g.
+    # ["google/gemma-4-31b-it"]) to restrict pulls to specific
+    # extraction models.
+    allowed_models: ["*"]
   # Knowledge Registry — multi-registry list (optional). When set,
   # each repository can pick which registry it uses (cache lookup on
   # fetch + remote browse/pull) from its Settings page. The legacy

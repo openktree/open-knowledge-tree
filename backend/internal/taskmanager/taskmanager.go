@@ -107,6 +107,14 @@ type Manager struct {
 	pool          *pgxpool.Pool
 	cfg           *config.Config
 	systemQueries *store.Queries
+	// psResolver is the per-repo promptset resolver (built in New
+	// from cfg + systemQueries + the promptset.Resolver). Exposed
+	// via AcceptedHashesResolver() so the HTTP layer (the sync
+	// remote PullSource handler) can resolve a repo's accepted
+	// REGISTRY-compatibility hashes without importing the tasks
+	// package (which would cycle: tasks imports handler for
+	// RemotePullDeps).
+	psResolver *tasks.PromptsetResolver
 }
 
 // New builds (but does not start) a Manager. The River schema is
@@ -484,7 +492,7 @@ func New(
 		return nil, fmt.Errorf("creating river client: %w", err)
 	}
 
-	mgr := &Manager{client: riverClient, pool: pool, cfg: cfg, systemQueries: systemQueries}
+	mgr := &Manager{client: riverClient, pool: pool, cfg: cfg, systemQueries: systemQueries, psResolver: psResolver}
 	// Wire the chain adapter's Manager pointer now that the client
 	// exists. The adapter was constructed before the client (so the
 	// worker could hold it at registration time); until this point
@@ -1133,6 +1141,50 @@ type remoteDedupEnqueuerAdapter struct {
 
 func (a *remoteDedupEnqueuerAdapter) EnqueueEmbedFacts(ctx context.Context, repositoryID, sourceID string) error {
 	return a.m.EnqueueEmbedFacts(ctx, repositoryID, sourceID)
+}
+
+// AcceptedHashesResolver returns an object satisfying
+// handler.RemoteAcceptedHashesResolver for this manager. Used by the
+// sync remote PullSource handler to resolve the repo's accepted
+// REGISTRY-compatibility promptset hashes so the sync pull's
+// RelevanceFilter admits decompositions from compatible promptsets
+// (the same set the batch worker uses).
+func (m *Manager) AcceptedHashesResolver() handler.RemoteAcceptedHashesResolver {
+	if m == nil || m.psResolver == nil {
+		return nil
+	}
+	return &acceptedHashesResolverAdapter{r: m.psResolver}
+}
+
+type acceptedHashesResolverAdapter struct {
+	r *tasks.PromptsetResolver
+}
+
+func (a *acceptedHashesResolverAdapter) AcceptedRegistryHashes(ctx context.Context, repoID pgtype.UUID) []string {
+	return a.r.AcceptedRegistryHashes(ctx, repoID)
+}
+
+// InboundMapperFactory returns an object satisfying
+// handler.RemoteInboundMapperFactory for this manager. Used by the
+// sync remote PullSource handler to build an inbound context mapper
+// so the sync pull honors the repo's unmapped_context_policy (skip |
+// auto_add | catch_all), matching the batch worker. The factory
+// delegates to tasks.NewInboundContextMapper (which lives in the
+// tasks package; the handler can't import it directly without
+// cycling).
+func (m *Manager) InboundMapperFactory() handler.RemoteInboundMapperFactory {
+	if m == nil || m.systemQueries == nil {
+		return nil
+	}
+	return &inboundMapperFactoryAdapter{q: m.systemQueries}
+}
+
+type inboundMapperFactoryAdapter struct {
+	q *store.Queries
+}
+
+func (a *inboundMapperFactoryAdapter) NewInboundMapper(ctx context.Context, repoID pgtype.UUID) (registryclient.InboundContextMapper, error) {
+	return tasks.NewInboundContextMapper(ctx, a.q, repoID)
 }
 
 // graphImportReembedAdapter satisfies tasks.GraphImportReembedEnqueuer

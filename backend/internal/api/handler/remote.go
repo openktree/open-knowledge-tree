@@ -14,6 +14,7 @@ import (
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
 	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
+	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -48,6 +49,28 @@ type RemotePullBatchEnqueuer interface {
 	EnqueuePullRemoteBatch(ctx context.Context, repositoryID string, remoteSourceIDs []string) (string, error)
 }
 
+// RemoteAcceptedHashesResolver is the minimal contract the remote
+// handler needs to resolve the set of REGISTRY-compatibility
+// promptset hashes a repo will admit on pull (the active hash plus
+// every accepted_promptset_hashes entry, mapped to compatibility
+// hashes). Injected from the task manager's PromptsetResolver so
+// the handler doesn't import the tasks package (which would cycle).
+// Nil is safe — the pull falls back to promptset.DefaultRegistryHashes
+// only (the built-in philosophy is always pullable).
+type RemoteAcceptedHashesResolver interface {
+	AcceptedRegistryHashes(ctx context.Context, repoID pgtype.UUID) []string
+}
+
+// RemoteInboundMapperFactory builds an inbound context mapper for a
+// repo so the sync pull path honors the repo's unmapped_context_policy
+// (skip | auto_add | catch_all), mirroring the batch pull worker.
+// Injected from the task manager so the handler doesn't import tasks.
+// Nil is safe — the pull imports contexts verbatim (the legacy
+// behavior before context mapping shipped).
+type RemoteInboundMapperFactory interface {
+	NewInboundMapper(ctx context.Context, repoID pgtype.UUID) (registry.InboundContextMapper, error)
+}
+
 // Remote provides endpoints for browsing and pulling sources from
 // a remote knowledge registry. It is a no-op when no registry is
 // configured (the client map is empty) or when the per-repo
@@ -55,11 +78,25 @@ type RemotePullBatchEnqueuer interface {
 // client + enabled flag and returns 503 when the integration is off
 // for that repo).
 type Remote struct {
-	clients            *registry.ClientMap
-	cfg                config.ProvidersConfig
-	store              *store.Queries
+	clients           *registry.ClientMap
+	cfg               config.ProvidersConfig
+	store             *store.Queries
 	dedupEnqueuer     RemoteDedupEnqueuer
 	pullBatchEnqueuer RemotePullBatchEnqueuer
+	// registryServices is the per-registry Service map the sync
+	// PullSource handler uses to take the filter-aware pull path
+	// (the same path the batch worker takes). Nil falls back to
+	// the legacy Client.IsAllowedModel path (preserved for tests
+	// and deployments that haven't wired the ServiceMap).
+	registryServices *registry.ServiceMap
+	// acceptedHashesResolver resolves the repo's accepted
+	// REGISTRY-compatibility promptset hashes for the sync pull's
+	// RelevanceFilter. Nil = accept only the default philosophy.
+	acceptedHashesResolver RemoteAcceptedHashesResolver
+	// inboundMapperFactory builds the inbound context mapper for
+	// the sync pull so it honors the repo's unmapped_context_policy.
+	// Nil = import contexts verbatim (legacy behavior).
+	inboundMapperFactory RemoteInboundMapperFactory
 	// audit records ingestion_start events for remote pulls. Set
 	// via SetAuditRecorder; nil in tests that don't exercise the
 	// audit pipeline. When nil, PullSource/PullBatch skip the
@@ -129,37 +166,69 @@ func (h *Remote) SetPullBatchEnqueuer(eq RemotePullBatchEnqueuer) {
 	h.pullBatchEnqueuer = eq
 }
 
+// SetRegistryServices wires the per-registry Service map the sync
+// PullSource handler uses to take the filter-aware pull path (the
+// same path the pull_remote_batch worker takes). Called by
+// api.Handler.SetRegistryServices after the ServiceMap is built.
+// Nil is safe — the pull falls back to the legacy
+// Client.IsAllowedModel path (which uses the global allowed_models
+// config only, ignoring the per-repo override).
+func (h *Remote) SetRegistryServices(svc *registry.ServiceMap) {
+	h.registryServices = svc
+}
+
+// SetAcceptedHashesResolver wires the resolver that returns the
+// repo's accepted REGISTRY-compatibility promptset hashes for the
+// sync pull's RelevanceFilter. Called by api.Handler after the task
+// manager constructs the PromptsetResolver. Nil is safe — the pull
+// admits only promptset.DefaultRegistryHashes (the built-in
+// philosophy is always pullable; custom promptsets are not).
+func (h *Remote) SetAcceptedHashesResolver(r RemoteAcceptedHashesResolver) {
+	h.acceptedHashesResolver = r
+}
+
+// SetInboundMapperFactory wires the factory that builds the inbound
+// context mapper for the sync pull so it honors the repo's
+// unmapped_context_policy. Called by api.Handler after the task
+// manager is constructed. Nil is safe — the pull imports contexts
+// verbatim (the legacy behavior before context mapping shipped).
+func (h *Remote) SetInboundMapperFactory(f RemoteInboundMapperFactory) {
+	h.inboundMapperFactory = f
+}
+
 // resolveClient resolves the per-repo registry client from the
 // repo's registry_id column + the registry_enabled flag. Returns:
-//   - (client, cfg, true, "")  when the integration is on and the
-//     configured registry has a client. The caller proceeds.
-//   - (nil, _, false, "remote registry is not configured") when no
+//   - (client, regID, cfg, true, "")  when the integration is on and
+//     the configured registry has a client. The caller proceeds.
+//     regID is the registry id ("default" when the column is NULL)
+//     the caller uses to look up the Service via the ServiceMap.
+//   - (nil, "", _, false, "remote registry is not configured") when no
 //     registry is configured at all (503).
-//   - (nil, _, false, "remote registry is disabled for this repository")
+//   - (nil, "", _, false, "remote registry is disabled for this repository")
 //     when the repo has turned the integration off (503).
-//   - (nil, _, false, "registry_id %q is not configured") when the
+//   - (nil, "", _, false, "registry_id %q is not configured") when the
 //     repo's registry_id points at a registry that's no longer in
 //     the config (503).
 //
-// The third return value is true only when the caller should
-// proceed; the fourth is the error message to surface in the 503.
-func (h *Remote) resolveClient(r *http.Request) (*registry.Client, config.RegistryConfig, bool, string) {
+// The fourth return value is true only when the caller should
+// proceed; the fifth is the error message to surface in the 503.
+func (h *Remote) resolveClient(r *http.Request) (*registry.Client, string, config.RegistryConfig, bool, string) {
 	if h.clients == nil || !h.clients.IsConfigured() {
-		return nil, config.RegistryConfig{}, false, "remote registry is not configured"
+		return nil, "", config.RegistryConfig{}, false, "remote registry is not configured"
 	}
 	repoID, ok := appmw.RepoIDFromContext(r.Context())
 	if !ok {
-		return nil, config.RegistryConfig{}, false, "could not resolve repository ID"
+		return nil, "", config.RegistryConfig{}, false, "could not resolve repository ID"
 	}
 	if h.store == nil {
-		return nil, config.RegistryConfig{}, false, "store not configured"
+		return nil, "", config.RegistryConfig{}, false, "store not configured"
 	}
 	regCfg, err := h.store.GetRepositoryRegistryConfig(r.Context(), repoID)
 	if err != nil {
-		return nil, config.RegistryConfig{}, false, "reading repository registry config: " + err.Error()
+		return nil, "", config.RegistryConfig{}, false, "reading repository registry config: " + err.Error()
 	}
 	if !regCfg.RegistryEnabled {
-		return nil, config.RegistryConfig{}, false, "remote registry is disabled for this repository"
+		return nil, "", config.RegistryConfig{}, false, "remote registry is disabled for this repository"
 	}
 	regID := "default"
 	if regCfg.RegistryID != nil && *regCfg.RegistryID != "" {
@@ -167,9 +236,9 @@ func (h *Remote) resolveClient(r *http.Request) (*registry.Client, config.Regist
 	}
 	client, rcCfg, ok := h.clients.Client(regID)
 	if !ok || !client.IsConfigured() {
-		return nil, config.RegistryConfig{}, false, fmt.Sprintf("registry_id %q is not configured", regID)
+		return nil, "", config.RegistryConfig{}, false, fmt.Sprintf("registry_id %q is not configured", regID)
 	}
-	return client, rcCfg, true, ""
+	return client, regID, rcCfg, true, ""
 }
 
 // GetSource proxies the registry's GET /api/v1/sources/{id} so the
@@ -178,7 +247,7 @@ func (h *Remote) resolveClient(r *http.Request) (*registry.Client, config.Regist
 // registry (which would expose CORS and auth issues). Returns the
 // raw *SourcePackage as JSON. Gated on remote:read.
 func (h *Remote) GetSource(w http.ResponseWriter, r *http.Request) {
-	client, _, ok, msg := h.resolveClient(r)
+	client, _, _, ok, msg := h.resolveClient(r)
 	if !ok {
 		httputil.WriteError(w, http.StatusServiceUnavailable, msg)
 		return
@@ -205,7 +274,7 @@ func (h *Remote) GetSource(w http.ResponseWriter, r *http.Request) {
 // the registry VM) when no presigned URL is available
 // (filesystem backend, dev mode). Gated on remote:read.
 func (h *Remote) GetDecomposition(w http.ResponseWriter, r *http.Request) {
-	client, _, ok, msg := h.resolveClient(r)
+	client, _, _, ok, msg := h.resolveClient(r)
 	if !ok {
 		httputil.WriteError(w, http.StatusServiceUnavailable, msg)
 		return
@@ -261,7 +330,7 @@ func (h *Remote) GetDecomposition(w http.ResponseWriter, r *http.Request) {
 // Each source is annotated with an `exists` boolean indicating whether
 // a source with the same URL or DOI already exists in the local repo.
 func (h *Remote) ListSources(w http.ResponseWriter, r *http.Request) {
-	client, _, ok, msg := h.resolveClient(r)
+	client, _, _, ok, msg := h.resolveClient(r)
 	if !ok {
 		httputil.WriteError(w, http.StatusServiceUnavailable, msg)
 		return
@@ -342,14 +411,17 @@ func (h *Remote) ListSources(w http.ResponseWriter, r *http.Request) {
 // identified by its registry-side source ID (from ListSources).
 //
 // The pull core is shared with the async pull_remote_batch worker
-// via PullOneRemoteSource. This handler does not apply the inbound
-// context mapper (single pulls import contexts verbatim, matching
-// the pre-context-mapping behavior); the batch worker builds a
-// mapper per repo so bulk pulls honor the repo's unmapped-context
-// policy. Passing nil for the mapper keeps the two paths consistent
-// for the common case where the repo hasn't configured mappings.
+// via PullOneRemoteSource. When the ServiceMap + filter dependencies
+// are wired, this handler takes the same filter-aware path as the
+// batch worker: it builds a RelevanceFilter (per-repo allowed_models
+// override, accepted promptset hashes, sync level, inbound context
+// mapper) and threads a *registry.Service into RemotePullDeps so
+// PullOneRemoteSource calls Service.PullRelevantDecomposition. When
+// the ServiceMap is nil (tests, or a deployment that hasn't wired
+// it), it falls back to the legacy Client.IsAllowedModel path so
+// callers keep working.
 func (h *Remote) PullSource(w http.ResponseWriter, r *http.Request) {
-	client, _, ok, msg := h.resolveClient(r)
+	client, regID, rcCfg, ok, msg := h.resolveClient(r)
 	if !ok {
 		httputil.WriteError(w, http.StatusServiceUnavailable, msg)
 		return
@@ -380,26 +452,109 @@ func (h *Remote) PullSource(w http.ResponseWriter, r *http.Request) {
 		pullFilter = registry.NewSyncLevelFilter(registry.ParseSyncLevel(syncLevels.RegistryPullLevel))
 	}
 
-	result, err := PullOneRemoteSource(r.Context(), RemotePullDeps{
+	deps := RemotePullDeps{
 		Client:        client,
-		Queries:        queries,
+		Queries:       queries,
 		SystemQueries: h.store,
 		RepoID:        repoID,
-		Mapper:        nil,
 		DedupEnqueuer: h.dedupEnqueuer,
 		PullFilter:    pullFilter,
-	}, remoteID)
+	}
+
+	// Take the filter-aware path when the ServiceMap is wired. This
+	// mirrors pull_remote_batch.go: the Service applies the
+	// per-repo allowed_models override, accepted promptset hashes,
+	// sync level, and inbound context mapper during the pull, so
+	// the sync "Pull" button behaves identically to the batch
+	// "Pull page" / "Pull all results" buttons. Without this path
+	// the legacy Client.IsAllowedModel branch uses the GLOBAL
+	// allowed_models config only and silently ignores the per-repo
+	// override — which is why a repo that enabled a model in
+	// Settings still imported 0 facts on the sync pull.
+	if h.registryServices != nil {
+		svcCtx := registry.WithRegistryID(r.Context(), regID)
+		svc := h.registryServices.Service(svcCtx)
+
+		// Build the inbound context mapper so the sync pull
+		// honors the repo's unmapped_context_policy (skip |
+		// auto_add | catch_all), matching the batch worker. Nil
+		// factory = import verbatim (legacy behavior).
+		var mapper registry.InboundContextMapper
+		if h.inboundMapperFactory != nil {
+			if m, err := h.inboundMapperFactory.NewInboundMapper(r.Context(), repoID); err != nil {
+				log.Printf("remote: building inbound context mapper: %v", err)
+			} else {
+				mapper = m
+			}
+		}
+
+		// autoAdd seeds a repository_contexts row for the
+		// auto_add policy. The mapper invokes it when the
+		// registry label isn't already a local context.
+		autoAdd := func(registryLabel string) {
+			if _, err := h.store.SeedRepositoryContext(r.Context(), store.SeedRepositoryContextParams{
+				RepositoryID: repoID,
+				Context:      registryLabel,
+				IsCustom:     true,
+				Description:  "",
+			}); err != nil {
+				log.Printf("remote: auto-adding context %q: %v", registryLabel, err)
+			}
+		}
+
+		// Resolve the repo's accepted REGISTRY-compatibility
+		// hashes so the per-decomposition check admits
+		// decompositions from compatible promptsets. Nil resolver
+		// = accept only the default philosophy
+		// (promptset.DefaultRegistryHashes).
+		var acceptedHashes []string
+		if h.acceptedHashesResolver != nil {
+			acceptedHashes = h.acceptedHashesResolver.AcceptedRegistryHashes(r.Context(), repoID)
+		}
+
+		deps.Service = svc
+		deps.Filter = &registry.RelevanceFilter{
+			AllowedModels:      resolveAllowedModels(r.Context(), h.store, repoID, rcCfg.AllowedModels),
+			AcceptedPromptsets: acceptedHashes,
+			DefaultAccepted:    promptset.DefaultRegistryHashes,
+			SyncLevel:          pullFilter,
+			ContextMapper:      mapper,
+			AutoAdd:            autoAdd,
+		}
+	}
+
+	result, err := PullOneRemoteSource(r.Context(), deps, remoteID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadGateway, "pulling source from registry: "+err.Error())
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, result)
 	h.recordPullAudit(r, repoID, rbac.AuditActionIngestionStart, result.SourceID, map[string]any{
-		"remote_source_id":   remoteID,
-		"imported_facts":     result.ImportedFacts,
-		"imported_concepts":  result.ImportedConcepts,
-		"source_url":         result.URL,
+		"remote_source_id":  remoteID,
+		"imported_facts":    result.ImportedFacts,
+		"imported_concepts": result.ImportedConcepts,
+		"source_url":        result.URL,
 	})
+}
+
+// resolveAllowedModels returns the model whitelist to use for a
+// registry pull: the per-repo allowed_models column when non-NULL,
+// otherwise the global registry config's allowed_models (the
+// fallback). Mirrors tasks.resolveAllowedModels so the handler
+// doesn't import the tasks package (which would cycle: tasks
+// imports handler for RemotePullDeps).
+func resolveAllowedModels(ctx context.Context, systemQueries *store.Queries, repoID pgtype.UUID, fallback []string) []string {
+	if systemQueries == nil {
+		return fallback
+	}
+	perRepo, err := systemQueries.GetRepositoryAllowedModels(ctx, repoID)
+	if err != nil {
+		return fallback
+	}
+	if perRepo != nil {
+		return perRepo
+	}
+	return fallback
 }
 
 func strPtrOrNil(s string) *string {
@@ -424,7 +579,7 @@ func strPtrOrNil(s string) *string {
 // current query — the frontend paginates through /remote and
 // collects the IDs before calling this endpoint).
 func (h *Remote) PullBatch(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok, msg := h.resolveClient(r); !ok {
+	if _, _, _, ok, msg := h.resolveClient(r); !ok {
 		httputil.WriteError(w, http.StatusServiceUnavailable, msg)
 		return
 	}

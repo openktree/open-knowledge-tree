@@ -539,6 +539,28 @@ func (h *Handler) SetRemotePullBatchEnqueuer(eq handler.RemotePullBatchEnqueuer)
 	}
 }
 
+// SetRemoteRegistryServices wires the per-registry Service map and
+// the filter dependencies the sync remote PullSource handler uses to
+// take the filter-aware pull path (the same path the batch worker
+// takes). Called once during wiring, after the ServiceMap is built
+// in cmd/app/api.go and the task manager (which owns the
+// PromptsetResolver + inbound mapper factory) is constructed. When
+// any argument is nil the sync pull falls back to the legacy
+// Client.IsAllowedModel path (which uses the global allowed_models
+// config only).
+func (h *Handler) SetRemoteRegistryServices(
+	svc *registry.ServiceMap,
+	acceptedHashes handler.RemoteAcceptedHashesResolver,
+	inboundMapper handler.RemoteInboundMapperFactory,
+) {
+	if h.remote == nil {
+		return
+	}
+	h.remote.SetRegistryServices(svc)
+	h.remote.SetAcceptedHashesResolver(acceptedHashes)
+	h.remote.SetInboundMapperFactory(inboundMapper)
+}
+
 // SetGraphExportEnqueuer wires the task enqueuer the graph handler
 // uses to kick off an export_graph job (the "Export graph" button).
 func (h *Handler) SetGraphExportEnqueuer(eq handler.GraphExportEnqueuer) {
@@ -954,12 +976,12 @@ func (h *Handler) repoRoutes(r chi.Router) {
 			r.Get("/concepts/{conceptID}/sources", h.repoPerm("concept", "read", h.concepts.ListConceptSources))
 			r.Get("/concepts/{conceptID}/summaries", h.repoPerm("concept", "read", h.summaries.ListByConcept))
 			r.Get("/concepts/{conceptID}/definition", h.repoPerm("concept", "read", h.syntheses.GetDefinition))
-		// Per-concept on-demand synthesis regeneration. Enqueues a
-		// synthesize_concept job for the concept_id in the URL; the
-		// existing worker picks it up with the MaxAttempts: 5 retry
-		// budget. Gated by repositories.*.manage (write/control, not
-		// a read).
-		r.Post("/concepts/{conceptID}/resynthesize", h.repoPerm("repositories", "manage", h.syntheses.ResynthesizeConcept))
+			// Per-concept on-demand synthesis regeneration. Enqueues a
+			// synthesize_concept job for the concept_id in the URL; the
+			// existing worker picks it up with the MaxAttempts: 5 retry
+			// budget. Gated by repositories.*.manage (write/control, not
+			// a read).
+			r.Post("/concepts/{conceptID}/resynthesize", h.repoPerm("repositories", "manage", h.syntheses.ResynthesizeConcept))
 			r.Get("/facts/{factID}/concepts", h.repoPerm("fact", "read", h.concepts.ListFactConcepts))
 
 			// Per-repo scoped task list + stats. The list endpoint

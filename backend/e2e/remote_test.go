@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/handler"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/oauth"
@@ -349,8 +349,8 @@ func newRemoteEnvWithRegistry(t *testing.T, registryURL string) (*testutil.TestE
 // test to assert the HTTP layer hands the right IDs to the task
 // manager without booting a real River client.
 type recordingPullBatchEnqueuer struct {
-	mu       sync.Mutex
-	calls    []pullBatchCall
+	mu        sync.Mutex
+	calls     []pullBatchCall
 	nextJobID int
 }
 
@@ -556,5 +556,385 @@ func TestRemote_PullBatch(t *testing.T) {
 	resp, _ = other.do("POST", "/api/v1/repositories/"+repoID+"/remote/pull-batch", body)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("non-admin pull-batch: expected 403, got %d", resp.StatusCode)
+	}
+}
+
+// recordingDedupEnqueuer is a stub handler.RemoteDedupEnqueuer that
+// records each EnqueueEmbedFacts call. Used by the sync pull test to
+// assert that pulling facts from the registry kicks off the
+// embed→dedup pipeline (the "tasks not starting on pull" symptom).
+type recordingDedupEnqueuer struct {
+	mu    sync.Mutex
+	calls []dedupCall
+}
+
+type dedupCall struct {
+	RepositoryID string
+	SourceID     string
+}
+
+func (r *recordingDedupEnqueuer) EnqueueEmbedFacts(_ context.Context, repositoryID, sourceID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, dedupCall{RepositoryID: repositoryID, SourceID: sourceID})
+	return nil
+}
+
+func (r *recordingDedupEnqueuer) Calls() []dedupCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]dedupCall, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+// newRemoteEnvWithRegistryAndDedup builds a test env identical to
+// newRemoteEnvWithRegistryAndBatchEnqueuer, plus it wires the
+// registry ServiceMap + a recording dedup enqueuer onto the remote
+// handler so the sync PullSource path takes the filter-aware pull
+// (the same path the batch worker takes) and the test can assert an
+// embed_facts job was enqueued. Returns the env + the recording
+// enqueuer so the test can assert on the calls.
+func newRemoteEnvWithRegistryAndDedup(t *testing.T, registryURL string, allowedModels []string) (*testutil.TestEnv, *recordingDedupEnqueuer) {
+	t.Helper()
+	ctx := context.Background()
+
+	dbURL := os.Getenv("OKT_TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://okt:okt_test@localhost:5433/okt?sslmode=disable"
+	}
+
+	testutil.ResetTestDatabaseForTest(ctx, t, dbURL)
+
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			JWTSecret: "test-jwt-secret-key",
+			TokenTTL:  24 * time.Hour,
+		},
+		Bootstrap: config.BootstrapConfig{DefaultRepository: false},
+	}
+	cfg.Databases = map[string]config.DatabaseConfig{
+		"default": parseTestDBConfigRemote(t, dbURL),
+	}
+	cfg.System.Database = "default"
+	cfg.Task.Database = "default"
+	cfg.Isolation.DefaultDatabase = "default"
+
+	dbReg, err := dbpool.New(ctx, cfg)
+	if err != nil {
+		t.Fatalf("opening test pool via registry: %v", err)
+	}
+	pool := dbReg.Default().Pool
+
+	rbacSvc, err := rbac.SetupRBAC(pool)
+	if err != nil {
+		t.Fatalf("setting up RBAC: %v", err)
+	}
+
+	parsers := []content_parsing.Parser{
+		content_parsing.NewTrafilaturaParser(),
+		content_parsing.NewFitzPDFParser(),
+	}
+	resolutionProviders := []fetch.ResolutionProvider{
+		fetch.NewFetchResolutionProviderWithParsers(parsers...),
+	}
+	fetchStrategy := fetch.NewFetchStrategy(resolutionProviders...)
+	taskEnqueuer := &testutil.RecordingTaskEnqueuer{}
+
+	queries := store.New(pool)
+	storageBackend := testutil.NewTestStorageBackend(t)
+	h := api.NewHandler(queries, cfg, rbacSvc, pool, dbReg, audit.NoopRecorder{})
+	h.SetSource(handler.NewSource(nil, fetchStrategy, nil, nil, nil, storageBackend, testutil.TestParsers()))
+	testutil.WireRepoSettings(h, nil, fetchStrategy)
+	h.SetStorage(handler.NewStorage(storageBackend))
+	h.SetTaskEnqueuer(taskEnqueuer)
+
+	providersCfg := config.ProvidersConfig{
+		Registry: config.RegistryConfig{
+			ID:            "default",
+			URL:           registryURL,
+			AuthMode:      "none",
+			AllowedModels: allowedModels,
+		},
+	}
+	registryClients := registry.NewClientMap(providersCfg)
+	remote := handler.NewRemote(registryClients, providersCfg)
+	dedupEnqueuer := &recordingDedupEnqueuer{}
+	remote.SetDedupEnqueuer(dedupEnqueuer)
+	h.SetRemote(remote)
+	h.SetRegistryClients(registryClients)
+	// Wire the ServiceMap so the sync PullSource takes the
+	// filter-aware path (the same path the batch worker takes). The
+	// accepted-hashes resolver and inbound mapper factory are left
+	// nil so the pull admits the default promptset hash and imports
+	// contexts verbatim (the legacy behavior) — this isolates the
+	// test to the allowed_models fix.
+	registryServices := registry.NewServiceMap(registryClients)
+	h.SetRemoteRegistryServices(registryServices, nil, nil)
+
+	issuer := "http://localhost:8080"
+	oauthCfg := oauth.Config{
+		Issuer:          issuer,
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 30 * 24 * time.Hour,
+		AuthCodeTTL:     10 * time.Minute,
+	}
+	oauthServer := oauth.NewServer(oauthCfg, cfg.Auth.JWTSecret, queries, oauth.DefaultUserLookup(queries))
+	h.SetOAuth(handler.NewOAuth(oauthServer, issuer, issuer+"/api/v1/mcp"))
+	handler.SetLoginCookieSecret(cfg.Auth.JWTSecret)
+	mcpHandler := handler.NewMCP(h.Deps(), handler.ResolveRepoPoolFromCaches(dbReg, h.RepoDBCache(), h.SlugCache()))
+	mcpHandler.SetTaskEnqueuer(taskEnqueuer)
+	h.SetMCP(mcpHandler)
+
+	server := httptest.NewServer(h.Router())
+	t.Cleanup(func() { server.Close() })
+	t.Cleanup(func() { dbReg.Close() })
+
+	return &testutil.TestEnv{
+		Server:       server,
+		BaseURL:      server.URL,
+		DB:           pool,
+		Config:       cfg,
+		RBAC:         rbacSvc,
+		TaskEnqueuer: taskEnqueuer,
+		Storage:      storageBackend,
+		MCP:          mcpHandler,
+	}, dedupEnqueuer
+}
+
+// TestRemote_PullSource_ImportsFacts is the regression test for the
+// "Pulled ... 0 facts, 0 concepts" bug. The sync POST /remote/{id}/pull
+// handler used to build RemotePullDeps with Service=nil + Filter=nil,
+// forcing the legacy Client.IsAllowedModel branch. That branch
+// rejects every model when the registry's allowed_models list is
+// empty (the shipped config default before this fix), so the pull
+// imported 0 facts and — because the embed_facts enqueue is gated on
+// importedFacts > 0 — no tasks started. The UI detail dialog showed
+// the decompositions because it proxies the registry directly,
+// bypassing the allowed_models filter.
+//
+// This test stubs the registry with a google/gemma-4-31b-it
+// decomposition (the default extraction model) containing 1 fact +
+// 1 concept, wires the ServiceMap so the sync pull takes the
+// filter-aware path, and asserts:
+//   - the pull returns imported_facts > 0 and imported_concepts > 0,
+//   - an embed_facts job was enqueued (tasks start on pull).
+//
+// The fix has two parts: (1) config.default.yaml allowed_models
+// changed from [] to ["*"] so the default config admits all models,
+// and (2) the sync PullSource handler now builds a RelevanceFilter
+// and threads a *registry.Service into RemotePullDeps so it uses
+// resolveAllowedModels (per-repo override replaces global) instead
+// of Client.IsAllowedModel (global only).
+func TestRemote_PullSource_ImportsFacts(t *testing.T) {
+	const (
+		sourceID    = "src-cbc"
+		modelID     = "google/gemma-4-31b-it"
+		factContent = "Victims of CIA-linked Montreal brainwashing experiments cleared to sue in class action."
+		factHash    = "hash-fact-1"
+		conceptName = "MKUltra"
+		conceptCtx  = "Law"
+	)
+	sourcePkg := fmt.Sprintf(
+		`{"source":{"id":%q,"url":"https://example.com/cbc","title":"CBC Brainwashing","sha256":"","doi":"","s3_key":""},"content":{"text":"body","markdown":"body"},"decompositions":[{"model_id":%q,"fact_count":1,"has_embeddings":false}]}`,
+		sourceID, modelID,
+	)
+	decompPkg := fmt.Sprintf(
+		`{"model_id":%q,"facts":[{"content":%q,"content_hash":%q,"confidence":0.9,"sentence_index":0}],"concepts":[{"canonical_name":%q,"context":%q}],"links":[{"fact_content_hash":%q,"concept_name":%q,"concept_context":%q}]}`,
+		modelID, factContent, factHash, conceptName, conceptCtx, factHash, conceptName, conceptCtx,
+	)
+
+	stubRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sources/"+sourceID):
+			_, _ = w.Write([]byte(sourcePkg))
+		case strings.HasSuffix(r.URL.Path, "/decompositions/"+modelID):
+			_, _ = w.Write([]byte(decompPkg))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(stubRegistry.Close)
+
+	// allowed_models=["*"] mirrors the fixed config.default.yaml
+	// default: admit decompositions from any extraction model.
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"*"})
+
+	admin := bootstrapSysAdmin(t, env, "remote-pull-imports@example.com")
+	_, _, repoID := createRepository(t, admin, "RemotePullImports", "remote-pull-imports", "desc")
+
+	resp, raw := admin.do("POST", "/api/v1/repositories/"+repoID+"/remote/"+sourceID+"/pull", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pull source: expected 200, got %d, body %s", resp.StatusCode, string(raw))
+	}
+	var res struct {
+		ImportedFacts    int `json:"imported_facts"`
+		ImportedConcepts int `json:"imported_concepts"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("decode pull response: %v", err)
+	}
+	if res.ImportedFacts == 0 {
+		t.Errorf("imported_facts = 0, want > 0 (the allowed_models filter stripped the decomposition)")
+	}
+	if res.ImportedConcepts == 0 {
+		t.Errorf("imported_concepts = 0, want > 0")
+	}
+	// The embed_facts enqueue is gated on importedFacts > 0; before
+	// the fix the guard short-circuited and no tasks started.
+	calls := dedup.Calls()
+	if len(calls) != 1 {
+		t.Errorf("embed_facts enqueue calls = %d, want 1 (tasks must start on pull)", len(calls))
+	}
+}
+
+// TestRemote_PullSource_DeniesDisallowedModel is the deny-path
+// counterpart: when allowed_models excludes the decomposition's
+// model, the filter strips it and the pull imports 0 facts (and
+// enqueues no embed_facts job). Locks the filter's deny behavior so
+// a future change can't silently broaden it.
+func TestRemote_PullSource_DeniesDisallowedModel(t *testing.T) {
+	const (
+		sourceID = "src-deny"
+		modelID  = "google/gemma-4-31b-it"
+	)
+	sourcePkg := fmt.Sprintf(
+		`{"source":{"id":%q,"url":"https://example.com/deny","title":"Deny","sha256":"","doi":"","s3_key":""},"decompositions":[{"model_id":%q,"fact_count":1,"has_embeddings":false}]}`,
+		sourceID, modelID,
+	)
+	decompPkg := fmt.Sprintf(
+		`{"model_id":%q,"facts":[{"content":"x","content_hash":"h","confidence":0.9,"sentence_index":0}],"concepts":[]}`,
+		modelID,
+	)
+
+	stubRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sources/"+sourceID):
+			_, _ = w.Write([]byte(sourcePkg))
+		case strings.HasSuffix(r.URL.Path, "/decompositions/"+modelID):
+			_, _ = w.Write([]byte(decompPkg))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(stubRegistry.Close)
+
+	// allowed_models=["some-other-model"] excludes the
+	// decomposition's model, so the filter must strip it.
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"some-other-model"})
+
+	admin := bootstrapSysAdmin(t, env, "remote-pull-deny@example.com")
+	_, _, repoID := createRepository(t, admin, "RemotePullDeny", "remote-pull-deny", "desc")
+
+	resp, raw := admin.do("POST", "/api/v1/repositories/"+repoID+"/remote/"+sourceID+"/pull", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pull source: expected 200, got %d, body %s", resp.StatusCode, string(raw))
+	}
+	var res struct {
+		ImportedFacts int `json:"imported_facts"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("decode pull response: %v", err)
+	}
+	if res.ImportedFacts != 0 {
+		t.Errorf("imported_facts = %d, want 0 (model not in allowed_models)", res.ImportedFacts)
+	}
+	if calls := dedup.Calls(); len(calls) != 0 {
+		t.Errorf("embed_facts enqueue calls = %d, want 0 (no facts imported → no tasks)", len(calls))
+	}
+}
+
+// TestRemote_PullSource_PerRepoOverrideHonored locks the
+// handler-side fix: the sync PullSource handler now consults the
+// per-repo allowed_models override (via resolveAllowedModels)
+// instead of the legacy Client.IsAllowedModel (global config only).
+// Before the fix, a repo that enabled a model in Settings still
+// imported 0 facts on the sync pull because the legacy path used
+// the global allowed_models config, which the operator had left at
+// the shipped default [].
+//
+// Setup: global allowed_models=["some-other-model"] (restrictive),
+// per-repo allowed_models=["google/gemma-4-31b-it"] (admits the
+// decomposition's model). The legacy path would deny (global only);
+// the filter-aware path admits (per-repo replaces global).
+func TestRemote_PullSource_PerRepoOverrideHonored(t *testing.T) {
+	const (
+		sourceID    = "src-override"
+		modelID     = "google/gemma-4-31b-it"
+		factContent = "A fact admitted by the per-repo override."
+		factHash    = "hash-override-1"
+	)
+	sourcePkg := fmt.Sprintf(
+		`{"source":{"id":%q,"url":"https://example.com/override","title":"Override","sha256":"","doi":"","s3_key":""},"decompositions":[{"model_id":%q,"fact_count":1,"has_embeddings":false}]}`,
+		sourceID, modelID,
+	)
+	decompPkg := fmt.Sprintf(
+		`{"model_id":%q,"facts":[{"content":%q,"content_hash":%q,"confidence":0.9,"sentence_index":0}],"concepts":[]}`,
+		modelID, factContent, factHash,
+	)
+
+	stubRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sources/"+sourceID):
+			_, _ = w.Write([]byte(sourcePkg))
+		case strings.HasSuffix(r.URL.Path, "/decompositions/"+modelID):
+			_, _ = w.Write([]byte(decompPkg))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(stubRegistry.Close)
+
+	// Global allowed_models is restrictive; the per-repo override
+	// (set below via PUT /settings/registry) admits the model.
+	env, dedup := newRemoteEnvWithRegistryAndDedup(t, stubRegistry.URL, []string{"some-other-model"})
+
+	// Populate cfg.Providers.Registry so the settings handler's
+	// AnyRegistryConfigured / RegistryByID validation passes (the
+	// env builder wires registryClients + the remote handler but
+	// doesn't populate the config the settings handler reads).
+	env.Config.Providers.Registry = config.RegistryConfig{
+		ID:            "default",
+		URL:           stubRegistry.URL,
+		AuthMode:      "none",
+		AllowedModels: []string{"some-other-model"},
+	}
+
+	admin := bootstrapSysAdmin(t, env, "remote-pull-override@example.com")
+	_, _, repoID := createRepository(t, admin, "RemotePullOverride", "remote-pull-override", "desc")
+
+	// Enable the registry integration for the repo so resolveClient
+	// passes (the pull endpoint returns 503 when the integration is
+	// off) and set the per-repo allowed_models override to admit the
+	// decomposition's model. The default for a fresh repo is
+	// enabled=true (migration 0035), but we set it explicitly so the
+	// test is robust to default changes.
+	regBody, _ := json.Marshal(map[string]any{
+		"enabled":        true,
+		"allowed_models": []string{modelID},
+	})
+	resp, raw := admin.do("PUT", "/api/v1/repositories/"+repoID+"/settings/registry", regBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set registry settings: status %d, body %s", resp.StatusCode, string(raw))
+	}
+
+	resp, raw = admin.do("POST", "/api/v1/repositories/"+repoID+"/remote/"+sourceID+"/pull", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pull source: expected 200, got %d, body %s", resp.StatusCode, string(raw))
+	}
+	var res struct {
+		ImportedFacts int `json:"imported_facts"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("decode pull response: %v", err)
+	}
+	if res.ImportedFacts == 0 {
+		t.Errorf("imported_facts = 0, want > 0 (per-repo allowed_models override must be honored on the sync pull path)")
+	}
+	if calls := dedup.Calls(); len(calls) != 1 {
+		t.Errorf("embed_facts enqueue calls = %d, want 1 (tasks must start on pull)", len(calls))
 	}
 }

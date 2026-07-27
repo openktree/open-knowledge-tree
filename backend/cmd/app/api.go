@@ -20,18 +20,18 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/oauth"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/decomposition"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ontology"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/refinement"
 	registryclient "github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/search"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/summarization"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/synthesis"
-	"github.com/openktree/open-knowledge-tree/backend/internal/providers/claims"
-	"github.com/openktree/open-knowledge-tree/backend/internal/providers/posture"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -754,6 +754,15 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	h.SetPromptsetResolver(promptsetResolver)
 	h.SetRemoteDedupEnqueuer(tm.RemoteDedupEnqueuer())
 	h.SetRemotePullBatchEnqueuer(tm.RemotePullBatchEnqueuer())
+	// Wire the filter-aware pull path onto the sync remote PullSource
+	// handler so the "Pull" button uses the same RelevanceFilter the
+	// batch worker does (per-repo allowed_models override, accepted
+	// promptset hashes, sync level, inbound context mapper). Without
+	// this the sync pull falls back to Client.IsAllowedModel, which
+	// only consults the GLOBAL allowed_models config and ignores the
+	// per-repo override — so a repo that enabled a model in Settings
+	// still imported 0 facts on the sync pull.
+	h.SetRemoteRegistryServices(registryServices, tm.AcceptedHashesResolver(), tm.InboundMapperFactory())
 	// Wire the graph export/import enqueuers (Shared Graphs feature).
 	// The graph handler also needs the registry client map (wired via
 	// SetRegistryClients above) and the storage backend (for the
