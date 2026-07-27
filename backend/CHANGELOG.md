@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.1...api-v0.4.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* **api:** provider-agnostic model matching + auto-whitelist repo's own fact model ([8553f69](https://github.com/openktree/open-knowledge-tree/commit/8553f694558b29c4af07c2d83a537884e2e0969f))
+
 ## [0.4.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.0...api-v0.4.1) (2026-07-27)
 
 
