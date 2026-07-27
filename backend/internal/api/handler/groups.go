@@ -106,6 +106,10 @@ func (g *Groups) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusCreated, toGroupJSON(gr))
+	recordAudit(g.deps, r, rbac.AuditActionGroupCreate, rbac.Objects.Groups, string(gr.ID), map[string]any{
+		"name":        gr.Name,
+		"description": gr.Description,
+	})
 }
 
 // GetGroup handles GET /api/v1/groups/{groupID}.
@@ -174,6 +178,10 @@ func (g *Groups) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, toGroupJSON(updated))
+	recordAudit(g.deps, r, rbac.AuditActionGroupUpdate, rbac.Objects.Groups, string(id), map[string]any{
+		"name":        updated.Name,
+		"description": updated.Description,
+	})
 }
 
 // DeleteGroup handles DELETE /api/v1/groups/{groupID}.
@@ -188,6 +196,7 @@ func (g *Groups) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "group deleted"})
+	recordAudit(g.deps, r, rbac.AuditActionGroupDelete, rbac.Objects.Groups, string(id), nil)
 }
 
 // addMemberRequest is the body shape for
@@ -229,6 +238,9 @@ func (g *Groups) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "member added"})
+	recordAudit(g.deps, r, rbac.AuditActionGroupMemberAdd, rbac.Objects.Members, string(id), map[string]any{
+		"user_id": req.UserID,
+	})
 }
 
 // RemoveMember handles
@@ -241,6 +253,9 @@ func (g *Groups) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "member removed"})
+	recordAudit(g.deps, r, rbac.AuditActionGroupMemberRemove, rbac.Objects.Members, string(id), map[string]any{
+		"user_id": userID,
+	})
 }
 
 // ListMembers handles GET /api/v1/groups/{groupID}/members.
@@ -303,6 +318,10 @@ func (g *Groups) GrantGroupRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "role granted"})
+	recordAudit(g.deps, r, rbac.AuditActionGroupRoleGrant, rbac.Objects.Roles, string(id), map[string]any{
+		"role":   req.Role,
+		"domain": req.Domain,
+	})
 }
 
 // revokeGroupRoleRequest is the body shape for
@@ -328,6 +347,10 @@ func (g *Groups) RevokeGroupRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "role revoked"})
+	recordAudit(g.deps, r, rbac.AuditActionGroupRoleRevoke, rbac.Objects.Roles, string(id), map[string]any{
+		"role":   req.Role,
+		"domain": req.Domain,
+	})
 }
 
 // ListGroupRoles handles GET /api/v1/groups/{groupID}/roles.

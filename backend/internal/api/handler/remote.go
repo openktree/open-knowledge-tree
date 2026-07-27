@@ -9,10 +9,13 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -57,10 +60,42 @@ type Remote struct {
 	store              *store.Queries
 	dedupEnqueuer     RemoteDedupEnqueuer
 	pullBatchEnqueuer RemotePullBatchEnqueuer
+	// audit records ingestion_start events for remote pulls. Set
+	// via SetAuditRecorder; nil in tests that don't exercise the
+	// audit pipeline. When nil, PullSource/PullBatch skip the
+	// audit write (best-effort, never blocks the request).
+	audit audit.Recorder
 }
 
 func NewRemote(clients *registry.ClientMap, cfg config.ProvidersConfig) *Remote {
 	return &Remote{clients: clients, cfg: cfg}
+}
+
+// SetAuditRecorder wires the audit recorder the PullSource/PullBatch
+// handlers use to emit ingestion_start events. Optional: when nil,
+// the audit write is skipped (best-effort). Idempotent.
+func (h *Remote) SetAuditRecorder(r audit.Recorder) {
+	h.audit = r
+}
+
+// recordPullAudit emits an ingestion_start audit event for a remote
+// registry pull. Best-effort: a nil recorder is a no-op, and the
+// write happens on a background goroutine (RecordAsync) so it never
+// blocks the request. The actor + repo are read from the request
+// context (set by AuthRequired + WithRepoQueries).
+func (h *Remote) recordPullAudit(r *http.Request, repoID pgtype.UUID, action, target string, detail map[string]any) {
+	if h.audit == nil {
+		return
+	}
+	uid := httputil.RequestUserID(r.Context())
+	h.audit.RecordAsync(audit.Event{
+		UserID:       uid,
+		Action:       action,
+		Object:       rbac.Objects.Sources,
+		RepositoryID: repoID,
+		Target:       target,
+		Detail:       detail,
+	})
 }
 
 // SetClientMap wires the per-registry client map. Called by the
@@ -359,6 +394,12 @@ func (h *Remote) PullSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, result)
+	h.recordPullAudit(r, repoID, rbac.AuditActionIngestionStart, result.SourceID, map[string]any{
+		"remote_source_id":   remoteID,
+		"imported_facts":     result.ImportedFacts,
+		"imported_concepts":  result.ImportedConcepts,
+		"source_url":         result.URL,
+	})
 }
 
 func strPtrOrNil(s string) *string {
@@ -421,8 +462,12 @@ func (h *Remote) PullBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]any{
-		"job_id":             jobID,
+		"job_id":              jobID,
 		"remote_source_count": len(body.RemoteSourceIDs),
-		"status":             "queued",
+		"status":              "queued",
+	})
+	h.recordPullAudit(r, repoID, rbac.AuditActionIngestionStart, "pull_batch", map[string]any{
+		"job_id":              jobID,
+		"remote_source_count": len(body.RemoteSourceIDs),
 	})
 }

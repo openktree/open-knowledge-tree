@@ -8,7 +8,7 @@ title: Getting Started
 
 Run the full OKT stack with two commands. No git clone, no Go, no Node — just Docker.
 
-## 1. Create a config file
+## 1. Configure your environment
 
 Create a folder for OKT, then create an `.env` file inside it with your API keys.
 
@@ -17,8 +17,13 @@ Create a folder for OKT, then create an `.env` file inside it with your API keys
 ```bash
 mkdir okt && cd okt
 ```
+**Windows:**
+```powershell
+mkdir okt; cd okt
+```
 
-Then copy this into a file called `.env` (use your editor, or paste from the terminal):
+Create a .env file and add the variables for openrouter and serper. This is required for LLM access, beware that running a research process
+will result in token usage and cost, you can limit the token maximun consumption in openrouter api keys page. Example Variables file:
 
 ```
 SERPER_API_KEY=<your-serper-key>
@@ -29,41 +34,29 @@ UNPAYWALL_EMAIL=<your-email>
 # Optional: first-boot admin (see step 3 below).
 # By default the FIRST user to register is auto-promoted to sysadmin
 # — safe for localhost. For a public deployment, uncomment and set
-# OKT_BOOTSTRAP_AUTO_PROMOTE=false plus the explicit admin below.
-# OKT_BOOTSTRAP_AUTO_PROMOTE=true
-# OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL=admin@example.com
+OKT_BOOTSTRAP_AUTO_PROMOTE=true
+OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL=<your-email>
 # OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD=<generate-a-strong-one>
 # OKT_BOOTSTRAP_DEFAULT_ADMIN_DISPLAY_NAME=Default Admin
 ```
 
 Replace the `<your-...>` values with real ones. You need **at minimum**:
-- `SERPER_API_KEY` — web search to find sources
+- `SERPER_API_KEY` — web search to find sources.
 - `OPENROUTER_API_KEY` — LLM for fact extraction, concept extraction, and synthesis
 
 Lines starting with `#` are comments — you can delete any line you don't need.
 
 See [Configuration Reference](/docs/reference/config) for all valid values and environment variable overrides.
 
-**Windows (PowerShell):**
-
-```powershell
-mkdir okt; cd okt
-@"
-SERPER_API_KEY=<your-serper-key>
-OPENROUTER_API_KEY=<your-openrouter-key>
-OPENALEX_EMAIL=<your-email>
-UNPAYWALL_EMAIL=<your-email>
-"@ | Out-File -Encoding utf8 .env
-```
-
-Or just open a text editor, paste the content above, and save as `.env` in the `okt` folder. Make sure the file is named `.env` and not `.env.txt`. The `#`-prefixed bootstrap lines are optional — see step 3 below.
 
 ## 2. Boot the stack
 
 From inside the `okt` folder (where your `.env` lives):
 
 ```bash
-docker compose -f https://raw.githubusercontent.com/openktree/open-knowledge-tree-go/main/docker-compose.yml up
+
+curl -sSL https://raw.githubusercontent.com/openktree/open-knowledge-tree/main/docker-compose.yml > docker-compose.yml
+docker compose up -d
 ```
 
 This pulls pre-built images from GitHub Container Registry and starts everything:

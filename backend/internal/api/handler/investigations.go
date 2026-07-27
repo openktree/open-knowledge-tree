@@ -13,6 +13,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
 	conceptpkg "github.com/openktree/open-knowledge-tree/backend/internal/concepts"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -100,6 +101,10 @@ func (i *Investigations) CreateInvestigation(w http.ResponseWriter, r *http.Requ
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create investigation")
 		return
 	}
+	recordAuditWithRepo(i.deps, r, rbac.AuditActionInvestigationCreate, rbac.Objects.Investigations, repoID, created.ID.String(), map[string]any{
+		"title": created.Title,
+		"topic": body.Topic,
+	})
 	httputil.WriteJSON(w, http.StatusCreated, created)
 }
 
@@ -248,6 +253,10 @@ func (i *Investigations) UpdateInvestigation(w http.ResponseWriter, r *http.Requ
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update investigation")
 		return
 	}
+	recordAuditWithRepo(i.deps, r, rbac.AuditActionInvestigationUpdate, rbac.Objects.Investigations, repoID, invID.String(), map[string]any{
+		"title": updated.Title,
+		"topic": body.Topic,
+	})
 	httputil.WriteJSON(w, http.StatusOK, updated)
 }
 
@@ -290,6 +299,9 @@ func (i *Investigations) DeleteInvestigation(w http.ResponseWriter, r *http.Requ
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete investigation")
 		return
 	}
+	recordAuditWithRepo(i.deps, r, rbac.AuditActionInvestigationDelete, rbac.Objects.Investigations, repoID, invID.String(), map[string]any{
+		"title": existing.Title,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -384,6 +396,10 @@ func (i *Investigations) AddSource(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to add source to investigation")
 		return
 	}
+	recordAuditWithRepo(i.deps, r, rbac.AuditActionInvestigationAddSource, rbac.Objects.Investigations, repoID, invID.String(), map[string]any{
+		"source_id": body.SourceID,
+		"source_url": src.Url,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -436,6 +452,9 @@ func (i *Investigations) RemoveSource(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to remove source from investigation")
 		return
 	}
+	recordAuditWithRepo(i.deps, r, rbac.AuditActionInvestigationRemoveSource, rbac.Objects.Investigations, repoID, invID.String(), map[string]any{
+		"source_id": uuidFromPgtype(sourceID),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

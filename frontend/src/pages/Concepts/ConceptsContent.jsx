@@ -48,41 +48,46 @@ export default function ConceptsContent(props) {
         }
       >
         <Show
-          when={rows().length > 0}
-          fallback={
-            <EmptyState
-              title={props.search() ? "No concepts match your search." : "No concepts yet."}
-              description={
-                props.search()
-                  ? "Try a different query, or clear the search box."
-                  : "Concepts are extracted automatically once facts are processed and deduplicated. Process sources to generate facts, then wait for the concept-extraction pipeline to run."
-              }
-            />
-          }
+          when={rows().length > 0 || !props.loading()}
+          fallback={<p class="text-sm text-gray-400 dark:text-gray-500">Loading concepts...</p>}
         >
-          <>
-            <Pagination
-              total={props.total}
-              limit={props.limit}
-              offset={props.offset()}
-              onOffsetChange={props.onOffsetChange}
-            />
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-              Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())}{" "}
-              of {props.total().toLocaleString()}
-            </p>
-            <div class="space-y-2 mt-3">
-              <For each={rows()}>
-                {(concept) => <ConceptRow concept={concept} slug={props.slug()} />}
-              </For>
-            </div>
-            <Pagination
-              total={props.total}
-              limit={props.limit}
-              offset={props.offset()}
-              onOffsetChange={props.onOffsetChange}
-            />
-          </>
+          <Show
+            when={rows().length > 0}
+            fallback={
+              <EmptyState
+                title={props.search() ? "No concepts match your search." : "No concepts yet."}
+                description={
+                  props.search()
+                    ? "Try a different query, or clear the search box."
+                    : "Concepts are extracted automatically once facts are processed and deduplicated. Process sources to generate facts, then wait for the concept-extraction pipeline to run."
+                }
+              />
+            }
+          >
+            <>
+              <Pagination
+                total={props.total}
+                limit={props.limit}
+                offset={props.offset()}
+                onOffsetChange={props.onOffsetChange}
+              />
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
+                Showing {props.offset() + 1}–{Math.min(props.offset() + props.limit, props.total())}{" "}
+                of {props.total().toLocaleString()}
+              </p>
+              <div class="space-y-2 mt-3">
+                <For each={rows()}>
+                  {(concept) => <ConceptRow concept={concept} slug={props.slug()} />}
+                </For>
+              </div>
+              <Pagination
+                total={props.total}
+                limit={props.limit}
+                offset={props.offset()}
+                onOffsetChange={props.onOffsetChange}
+              />
+            </>
+          </Show>
         </Show>
       </Show>
     </Card>

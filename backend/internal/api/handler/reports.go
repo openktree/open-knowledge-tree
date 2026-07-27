@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -119,7 +120,7 @@ func (r *Reports) CreateReport(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.createAndEnqueue(w, req, queries, repoID, strings.TrimSpace(body.Title), body.Topic, body.Text, body.ParentID, body.ChildrenIDs)
+	r.createAndEnqueue(w, req, queries, repoID, strings.TrimSpace(body.Title), body.Topic, body.Text, body.ParentID, body.ChildrenIDs, "create")
 }
 
 // UploadReport handles POST /{repoID}/reports/upload.
@@ -200,14 +201,14 @@ func (r *Reports) UploadReport(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.createAndEnqueue(w, req, queries, repoID, title, topic, text, parentID, childrenIDs)
+	r.createAndEnqueue(w, req, queries, repoID, title, topic, text, parentID, childrenIDs, "upload")
 }
 
 // createAndEnqueue is the shared tail of CreateReport + UploadReport:
 // it inserts the report row in `pending` status, optionally validates
 // and sets its parent / children, and enqueues the annotate_report
 // job. Returns 202 with the report id + job id.
-func (r *Reports) createAndEnqueue(w http.ResponseWriter, req *http.Request, queries *store.Queries, repoID pgtype.UUID, title, topic, text, parentIDStr string, childrenIDStrs []string) {
+func (r *Reports) createAndEnqueue(w http.ResponseWriter, req *http.Request, queries *store.Queries, repoID pgtype.UUID, title, topic, text, parentIDStr string, childrenIDStrs []string, kind string) {
 	if r.taskEnqueuer == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "task manager not configured")
 		return
@@ -275,6 +276,16 @@ func (r *Reports) createAndEnqueue(w http.ResponseWriter, req *http.Request, que
 		ReportID: reportIDStr,
 		JobID:    jobID,
 		Status:   "queued",
+	})
+	action := rbac.AuditActionReportCreate
+	if kind == "upload" {
+		action = rbac.AuditActionReportUpload
+	}
+	recordAuditWithRepo(r.deps, req, action, rbac.Objects.Reports, repoID, reportIDStr, map[string]any{
+		"title":  title,
+		"topic":  topic,
+		"job_id": jobID,
+		"kind":   kind,
 	})
 }
 
@@ -520,9 +531,11 @@ func (r *Reports) UpdateReport(w http.ResponseWriter, req *http.Request) {
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, updated)
+	recordAuditWithRepo(r.deps, req, rbac.AuditActionReportUpdate, rbac.Objects.Reports, repoID, reportID.String(), map[string]any{
+		"title":        updated.Title,
+		"body_changed": bodyChanged,
+	})
 }
-
-// DeleteReport handles DELETE /{repoID}/reports/{reportID}.
 func (r *Reports) DeleteReport(w http.ResponseWriter, req *http.Request) {
 	pool := appmw.PoolFromContext(req.Context())
 	if pool == nil {
@@ -560,6 +573,9 @@ func (r *Reports) DeleteReport(w http.ResponseWriter, req *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete report")
 		return
 	}
+	recordAuditWithRepo(r.deps, req, rbac.AuditActionReportDelete, rbac.Objects.Reports, repoID, reportID.String(), map[string]any{
+		"title": existing.Title,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -628,6 +644,9 @@ func (r *Reports) AnnotateReport(w http.ResponseWriter, req *http.Request) {
 		ReportID: reportIDStr,
 		JobID:    jobID,
 		Status:   "queued",
+	})
+	recordAuditWithRepo(r.deps, req, rbac.AuditActionReportAnnotate, rbac.Objects.Reports, repoID, reportIDStr, map[string]any{
+		"job_id": jobID,
 	})
 }
 

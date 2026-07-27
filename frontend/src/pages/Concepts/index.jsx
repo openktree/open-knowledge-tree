@@ -1,7 +1,6 @@
 import { createMemo, createResource, createSignal, Show } from "solid-js";
 import EmptyState from "../../components/EmptyState";
 import Layout from "../../components/Layout";
-import Loading from "../../components/Loading";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
@@ -48,20 +47,19 @@ export default function Concepts() {
           />
         }
       >
-        <Show when={!concepts.loading} fallback={<Loading message="Loading concepts..." />}>
-          <ConceptsContent
-            concepts={concepts}
-            slug={() => repo.currentRepo()?.slug || ""}
-            hasRepo={() => !!repo.currentRepo()}
-            onRefresh={refetch}
-            search={search}
-            onSearch={onSearch}
-            offset={offset}
-            onOffsetChange={setOffset}
-            total={() => concepts()?.total || 0}
-            limit={PAGE_SIZE}
-          />
-        </Show>
+        <ConceptsContent
+          concepts={concepts}
+          loading={() => concepts.loading}
+          slug={() => repo.currentRepo()?.slug || ""}
+          hasRepo={() => !!repo.currentRepo()}
+          onRefresh={refetch}
+          search={search}
+          onSearch={onSearch}
+          offset={offset}
+          onOffsetChange={setOffset}
+          total={() => concepts()?.total || 0}
+          limit={PAGE_SIZE}
+        />
       </Show>
     </Layout>
   );

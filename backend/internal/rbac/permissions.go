@@ -137,6 +137,62 @@ const (
 	// never another key).
 	AuditActionAPIKeyCreate = "api_key_create"
 	AuditActionAPIKeyRevoke = "api_key_revoke"
+
+	// Investigation lifecycle (REST + MCP). Per-repo scoped.
+	AuditActionInvestigationCreate      = "investigation_create"
+	AuditActionInvestigationUpdate      = "investigation_update"
+	AuditActionInvestigationDelete      = "investigation_delete"
+	AuditActionInvestigationAddSource    = "investigation_add_source"
+	AuditActionInvestigationRemoveSource = "investigation_remove_source"
+
+	// Report lifecycle (REST + MCP). Per-repo scoped.
+	AuditActionReportCreate   = "report_create"
+	AuditActionReportUpload   = "report_upload"
+	AuditActionReportUpdate   = "report_update"
+	AuditActionReportDelete   = "report_delete"
+	AuditActionReportAnnotate = "report_annotate"
+
+	// Group lifecycle (system scope). GroupCreate already exists
+	// above; the rest of the group mutation surface.
+	AuditActionGroupUpdate      = "group_update"
+	AuditActionGroupDelete      = "group_delete"
+	AuditActionGroupMemberAdd    = "group_member_add"
+	AuditActionGroupMemberRemove = "group_member_remove"
+	AuditActionGroupRoleGrant    = "group_role_grant"
+	AuditActionGroupRoleRevoke   = "group_role_revoke"
+
+	// Graph import/export (per-repo or new-repo mutations).
+	AuditActionGraphImport = "graph_import"
+	AuditActionGraphUpload = "graph_upload"
+	AuditActionGraphExport = "graph_export"
+
+	// Promptset CRUD (system scope).
+	AuditActionPromptsetCreate = "promptset_create"
+	AuditActionPromptsetUpdate = "promptset_update"
+	AuditActionPromptsetDelete = "promptset_delete"
+
+	// Concept resynthesis (per-repo).
+	AuditActionConceptResynthesize = "concept_resynthesize"
+
+	// Admin reprocessing (per-repo).
+	AuditActionAdminReextract = "admin_concepts_reextract"
+	AuditActionAdminReprocess = "admin_source_reprocess"
+	AuditActionAdminRecompute = "admin_concepts_recompute"
+
+	// Admin task control (system scope).
+	AuditActionTaskCancel = "task_cancel"
+	AuditActionTaskRescue = "task_rescue"
+
+	// Source lifecycle gaps (per-repo). IngestionStart already
+	// covers Create/Upload/Retrieve; these cover the remaining
+	// source mutations.
+	AuditActionSourceDelete  = "source_delete"
+	AuditActionSourceProcess = "source_process"
+	AuditActionSourceRetry   = "source_retry"
+
+	// Bootstrap (boot-time entity creation, no HTTP actor).
+	AuditActionBootstrapRepo  = "bootstrap_repo_create"
+	AuditActionBootstrapAdmin = "bootstrap_admin_create"
 )
 
 // RepoObject returns the repo-scoped form of a bare resource

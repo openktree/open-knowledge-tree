@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/oauth"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 )
 
 // OAuth bundles the OAuth 2.1 authorization-server HTTP handlers.
@@ -25,6 +27,11 @@ type OAuth struct {
 	// /.well-known/oauth-protected-resource document so MCP clients
 	// can discover where to send bearer tokens.
 	mcpResourceURL string
+	// audit records oauth_register / oauth_revoke events. Set via
+	// SetAuditRecorder; nil in tests that don't exercise the audit
+	// pipeline. When nil, Register/Revoke skip the audit write
+	// (best-effort, never blocks the request).
+	audit audit.Recorder
 }
 
 // NewOAuth constructs an OAuth handler bundle. issuer is the
@@ -33,6 +40,14 @@ type OAuth struct {
 // full URL of the MCP endpoint (issuer + "/api/v1/mcp").
 func NewOAuth(srv *oauth.Server, issuer, mcpResourceURL string) *OAuth {
 	return &OAuth{srv: srv, issuer: strings.TrimRight(issuer, "/"), mcpResourceURL: mcpResourceURL}
+}
+
+// SetAuditRecorder wires the audit recorder the Register/Revoke
+// handlers use to emit oauth_register / oauth_revoke events.
+// Optional: when nil, the audit write is skipped (best-effort).
+// Idempotent.
+func (o *OAuth) SetAuditRecorder(r audit.Recorder) {
+	o.audit = r
 }
 
 // Register handles POST /api/v1/oauth/register (RFC 7591 Dynamic
@@ -58,6 +73,21 @@ func (o *OAuth) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusCreated, resp)
+	if o.audit != nil {
+		// Registration is unauthenticated (the client is self-
+		// registering), so there is no actor_user_id on the context.
+		// The target is the new client_id; the detail carries the
+		// redirect_uris + client_name for provenance.
+		o.audit.RecordAsync(audit.Event{
+			Action:    rbac.AuditActionOAuthRegister,
+			Object:    rbac.Objects.SourceProvider,
+			Target:    resp.ClientID,
+			Detail: map[string]any{
+				"redirect_uris": body.RedirectURIs,
+				"client_name":   body.ClientName,
+			},
+		})
+	}
 }
 
 // Authorize handles GET /api/v1/oauth/authorize. It is the
@@ -214,6 +244,24 @@ func (o *OAuth) Revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = o.srv.RevokeRefreshToken(r.Context(), refresh)
 	w.WriteHeader(http.StatusOK)
+	if o.audit != nil {
+		// Revoke is bearer-token-authed (the MCP client revokes its
+		// own refresh token). The actor may be on the context when
+		// the bearer token carried a user id; otherwise the row has
+		// no actor. The target is the token prefix (never the full
+		// token — that would leak credentials to the audit log).
+		uid := httputil.RequestUserID(r.Context())
+		target := refresh
+		if len(target) > 12 {
+			target = target[:12] + "…"
+		}
+		o.audit.RecordAsync(audit.Event{
+			UserID: uid,
+			Action: rbac.AuditActionOAuthRevoke,
+			Object: rbac.Objects.SourceProvider,
+			Target: target,
+		})
+	}
 }
 
 // Metadata handles GET /.well-known/oauth-authorization-server

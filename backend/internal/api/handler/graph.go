@@ -16,6 +16,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/graph"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/storage"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -170,6 +171,13 @@ func (h *Graph) ExportGraph(w http.ResponseWriter, r *http.Request) {
 		"repository_id": repoID.String(),
 		"status":        "queued",
 	})
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionGraphExport, rbac.Objects.Graph, repoID, repoID.String(), map[string]any{
+		"job_id":         jobID,
+		"name":           body.Name,
+		"registry_id":    body.RegistryID,
+		"include_bodies": body.IncludeBodies,
+		"include_images": includeImages,
+	})
 }
 
 // ── Export (synchronous file download) ───────────────────────────────
@@ -293,6 +301,10 @@ func (h *Graph) ImportGraphToExisting(w http.ResponseWriter, r *http.Request) {
 		"repository_id": repoID.String(),
 		"status":        "queued",
 	})
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionGraphImport, rbac.Objects.Graph, repoID, repoID.String(), map[string]any{
+		"job_id": jobID,
+		"mode":   "existing",
+	})
 }
 
 // ── Import (new repo) ────────────────────────────────────────────────
@@ -394,6 +406,13 @@ func (h *Graph) ImportGraphToNewRepo(w http.ResponseWriter, r *http.Request) {
 		"slug":          repo.Slug,
 		"status":        "queued",
 	})
+	recordAuditWithRepo(h.deps, r, rbac.AuditActionGraphImport, rbac.Objects.Graph, repo.ID, repo.ID.String(), map[string]any{
+		"job_id":            jobID,
+		"mode":              "new",
+		"slug":              body.Slug,
+		"registry_graph_id": body.RegistryGraphID,
+		"upload_key":        body.UploadKey,
+	})
 }
 
 // ── Upload (air-gapped import) ───────────────────────────────────────
@@ -441,6 +460,9 @@ func (h *Graph) UploadGraphBundle(w http.ResponseWriter, r *http.Request) {
 	}
 	httputil.WriteJSON(w, http.StatusCreated, map[string]string{
 		"upload_key": uploadKey,
+	})
+	recordAudit(h.deps, r, rbac.AuditActionGraphUpload, rbac.Objects.Graph, uploadKey, map[string]any{
+		"size_bytes": len(data),
 	})
 }
 

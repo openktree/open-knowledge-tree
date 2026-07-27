@@ -4,6 +4,8 @@ import Button from "../../components/Button";
 import Card from "../../components/Card";
 import CitationModal from "../../components/CitationModal";
 import EmptyState from "../../components/EmptyState";
+import { buildCitedText } from "../../lib/citedCopy";
+import { extractInlineCitations } from "../../lib/extractInlineCitations";
 import { renderMarkdown } from "../../lib/markdown";
 import { normalizeCitations, normalizeImageCitations } from "../../lib/normalizeCitations";
 import { resolveDefinitionImages, revokeBlobUrls } from "../../lib/resolveDefinitionImages";
@@ -50,6 +52,8 @@ export default function DefinitionPanel(props) {
   const [resynthesizing, setResynthesizing] = createSignal(false);
   const [resynthResult, setResynthResult] = createSignal(null);
   const [copied, setCopied] = createSignal(false);
+  const [copiedCites, setCopiedCites] = createSignal(false);
+  const [copyingCites, setCopyingCites] = createSignal(false);
   let defEl = null;
 
   async function handleResynthesize() {
@@ -155,6 +159,66 @@ export default function DefinitionPanel(props) {
     }
   }
 
+  // A synthesis is like a report without annotations: it carries only
+  // the author's inline [text](<fact:uuid>) direct cites and no auto-
+  // matched facts. We reuse the report's buildCitedText with empty
+  // annotations so the annex surfaces a "Direct cites" section only.
+  const copyToClipboard = async (text) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  };
+
+  async function handleCopyCites() {
+    const syn = synthesis();
+    if (!syn || !syn.content) return;
+    setCopyingCites(true);
+    try {
+      const body = syn.content;
+      const { factIds } = extractInlineCitations(body);
+      if (factIds.length === 0) {
+        setCopiedCites(false);
+        return;
+      }
+      const inlineFacts = new Map();
+      await Promise.all(
+        factIds.map(async (fid) => {
+          try {
+            const res = await api.getFact(slug(), fid);
+            inlineFacts.set(fid, {
+              text: res.fact?.text || "",
+              sources: res.sources || [],
+              error: null,
+            });
+          } catch (err) {
+            inlineFacts.set(fid, {
+              text: "",
+              sources: [],
+              error: err?.message || "fetch failed",
+            });
+          }
+        }),
+      );
+      const text = buildCitedText(body, [], new Map(), inlineFacts);
+      await copyToClipboard(text);
+      setCopiedCites(true);
+      setTimeout(() => setCopiedCites(false), 2000);
+    } catch (err) {
+      setCopiedCites(false);
+    } finally {
+      setCopyingCites(false);
+    }
+  }
+
   // Keep the DOM in sync with renderedHtml: the ref-based approach
   // only fires once on mount, so we update innerHTML reactively here
   // whenever the rendered HTML changes (e.g. after async image
@@ -207,6 +271,15 @@ export default function DefinitionPanel(props) {
               title="Copy the definition markdown to the clipboard"
             >
               {copied() ? "Copied!" : "Copy"}
+            </button>
+            <button
+              type="button"
+              class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+              onClick={handleCopyCites}
+              disabled={copyingCites() || !synthesis()?.content}
+              title="Copy the definition markdown with inline citations expanded into an annex"
+            >
+              {copiedCites() ? "Copied!" : copyingCites() ? "Copying..." : "Copy with cites"}
             </button>
           </Show>
           <button

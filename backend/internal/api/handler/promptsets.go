@@ -186,6 +186,9 @@ func (h *Promptsets) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusCreated, rowToPromptset(row))
+	recordAudit(h.deps, r, rbac.AuditActionPromptsetCreate, rbac.Objects.Promptset, row.Hash, map[string]any{
+		"name": row.Name,
+	})
 }
 
 // Update handles PUT /api/v1/promptsets/{hash}.
@@ -272,6 +275,10 @@ func (h *Promptsets) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusCreated, rowToPromptset(row))
+	recordAudit(h.deps, r, rbac.AuditActionPromptsetUpdate, rbac.Objects.Promptset, row.Hash, map[string]any{
+		"name":      row.Name,
+		"old_hash":  oldHash,
+	})
 }
 
 // Delete handles DELETE /api/v1/promptsets/{hash}.
@@ -316,6 +323,9 @@ func (h *Promptsets) Delete(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete promptset")
 		return
 	}
+	recordAudit(h.deps, r, rbac.AuditActionPromptsetDelete, rbac.Objects.Promptset, hash, map[string]any{
+		"name": row.Name,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

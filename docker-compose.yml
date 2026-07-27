@@ -109,6 +109,9 @@ services:
   api:
     image: ghcr.io/openktree/api:${OKT_TAG:-latest}
     command: --mode=api
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432

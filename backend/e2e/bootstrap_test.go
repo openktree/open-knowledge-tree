@@ -59,7 +59,7 @@ func TestBootstrapDefaultRepository(t *testing.T) {
 	// Startup-time call: pass "" as ownerID so the bootstrap
 	// picks the earliest user.
 	cfg := bootstrapTestConfig()
-	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil)
+	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestBootstrapDefaultRepositoryNoopWhenExists(t *testing.T) {
 	}
 
 	cfg := bootstrapTestConfig()
-	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil)
+	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestBootstrapDefaultRepositorySkipsWhenNoUsers(t *testing.T) {
 	env := testutil.NewTestEnv(t)
 
 	cfg := bootstrapTestConfig()
-	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil)
+	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestBootstrapDefaultRepositoryDisabled(t *testing.T) {
 		Isolation:  config.IsolationConfig{DefaultDatabase: "default"},
 		System:     config.SystemConfig{Database: "default"},
 	}
-	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil)
+	res, err := bootstrap.EnsureDefaultRepository(context.Background(), testutil.NewForTestPool(env.DB), cfg, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestBootstrapDefaultAdminSeedsUser(t *testing.T) {
 
 	env.Config.Bootstrap.DefaultAdmin = true
 
-	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC)
+	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC, nil)
 	if err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestBootstrapDefaultAdminSkipsWhenUsersExist(t *testing.T) {
 	t.Setenv("OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD", "supersecret123")
 	env.Config.Bootstrap.DefaultAdmin = true
 
-	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC)
+	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC, nil)
 	if err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestBootstrapDefaultAdminSkipsWhenEnvMissing(t *testing.T) {
 	os.Unsetenv("OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD")
 	env.Config.Bootstrap.DefaultAdmin = true
 
-	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC)
+	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC, nil)
 	if err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestBootstrapDefaultAdminSkipsWhenFlagOff(t *testing.T) {
 	t.Setenv("OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD", "supersecret123")
 	env.Config.Bootstrap.DefaultAdmin = false
 
-	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC)
+	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC, nil)
 	if err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
@@ -763,7 +763,7 @@ func TestAuthRegisterNoAutopromoteWhenDefaultAdminSeeded(t *testing.T) {
 	env.Config.Bootstrap.DefaultAdmin = true
 	env.Config.Bootstrap.AutoPromoteFirstUser = true
 
-	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC)
+	res, err := bootstrap.EnsureDefaultAdmin(context.Background(), testutil.NewForTestPool(env.DB), env.Config, env.RBAC, nil)
 	if err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}

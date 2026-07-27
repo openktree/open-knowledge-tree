@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
 	appmw "github.com/openktree/open-knowledge-tree/backend/internal/api/middleware"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -248,5 +249,8 @@ func (s *Syntheses) ResynthesizeConcept(w http.ResponseWriter, r *http.Request) 
 		ConceptID:     conceptIDStr,
 		EnqueuedJobID: jobID,
 		Enqueued:      true,
+	})
+	recordAuditWithRepo(s.deps, r, rbac.AuditActionConceptResynthesize, rbac.Objects.Concepts, repoID, conceptIDStr, map[string]any{
+		"job_id": jobID,
 	})
 }

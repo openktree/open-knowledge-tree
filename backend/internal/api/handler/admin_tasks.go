@@ -8,6 +8,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/riverqueue/river/rivertype"
 )
 
@@ -22,10 +24,22 @@ type AdminTasks struct {
 	// May be nil when the task manager isn't configured; the handler
 	// returns 503 in that case.
 	pool *pgxpool.Pool
+	// audit records task_cancel / task_rescue events. Set via
+	// SetAuditRecorder; nil in tests that don't exercise the audit
+	// pipeline. When nil, CancelJob/RescueStuckJobs skip the audit
+	// write (best-effort, never blocks the request).
+	audit audit.Recorder
 }
 
 func NewAdminTasks(client TaskClient, pool *pgxpool.Pool) *AdminTasks {
 	return &AdminTasks{client: client, pool: pool}
+}
+
+// SetAuditRecorder wires the audit recorder the CancelJob/RescueStuckJobs
+// handlers use to emit task_control events. Optional: when nil, the
+// audit write is skipped (best-effort). Idempotent.
+func (a *AdminTasks) SetAuditRecorder(r audit.Recorder) {
+	a.audit = r
 }
 
 // NewAdminTasksFromTasks constructs an AdminTasks bundle that
@@ -90,6 +104,16 @@ func (a *AdminTasks) CancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, jobRowToMap(job))
+	if a.audit != nil {
+		uid := httputil.RequestUserID(r.Context())
+		a.audit.RecordAsync(audit.Event{
+			UserID:   uid,
+			Action:   rbac.AuditActionTaskCancel,
+			Object:   rbac.Objects.Tasks,
+			Target:   strconv.FormatInt(id, 10),
+			Detail:   map[string]any{"state": job.State},
+		})
+	}
 }
 
 // RescueStuckJobs handles POST /admin/tasks/rescue.
@@ -147,6 +171,19 @@ func (a *AdminTasks) RescueStuckJobs(w http.ResponseWriter, r *http.Request) {
 		"rescued":   res.RowsAffected(),
 		"threshold": threshold.String(),
 	})
+	if a.audit != nil {
+		uid := httputil.RequestUserID(r.Context())
+		a.audit.RecordAsync(audit.Event{
+			UserID:   uid,
+			Action:   rbac.AuditActionTaskRescue,
+			Object:   rbac.Objects.Tasks,
+			Target:   "all",
+			Detail:   map[string]any{
+				"rescued":   res.RowsAffected(),
+				"threshold": threshold.String(),
+			},
+		})
+	}
 }
 
 func parseJobID(r *http.Request) (int64, error) {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -60,6 +61,37 @@ func recordAuditWithRepo(deps Deps, r *http.Request, action, object string, repo
 	username := ""
 	if deps.Users != nil && uid.Valid {
 		if u, err := deps.Users.GetUser(r.Context(), rbac.UserID(uid.String())); err == nil {
+			username = u.Email
+		}
+	}
+	deps.Audit.RecordAsync(audit.Event{
+		UserID:       uid,
+		Username:     username,
+		Action:       action,
+		Object:       object,
+		RepositoryID: repoID,
+		Target:       target,
+		Detail:       detail,
+	})
+}
+
+// recordAuditMCP is the MCP-specific audit helper. MCP tool calls
+// aren't behind WithRepoQueries, so the repo can't be read from the
+// request context — the caller passes the resolved repoID directly
+// (from m.resolveRepoPool). The actor comes from httputil.RequestUserID
+// (set by OAuthBearer). Best-effort: a nil recorder is a no-op, and
+// the write happens on a background goroutine (RecordAsync) so it
+// never blocks the tool call. The username is resolved via
+// deps.Users when available; a lookup failure leaves it empty (the
+// actor_user_id is always set from the context).
+func recordAuditMCP(deps Deps, ctx context.Context, action, object string, repoID pgtype.UUID, target string, detail map[string]any) {
+	if deps.Audit == nil {
+		return
+	}
+	uid := httputil.RequestUserID(ctx)
+	username := ""
+	if deps.Users != nil && uid.Valid {
+		if u, err := deps.Users.GetUser(ctx, rbac.UserID(uid.String())); err == nil {
 			username = u.Email
 		}
 	}

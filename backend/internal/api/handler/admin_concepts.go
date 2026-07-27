@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/api/httputil"
+	"github.com/openktree/open-knowledge-tree/backend/internal/rbac"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
 )
 
@@ -243,6 +244,12 @@ func (a *Admin) ReextractRepoConcepts(w http.ResponseWriter, r *http.Request) {
 		EnqueuedJobCount:  len(jobIDs),
 		EnqueuedJobIDs:    jobIDs,
 	})
+	recordAuditWithRepo(a.deps, r, rbac.AuditActionAdminReextract, rbac.Objects.Concepts, repoID, repoIDStr, map[string]any{
+		"cleared_skips":      clearedSkips,
+		"cleared_candidates": clearedCandidates,
+		"enqueued_jobs":      len(jobIDs),
+		"max_attempts":       maxAttempts,
+	})
 }
 
 // reprocessSourceResponse is the wire shape for POST
@@ -409,6 +416,10 @@ func (a *Admin) ReprocessSource(w http.ResponseWriter, r *http.Request) {
 		EnqueuedJobID:   jobID,
 		RetryChunkCount: len(retryIndices),
 	})
+	recordAuditWithRepo(a.deps, r, rbac.AuditActionAdminReprocess, rbac.Objects.Sources, repoID, sourceIDStr, map[string]any{
+		"job_id":            jobID,
+		"retry_chunk_count": len(retryIndices),
+	})
 }
 
 // errAdminDisabled is a sentinel for endpoints that require the
@@ -528,5 +539,8 @@ func (a *Admin) RecomputeRepoConceptGroups(w http.ResponseWriter, r *http.Reques
 		RepositoryID:  repoIDStr,
 		EnqueuedJobID: jobID,
 		Enqueued:      true,
+	})
+	recordAuditWithRepo(a.deps, r, rbac.AuditActionAdminRecompute, rbac.Objects.Concepts, repoID, repoIDStr, map[string]any{
+		"job_id": jobID,
 	})
 }

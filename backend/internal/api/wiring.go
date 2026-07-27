@@ -117,7 +117,7 @@ func NewHandler(queries *store.Queries, cfg *config.Config, rbacSvc *rbac.Servic
 			// this returns an error (which the repository handler
 			// logs and swallows), so a lazy call that races ahead
 			// of the wiring just retries on the next list.
-			_, err := bootstrap.EnsureDefaultRepository(ctx, registry, cfg, ownerID, nil)
+			_, err := bootstrap.EnsureDefaultRepository(ctx, registry, cfg, ownerID, nil, auditRecorder)
 			return err
 		},
 	}
@@ -200,7 +200,7 @@ func (h *Handler) SetOntologySource(s ontology.L3Source) {
 		return handler.SeedDefaultRepositorySettings(ctx, h.deps, repoID)
 	}
 	h.deps.LazyEnsureRepository = func(ctx context.Context, ownerID string) error {
-		_, err := bootstrap.EnsureDefaultRepository(ctx, h.deps.Registry, h.deps.Config, ownerID, h.deps.DefaultSettingsSeeder)
+		_, err := bootstrap.EnsureDefaultRepository(ctx, h.deps.Registry, h.deps.Config, ownerID, h.deps.DefaultSettingsSeeder, h.deps.Audit)
 		return err
 	}
 	// Propagate the re-bound lazy callback to the Repository handler,
@@ -479,6 +479,9 @@ func (h *Handler) SetRegistrySyncEnqueuer(eq handler.RegistrySyncEnqueuer) {
 // frontend hides the nav link.
 func (h *Handler) SetRemote(r *handler.Remote) {
 	h.remote = r
+	if r != nil {
+		r.SetAuditRecorder(h.deps.Audit)
+	}
 }
 
 // SetRegistryClients wires the per-registry client map onto the
@@ -585,6 +588,7 @@ func (h *Handler) SetTasks(t *handler.Tasks) {
 	h.tasks = t
 	if t != nil {
 		h.adminTasks = handler.NewAdminTasksFromTasks(t)
+		h.adminTasks.SetAuditRecorder(h.deps.Audit)
 	}
 }
 
@@ -604,6 +608,9 @@ func (h *Handler) SetAI(a *handler.AI) {
 // /.well-known/oauth-* endpoints return 404.
 func (h *Handler) SetOAuth(o *handler.OAuth) {
 	h.oauth = o
+	if o != nil {
+		o.SetAuditRecorder(h.deps.Audit)
+	}
 }
 
 // SetMCP attaches the MCP server handler bundle. Split out for the

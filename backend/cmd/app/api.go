@@ -292,7 +292,15 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	// is also called lazily from GET /repositories, so a first
 	// user that registers before this code runs still gets a
 	// starter repo owned by them.
-	if _, err := bootstrap.EnsureDefaultAdmin(ctx, registry, cfg, rbacSvc); err != nil {
+	//
+	// Build the audit recorder up front (from the system pool) so
+	// both bootstrap steps (EnsureDefaultAdmin here, EnsureDefaultRepository
+	// further down) and the HTTP handler share a single recorder
+	// instance. Hoisting it here (rather than constructing inline at
+	// NewHandler time) lets the bootstrap emit audit rows for the
+	// default admin + default repo creation.
+	auditRecorder := audit.NewPostgresRecorder(systemPool.Pool)
+	if _, err := bootstrap.EnsureDefaultAdmin(ctx, registry, cfg, rbacSvc, auditRecorder); err != nil {
 		log.Fatalf("bootstrapping default admin: %v", err)
 	}
 	// The default-repository bootstrap is deferred to after the
@@ -675,7 +683,7 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 		log.Fatalf("setting up task manager: %v", err)
 	}
 
-	h := api.NewHandler(queries, cfg, rbacSvc, systemPool.Pool, registry, audit.NewPostgresRecorder(systemPool.Pool))
+	h := api.NewHandler(queries, cfg, rbacSvc, systemPool.Pool, registry, auditRecorder)
 	h.SetSource(handler.NewSource(searchProviders, fetchStrategy, chunkingProviders, factExtractors, imageExtractors, storageBackend, parsers))
 	// Wire the live provider registry (built from the same maps
 	// passed to NewSource) so the per-repository settings feature
@@ -696,7 +704,7 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	// gates pass out of the box. The lazy path (re-bound in
 	// SetOntologySource) handles the case where the startup call
 	// skipped because no users existed yet.
-	if _, err := bootstrap.EnsureDefaultRepository(ctx, registry, cfg, "", h.Deps().DefaultSettingsSeeder); err != nil {
+	if _, err := bootstrap.EnsureDefaultRepository(ctx, registry, cfg, "", h.Deps().DefaultSettingsSeeder, auditRecorder); err != nil {
 		log.Fatalf("bootstrapping default repository: %v", err)
 	}
 	h.SetStorage(handler.NewStorage(storageBackend))

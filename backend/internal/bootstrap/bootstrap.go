@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openktree/open-knowledge-tree/backend/internal/audit"
 	"github.com/openktree/open-knowledge-tree/backend/internal/auth"
 	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
@@ -82,7 +83,7 @@ type Result struct {
 // (internal/api/wiring.go) both pass
 // handler.SeedDefaultRepositorySettings so the default repo is
 // usable immediately.
-func EnsureDefaultRepository(ctx context.Context, registry *dbpool.Registry, cfg *config.Config, ownerID string, seed SettingsSeeder) (Result, error) {
+func EnsureDefaultRepository(ctx context.Context, registry *dbpool.Registry, cfg *config.Config, ownerID string, seed SettingsSeeder, auditRecorder audit.Recorder) (Result, error) {
 	if !cfg.Bootstrap.DefaultRepository {
 		return Result{Skipped: true}, nil
 	}
@@ -159,6 +160,30 @@ func EnsureDefaultRepository(ctx context.Context, registry *dbpool.Registry, cfg
 		}
 	}
 
+	// Audit the bootstrap creation. The actor is the owner (the
+	// earliest user at startup, or the calling user on the lazy
+	// path). The username is left empty — the bootstrap package
+	// doesn't have the email handy, and the actor_user_id is
+	// enough for provenance. A nil recorder (tests) is a no-op.
+	if auditRecorder != nil {
+		var actorID pgtype.UUID
+		if ownerID != "" {
+			_ = actorID.Scan(ownerID)
+		}
+		auditRecorder.RecordAsync(audit.Event{
+			UserID: actorID,
+			Action: rbac.AuditActionBootstrapRepo,
+			Object: rbac.Objects.Repositories,
+			Target: repo.ID.String(),
+			Detail: map[string]any{
+				"name":          repo.Name,
+				"slug":          repo.Slug,
+				"database_name": repo.DatabaseName,
+				"tier":          repo.Tier,
+			},
+		})
+	}
+
 	return Result{
 		Created:      true,
 		RepositoryID: repo.ID.String(),
@@ -178,7 +203,7 @@ func EnsureDefaultRepository(ctx context.Context, registry *dbpool.Registry, cfg
 // grouping policy directly so the rest of the application
 // (e.g. the admin API) keeps a single source of truth for RBAC
 // mutations.
-func EnsureDefaultAdmin(ctx context.Context, registry *dbpool.Registry, cfg *config.Config, rbacSvc *rbac.Service) (Result, error) {
+func EnsureDefaultAdmin(ctx context.Context, registry *dbpool.Registry, cfg *config.Config, rbacSvc *rbac.Service, auditRecorder audit.Recorder) (Result, error) {
 	email, password, displayName, ok := cfg.Bootstrap.DefaultAdminEnv()
 	if !ok {
 		return Result{Skipped: true}, nil
@@ -221,6 +246,25 @@ func EnsureDefaultAdmin(ctx context.Context, registry *dbpool.Registry, cfg *con
 
 	if err := rbacSvc.AddRoleForUser(user.ID.String(), rbac.RoleSysAdmin, rbac.DomainSystem); err != nil {
 		return Result{}, fmt.Errorf("granting sysadmin role: %w", err)
+	}
+
+	// Audit the bootstrap admin creation. The actor is the new
+	// user themselves (the row was just created); the username is
+	// the email so the audit row is readable. A nil recorder
+	// (tests) is a no-op.
+	if auditRecorder != nil {
+		auditRecorder.RecordAsync(audit.Event{
+			UserID:   user.ID,
+			Username: email,
+			Action:   rbac.AuditActionBootstrapAdmin,
+			Object:   rbac.Objects.Users,
+			Target:   user.ID.String(),
+			Detail: map[string]any{
+				"email":        email,
+				"display_name": displayName,
+				"role":         rbac.RoleSysAdmin,
+			},
+		})
 	}
 
 	log.Printf("bootstrap: seeded default admin %q (%s)", email, rbac.RoleSysAdmin)

@@ -1915,6 +1915,10 @@ func (m *MCP) handleCreateInvestigation(ctx context.Context, req mcp.CallToolReq
 	if inv.Topic != nil {
 		outTopic = *inv.Topic
 	}
+	recordAuditMCP(m.deps, ctx, rbac.AuditActionInvestigationCreate, rbac.Objects.Investigations, repoID, inv.ID.String(), map[string]any{
+		"title": inv.Title,
+		"topic": outTopic,
+	})
 	return structuredResult(map[string]any{
 		"investigation": map[string]any{
 			"id":         inv.ID.String(),
@@ -2003,6 +2007,10 @@ func (m *MCP) handleAddInvestigationSource(ctx context.Context, req mcp.CallTool
 	}); err != nil {
 		return mcp.NewToolResultError("failed to add source to investigation"), nil
 	}
+	recordAuditMCP(m.deps, ctx, rbac.AuditActionInvestigationAddSource, rbac.Objects.Investigations, repoID, invIDStr, map[string]any{
+		"source_id":  sourceIDStr,
+		"source_url": src.Url,
+	})
 	return structuredResult(map[string]any{
 		"investigation_id": invIDStr,
 		"source_id":        sourceIDStr,
@@ -2100,8 +2108,14 @@ func (m *MCP) handleFetchAndProcessSource(ctx context.Context, req mcp.CallToolR
 		InvestigationID: investigationID,
 	})
 	if err != nil {
-		return mcp.NewToolResultError("failed to enqueue fetch: " + err.Error()), nil
+		return mcp.NewToolResultError("failed to enqueue fetch: "+err.Error()), nil
 	}
+	recordAuditMCP(m.deps, ctx, rbac.AuditActionIngestionStart, rbac.Objects.Sources, repoID, urlArg, map[string]any{
+		"job_id":          jobID,
+		"doi":             doi,
+		"classified_as":   resource.Type,
+		"investigation_id": investigationID,
+	})
 	return structuredResult(map[string]any{
 		"job_id":        jobID,
 		"classified_as": resource.Type,
@@ -2822,6 +2836,13 @@ func (m *MCP) handleCreateReport(ctx context.Context, req mcp.CallToolRequest) (
 	if err != nil {
 		return mcp.NewToolResultError("failed to enqueue annotation: " + err.Error()), nil
 	}
+	recordAuditMCP(m.deps, ctx, rbac.AuditActionReportCreate, rbac.Objects.Reports, repoID, report.ID.String(), map[string]any{
+		"title":         strings.TrimSpace(title),
+		"topic":         topic,
+		"job_id":        jobID,
+		"parent_id":     parentIDStr,
+		"children_count": len(childrenIDs),
+	})
 	return structuredResult(map[string]any{
 		"report_id": report.ID.String(),
 		"job_id":    jobID,
@@ -2963,6 +2984,10 @@ func (m *MCP) handleUpdateReport(ctx context.Context, req mcp.CallToolRequest) (
 	if updated.Topic != nil {
 		topicOut = *updated.Topic
 	}
+	recordAuditMCP(m.deps, ctx, rbac.AuditActionReportUpdate, rbac.Objects.Reports, repoID, updated.ID.String(), map[string]any{
+		"title":        updated.Title,
+		"body_changed": bodyChanged,
+	})
 	return structuredResult(map[string]any{
 		"report": map[string]any{
 			"id":         updated.ID.String(),

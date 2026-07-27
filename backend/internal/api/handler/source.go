@@ -377,6 +377,42 @@ func (s *Source) recordIngestionAudit(r *http.Request, sourceURL, kind, sourceID
 	})
 }
 
+// recordSourceAudit emits a source-lifecycle audit event (delete,
+// process, retry) for the given request. Best-effort: a nil recorder
+// is a no-op, and the write happens on a background goroutine
+// (RecordAsync) so it never blocks the request. The repo UUID is
+// read from the URL context (set by WithRepoQueries). The target is
+// the source UUID; sourceURL is included as detail when non-empty
+// (the row may already be gone at audit time, so denormalizing the
+// URL into the audit row preserves it for post-mortem).
+func (s *Source) recordSourceAudit(r *http.Request, action string, sourceID pgtype.UUID, sourceURL string, detail map[string]any) {
+	if s.audit == nil {
+		return
+	}
+	uid := httputil.RequestUserID(r.Context())
+	username := ""
+	if s.auditUserLookup != nil && uid.Valid {
+		username = s.auditUserLookup(r.Context(), uid)
+	}
+	repoID, _ := appmw.RepoIDFromContext(r.Context())
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	if sourceURL != "" {
+		detail["source_url"] = sourceURL
+	}
+	s.audit.RecordAsync(audit.Event{
+		UserID:       uid,
+		Username:     username,
+		Action:       action,
+		Object:       rbac.Objects.Sources,
+		RepositoryID: repoID,
+		Target:       uuidFromPgtype(sourceID),
+		Detail:       detail,
+		SourceURL:    sourceURL,
+	})
+}
+
 // contentTypesAllowedForRepo reports whether a given content kind
 // ("document", "url", "doi") is allowed for the active repository.
 // Returns (allowed, checked, err):
@@ -1960,6 +1996,9 @@ func (s *Source) DeleteSource(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete source")
 		return
 	}
+	s.recordSourceAudit(r, rbac.AuditActionSourceDelete, sourceID, source.Url, map[string]any{
+		"source_kind": source.Kind,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -2070,6 +2109,10 @@ func (s *Source) ProcessSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordSourceAudit(r, rbac.AuditActionSourceProcess, sourceID, source.Url, map[string]any{
+		"job_id": jobID,
+	})
+
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id":    jobID,
 		"source_id": sourceIDStr,
@@ -2173,6 +2216,11 @@ func (s *Source) RetrySource(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	s.recordSourceAudit(r, rbac.AuditActionSourceRetry, sourceID, source.Url, map[string]any{
+		"job_id": jobID,
+		"doi":    doi,
+	})
 
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id":    jobID,
