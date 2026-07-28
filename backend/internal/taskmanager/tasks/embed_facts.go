@@ -141,6 +141,29 @@ func (w *EmbedFactsWorker) Work(ctx context.Context, job *river.Job[EmbedFactsAr
 	}
 	if len(facts) == 0 {
 		log.Printf("embed_facts: no facts to embed for repo %s source %s", args.RepositoryID, args.SourceID)
+		// Still chain to deduplicate_facts even when there are no
+		// facts to embed. The common case is a registry pull that
+		// imported pre-computed embeddings: the facts are already
+		// embedded (embedded_at IS NOT NULL), so
+		// ListNewFactsForSourceEmbedding returns 0 rows, but the
+		// facts are 'new' and need dedup + concept extraction. The
+		// early return before this fix broke the entire task chain
+		// (deduplicate_facts → extract_concepts → summarize →
+		// synthesize never fired) for registry pulls with
+		// pre-computed embeddings.
+		if client := river.ClientFromContext[pgx.Tx](ctx); client != nil {
+			chainCtx, chainCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if _, err := client.Insert(chainCtx, DeduplicateFactsArgs{RepositoryID: args.RepositoryID, SourceID: args.SourceID}, &river.InsertOpts{
+				Queue: QueueDeduplicateFacts,
+				Metadata: MarshalMetadata(JobMetadata{
+					RepositoryID: args.RepositoryID,
+					SourceID:     args.SourceID,
+				}),
+			}); err != nil {
+				log.Printf("embed_facts: enqueueing deduplicate_facts for repo %s: %v", args.RepositoryID, err)
+			}
+			chainCancel()
+		}
 		return river.RecordOutput(ctx, &EmbedFactsResult{RepositoryID: args.RepositoryID, SourceID: args.SourceID})
 	}
 

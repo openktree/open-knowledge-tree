@@ -397,7 +397,16 @@ func PullOneRemoteSource(ctx context.Context, deps RemotePullDeps, remoteID stri
 		}
 	}
 
-	if importedFacts > 0 && deps.DedupEnqueuer != nil && importedEmbeddings == 0 {
+	// Always enqueue embed_facts when facts were imported, even when
+	// embeddings were also imported. The embed_facts worker no-ops
+	// when all facts are already embedded (ListNewFactsForSourceEmbedding
+	// returns 0 rows), but it still chains to deduplicate_facts →
+	// extract_concepts → embed_concepts → cleanup_facts →
+	// contribute_source. Skipping the enqueue when embeddings were
+	// imported would break the entire task chain — the facts would
+	// never get deduped, concepts would never be extracted, and
+	// summarize/synthesize would never fire.
+	if importedFacts > 0 && deps.DedupEnqueuer != nil {
 		if err := deps.DedupEnqueuer.EnqueueEmbedFacts(ctx, uuidFromPgtype(deps.RepoID), uuidFromPgtype(srcID)); err != nil {
 			log.Printf("remote: enqueueing embed_facts for pulled source: %v", err)
 		}
