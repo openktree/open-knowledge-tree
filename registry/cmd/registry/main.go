@@ -115,7 +115,20 @@ func main() {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       0,
-		WriteTimeout:      5 * time.Minute,
+		// WriteTimeout: 0 (no server-level write deadline). The
+		// previous 5m timeout killed long graph pushes — Go's
+		// WriteTimeout starts ticking at the end of header read,
+		// so for a request with a body the server has only 5m to
+		// receive the full body AND write the response. An 8+ GB
+		// bundle upload that takes hours hits WriteTimeout long
+		// before the body is fully received, the server closes the
+		// connection, and Fly's proxy surfaces it as a 502 Bad
+		// Gateway (empty body). With WriteTimeout=0, the request
+		// context (cancelled by Fly on client disconnect) governs;
+		// the pushSem bounds concurrency, and storage timeouts
+		// bound the S3 leg. This mirrors ReadTimeout=0 (the body
+		// upload has no server-level read deadline either).
+		WriteTimeout:      0,
 		IdleTimeout:       60 * time.Second,
 		// MaxHeaderBytes: the default 1 MB is tight for the graph
 		// push path, which carries indexing metadata in X-Graph-*
@@ -124,7 +137,7 @@ func main() {
 		// realistic descriptions with headroom.
 		MaxHeaderBytes: 2 << 20,
 	}
-	log.Printf("  http: read_header_timeout=10s, write_timeout=5m, idle_timeout=60s")
+	log.Printf("  http: read_header_timeout=10s, write_timeout=0 (no deadline; long uploads), idle_timeout=60s")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
