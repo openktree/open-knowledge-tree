@@ -8,6 +8,7 @@ import Loading from "../../components/Loading";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
+import RegistryBanner from "../Dashboard/RegistryBanner";
 import CreateReportForm from "./CreateReportForm";
 import ReportsTable from "./ReportsTable";
 
@@ -59,6 +60,7 @@ export default function Reports() {
             }
           >
             <div class="space-y-6">
+              <RegistryBanner repoID={() => repo.currentRepo()?.id} />
               <Show when={alert()}>
                 <Alert
                   variant={alert()?.variant}

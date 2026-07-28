@@ -4,6 +4,7 @@ import Layout from "../../components/Layout";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
+import RegistryBanner from "../Dashboard/RegistryBanner";
 import { SORT_OPTIONS, STATUS_OPTIONS } from "./constants";
 import FactsContent from "./FactsContent";
 
@@ -52,31 +53,36 @@ export default function Facts() {
           />
         }
       >
-        <FactsContent
-          facts={facts}
-          loading={() => facts.loading}
-          slug={() => repo.currentRepo()?.slug || ""}
-          hasRepo={() => !!repo.currentRepo()}
-          onRefresh={refetch}
-          statusFilter={statusFilter}
-          onStatusChange={(v) => {
-            setStatusFilter(v);
-            setOffset(0);
-          }}
-          statusOptions={STATUS_OPTIONS}
-          sort={sort}
-          onSortChange={(v) => {
-            setSort(v);
-            setOffset(0);
-          }}
-          sortOptions={SORT_OPTIONS}
-          search={search}
-          onSearch={onSearch}
-          offset={offset}
-          onOffsetChange={setOffset}
-          total={() => facts()?.total || 0}
-          limit={PAGE_SIZE}
-        />
+        <div class="space-y-6">
+          <Show when={repo.currentRepo()?.id}>
+            <RegistryBanner repoID={() => repo.currentRepo()?.id} />
+          </Show>
+          <FactsContent
+            facts={facts}
+            loading={() => facts.loading}
+            slug={() => repo.currentRepo()?.slug || ""}
+            hasRepo={() => !!repo.currentRepo()}
+            onRefresh={refetch}
+            statusFilter={statusFilter}
+            onStatusChange={(v) => {
+              setStatusFilter(v);
+              setOffset(0);
+            }}
+            statusOptions={STATUS_OPTIONS}
+            sort={sort}
+            onSortChange={(v) => {
+              setSort(v);
+              setOffset(0);
+            }}
+            sortOptions={SORT_OPTIONS}
+            search={search}
+            onSearch={onSearch}
+            offset={offset}
+            onOffsetChange={setOffset}
+            total={() => facts()?.total || 0}
+            limit={PAGE_SIZE}
+          />
+        </div>
       </Show>
     </Layout>
   );

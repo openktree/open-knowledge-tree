@@ -4,6 +4,7 @@ import Layout from "../../components/Layout";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 import { useRepository } from "../../store/repository";
+import RegistryBanner from "../Dashboard/RegistryBanner";
 import ConceptsContent from "./ConceptsContent";
 import { PAGE_SIZE } from "./constants";
 
@@ -47,19 +48,24 @@ export default function Concepts() {
           />
         }
       >
-        <ConceptsContent
-          concepts={concepts}
-          loading={() => concepts.loading}
-          slug={() => repo.currentRepo()?.slug || ""}
-          hasRepo={() => !!repo.currentRepo()}
-          onRefresh={refetch}
-          search={search}
-          onSearch={onSearch}
-          offset={offset}
-          onOffsetChange={setOffset}
-          total={() => concepts()?.total || 0}
-          limit={PAGE_SIZE}
-        />
+        <div class="space-y-6">
+          <Show when={repo.currentRepo()?.id}>
+            <RegistryBanner repoID={() => repo.currentRepo()?.id} />
+          </Show>
+          <ConceptsContent
+            concepts={concepts}
+            loading={() => concepts.loading}
+            slug={() => repo.currentRepo()?.slug || ""}
+            hasRepo={() => !!repo.currentRepo()}
+            onRefresh={refetch}
+            search={search}
+            onSearch={onSearch}
+            offset={offset}
+            onOffsetChange={setOffset}
+            total={() => concepts()?.total || 0}
+            limit={PAGE_SIZE}
+          />
+        </div>
       </Show>
     </Layout>
   );
