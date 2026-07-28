@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.1...api-v0.5.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* **api:** chain deduplicate_facts when embed_facts no-ops (registry pull fix) ([637bf5c](https://github.com/openktree/open-knowledge-tree/commit/637bf5ce786e31d6430e3e6b831971002dbd0b54))
+
 ## [0.5.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.0...api-v0.5.1) (2026-07-28)
 
 
