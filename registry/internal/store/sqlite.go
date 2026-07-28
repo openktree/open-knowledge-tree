@@ -90,7 +90,9 @@ func migrateSQLite(db *sql.DB) error {
 
 		CREATE INDEX IF NOT EXISTS idx_decompositions_source ON decompositions(source_id);
 		CREATE INDEX IF NOT EXISTS idx_decompositions_model ON decompositions(model_id);
-		CREATE INDEX IF NOT EXISTS idx_decompositions_promptset ON decompositions(promptset_hash);
+		-- idx_decompositions_promptset is created after ensureColumn
+		-- below; it references promptset_hash, which may not exist yet
+		-- on a legacy DB upgraded from a pre-0.5.6 binary.
 
 		CREATE TABLE IF NOT EXISTS fact_hashes (
 			content_hash     TEXT NOT NULL,
@@ -153,7 +155,61 @@ func migrateSQLite(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_graphs_name ON graphs(name);
 		CREATE INDEX IF NOT EXISTS idx_graphs_created_at ON graphs(created_at DESC);
 	`)
+	if err != nil {
+		return err
+	}
+
+	// Idempotent column adds for tables created by older binaries.
+	// CREATE TABLE IF NOT EXISTS only handles fresh DBs; an existing
+	// registry volume (e.g. the dev Fly.io persistent /data) keeps
+	// the old table shape, so new columns referenced by the current
+	// INSERT/SELECT statements must be backfilled here. SQLite lacks
+	// ADD COLUMN IF NOT EXISTS (pre-3.35), so we inspect PRAGMA
+	// table_info and ALTER only when the column is missing.
+	if err := ensureColumn(db, "decompositions", "promptset_hash", "TEXT"); err != nil {
+		return err
+	}
+	// Now that promptset_hash exists on both fresh and legacy DBs,
+	// create the index that references it (idempotent).
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_decompositions_promptset ON decompositions(promptset_hash)`)
 	return err
+}
+
+// ensureColumn adds `col` to `table` with the given SQL type when the
+// column is missing. Used by migrateSQLite to backfill columns added
+// after the table's original CREATE. Safe to call on a table that
+// already has the column (no-op) and on a fresh DB (the CREATE TABLE
+// already added it; the ALTER is skipped).
+func ensureColumn(db *sql.DB, table, col, colType string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteIdent(table)))
+	if err != nil {
+		return fmt.Errorf("inspecting %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scanning %s schema: %w", table, err)
+		}
+		if name == col {
+			return nil // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating %s schema: %w", table, err)
+	}
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", quoteIdent(table), quoteIdent(col), colType))
+	return err
+}
+
+// quoteIdent wraps an SQLite identifier in double quotes for safe
+// interpolation into DDL. PRAGMA table_info and ALTER TABLE take a
+// literal identifier, not a bound parameter.
+func quoteIdent(name string) string {
+	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
