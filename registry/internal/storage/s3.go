@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -117,11 +118,48 @@ func (s *S3Store) Store(ctx context.Context, key string, body []byte, contentTyp
 // avoiding the in-memory []byte buffer that Store requires. The AWS
 // SDK natively streams from an io.Reader, so multi-GB bundles don't
 // buffer in registry memory. Used by the graph push handler.
+//
+// If body is not seekable (the common case — the Push handler hands
+// us an io.MultiReader wrapping a tee buffer + r.Body), the SDK can't
+// rewind it for a PutObject retry, so a transient failure on a
+// multi-GB upload fails the whole push with "request stream is not
+// seekable". To make retries safe, StoreStream spools a non-seekable
+// body to a temp file first, then uploads the seekable temp file.
+// This trades a second disk write on the registry side for retry
+// safety; the OKT export worker already spooled to a temp file on
+// its side, so the bytes hit disk twice total instead of once. The
+// temp file is removed before StoreStream returns.
 func (s *S3Store) StoreStream(ctx context.Context, key string, body io.Reader, contentType string) (int64, error) {
+	uploadBody := body
+	// Probe for seekability. io.MultiReader (tee buffer + r.Body,
+	// what the Push handler builds) is non-seekable, and the AWS SDK
+	// can't rewind a non-seekable stream to retry a failed PutObject —
+	// a transient failure on a multi-GB upload then fails the whole
+	// push with "request stream is not seekable". When the body isn't
+	// seekable, spool it to a temp file so PutObject can retry safely.
+	if _, seekable := body.(io.ReadSeeker); !seekable {
+		f, err := os.CreateTemp("", "okt-registry-s3-*.bin")
+		if err != nil {
+			return 0, fmt.Errorf("creating s3 spool temp file: %w", err)
+		}
+		tmpName := f.Name()
+		defer func() {
+			_ = f.Close()
+			_ = os.Remove(tmpName)
+		}()
+		if _, err := io.Copy(f, body); err != nil {
+			return 0, fmt.Errorf("spooling body to temp file: %w", err)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return 0, fmt.Errorf("rewinding spool temp file: %w", err)
+		}
+		uploadBody = f
+	}
+
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
-		Body:        body,
+		Body:        uploadBody,
 		ContentType: aws.String(contentType),
 	})
 	if err != nil {
