@@ -22,17 +22,35 @@ import "time"
 // SchemaVersion is the bundle format version. Bumped when the bundle
 // shape changes in a backward-incompatible way; the import path
 // checks this and refuses bundles newer than it understands.
-const SchemaVersion = 1
+//
+// v2 (current): moves images, bodies, source_images, source_bodies
+// before facts in the JSON field order, eliminating the forward
+// reference that forced the v1 importer to buffer the whole bundle
+// in memory. The canonical hash now excludes source_images and
+// source_bodies (in addition to images, bodies, embeddings) — they
+// are derived from sources and don't affect graph identity.
+const SchemaVersion = 2
 
 // GraphBundle is the on-wire graph format. Internal indices (not
 // UUIDs) are used for every cross-reference so the importer can remap
 // each idx to a fresh local UUID (uuid.New) without collisions. The
 // metadata section carries the human-readable name/description/tags
 // the registry indexes for search, plus counts for the UI.
+//
+// v2 field order: images/bodies/source_images/source_bodies come
+// right after sources (before facts) so the streaming importer can
+// build sourceImageUUIDs before processing facts — no forward
+// references, no deferred fixups. The canonical hash excludes
+// source_images, source_bodies, images, bodies, and embeddings
+// (all derived from sources).
 type GraphBundle struct {
 	SchemaVersion        int                      `json:"schema_version"`
 	Metadata             BundleMetadata           `json:"metadata"`
 	Sources              []SourceRow              `json:"sources"`
+	Images               map[string]FileBytes     `json:"images,omitempty"`
+	Bodies               map[string]FileBytes     `json:"bodies,omitempty"`
+	SourceImages         []SourceImageRow         `json:"source_images"`
+	SourceBodies         []SourceBodyRef          `json:"source_bodies,omitempty"`
 	Facts                []FactRow                `json:"facts"`
 	FactSources          []FactSourceRow          `json:"fact_sources"`
 	Concepts             []ConceptRow             `json:"concepts"`
@@ -44,10 +62,6 @@ type GraphBundle struct {
 	InvestigationSources []InvestigationSourceRow `json:"investigation_sources"`
 	Reports              []ReportRow              `json:"reports"`
 	ReportAnnotations    []ReportAnnotationRow    `json:"report_annotations"`
-	SourceImages         []SourceImageRow         `json:"source_images"`
-	SourceBodies         []SourceBodyRef          `json:"source_bodies,omitempty"`
-	Images               map[string]FileBytes     `json:"images,omitempty"`
-	Bodies               map[string]FileBytes     `json:"bodies,omitempty"`
 	Embeddings           *Embeddings              `json:"embeddings,omitempty"`
 }
 

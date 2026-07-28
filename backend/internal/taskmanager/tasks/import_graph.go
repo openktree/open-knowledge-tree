@@ -222,18 +222,8 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		bundleReader = tmpFile
 	}
 
-	// Gunzip + decode in a streaming pass (no full-body buffer).
-	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
-		Phase:     "decoding",
-		StartedAt: now,
-	})
-	bundle, err := graph.UnmarshalGzipReader(bundleReader)
-	if err != nil {
-		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
-		return fmt.Errorf("import_graph: decoding bundle: %w", err)
-	}
-
-	// Resolve the per-repo pool.
+	// Resolve the per-repo pool (needed before streaming import
+	// because the importer inserts rows as it streams).
 	dbName, err := w.systemQueries.GetRepositoryDatabaseName(ctx, repoID)
 	if err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
@@ -253,20 +243,21 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		return fmt.Errorf("import_graph: resolving repository slug: %w", err)
 	}
 
-	// Import.
+	// Stream the import: gunzip + decode + insert one entity at a
+	// time from the temp file. Peak memory is bounded by the idx→UUID
+	// slices + one batch buffer, not the full bundle (which can be
+	// 8+ GB). The v2 field order (images/bodies/source_images before
+	// facts) means no deferred fixups are needed.
 	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
-		Phase:        "importing",
-		StartedAt:    now,
-		SourceCount:  len(bundle.Sources),
-		FactCount:    len(bundle.Facts),
-		ConceptCount: len(bundle.Concepts),
+		Phase:     "importing",
+		StartedAt: now,
 	})
 	mode := graph.ImportModeNew
 	if args.Mode == "existing" {
 		mode = graph.ImportModeExisting
 	}
-	importer := graph.NewBundleImporter(queries, w.qdrant, w.storageBackend, repoID, repo.Slug, w.embeddingModel)
-	result, err := importer.Import(ctx, bundle, mode)
+	importer := graph.NewStreamImporter(queries, w.qdrant, w.storageBackend, repoID, repo.Slug, w.embeddingModel)
+	result, err := importer.StreamImport(ctx, bundleReader, mode)
 	if err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("import_graph: applying bundle: %w", err)

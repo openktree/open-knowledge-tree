@@ -37,7 +37,7 @@ func TestStreamEncoder_ParityWithMarshal(t *testing.T) {
 		{
 			name: "empty repo (all nil slices, no omitempty fields)",
 			bundle: GraphBundle{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Metadata: BundleMetadata{
 					Name:                "empty",
 					EmbeddingModel:      "m",
@@ -49,7 +49,7 @@ func TestStreamEncoder_ParityWithMarshal(t *testing.T) {
 		{
 			name: "with rows in every always-present slice",
 			bundle: GraphBundle{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Metadata: BundleMetadata{
 					Name:                "r",
 					Description:         "d",
@@ -79,7 +79,7 @@ func TestStreamEncoder_ParityWithMarshal(t *testing.T) {
 		{
 			name: "with images + bodies + embeddings (omitempty fields present)",
 			bundle: GraphBundle{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Metadata:      BundleMetadata{Name: "full", ExportedAt: frozen, SHA256: "deadbeef"},
 				SourceImages:  []SourceImageRow{{Idx: 0, SourceIdx: 0, Kind: "page", Position: 1, ImageRef: "img-0"}},
 				SourceBodies:  []SourceBodyRef{{SourceIdx: 0, BodyRef: "body-0", ContentType: "application/pdf"}},
@@ -151,7 +151,25 @@ func emitFullBundle(jw *jsonStreamWriter, b *GraphBundle) {
 	jw.writeRaw(`,"metadata":`)
 	writeMetadataJSON(jw, b.Metadata)
 
+	// v2 field order: images/bodies/source_images/source_bodies
+	// come after sources and before facts.
 	emitSlice(jw, "sources", b.Sources)
+
+	// omitempty derived sections (images, bodies) before source_images.
+	if len(b.Images) > 0 {
+		jw.writeRaw(`,"images":`)
+		jw.writeJSON(b.Images)
+	}
+	if len(b.Bodies) > 0 {
+		jw.writeRaw(`,"bodies":`)
+		jw.writeJSON(b.Bodies)
+	}
+	emitSlice(jw, "source_images", b.SourceImages)
+	if len(b.SourceBodies) > 0 {
+		jw.writeRaw(`,"source_bodies":`)
+		jw.writeJSON(b.SourceBodies)
+	}
+
 	emitSlice(jw, "facts", b.Facts)
 	emitSlice(jw, "fact_sources", b.FactSources)
 	emitSlice(jw, "concepts", b.Concepts)
@@ -163,21 +181,7 @@ func emitFullBundle(jw *jsonStreamWriter, b *GraphBundle) {
 	emitSlice(jw, "investigation_sources", b.InvestigationSources)
 	emitSlice(jw, "reports", b.Reports)
 	emitSlice(jw, "report_annotations", b.ReportAnnotations)
-	emitSlice(jw, "source_images", b.SourceImages)
 
-	// omitempty fields: only emitted when non-nil/non-empty.
-	if len(b.SourceBodies) > 0 {
-		jw.writeRaw(`,"source_bodies":`)
-		jw.writeJSON(b.SourceBodies)
-	}
-	if len(b.Images) > 0 {
-		jw.writeRaw(`,"images":`)
-		jw.writeJSON(b.Images)
-	}
-	if len(b.Bodies) > 0 {
-		jw.writeRaw(`,"bodies":`)
-		jw.writeJSON(b.Bodies)
-	}
 	if b.Embeddings != nil {
 		jw.writeRaw(`,"embeddings":`)
 		jw.writeJSON(b.Embeddings)
@@ -212,7 +216,7 @@ func TestStreamEncoder_EmptyRepoMatchesMarshal(t *testing.T) {
 	t.Cleanup(func() { nowFn = origNow })
 
 	b := &GraphBundle{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Metadata:      BundleMetadata{Name: "empty", EmbeddingModel: "m", EmbeddingDimensions: 3072, ExportedAt: frozen},
 	}
 	ref, _ := json.Marshal(b)
@@ -250,45 +254,52 @@ func TestMetadataJSON_Parity(t *testing.T) {
 	}
 }
 
-// TestStreamBuild_TwoPassShaConsistency verifies the two-pass sha
-// contract: pass 1 (shaOverride="") computes S; pass 2 (shaOverride=S)
-// emits metadata.sha256=S. We can't run a real StreamBuild without a
-// DB, so this test exercises the forkWriter + suppress-region logic
-// in isolation: feed canonical bytes + suppressed bytes through the
-// fork, confirm the hash matches a direct sha256 of the canonical
-// bytes alone (with a trailing `}` appended, as marshalCanonical
-// produces).
+// TestStreamBuild_ForkWriterSuppressRegion verifies the two-pass sha
+// contract with the v2 suppress pattern (two suppressed regions
+// bracketed by toggle). The canonical region is sources + facts
+// through report_annotations; suppressed regions are images/bodies/
+// source_images/source_bodies (before facts) and embeddings (after
+// report_annotations). The hash covers canonical bytes + a closing "}".
 func TestStreamBuild_ForkWriterSuppressRegion(t *testing.T) {
 	var fileBuf bytes.Buffer
 	h := sha256NewReal()
 	fw := &forkWriter{file: &fileBuf, hash: h}
 
-	// Canonical region: everything up through source_images.
-	canonical := []byte(`{"schema_version":1,"metadata":{"name":"x"},"source_images":null`)
-	if _, err := fw.Write(canonical); err != nil {
-		t.Fatalf("write canonical: %v", err)
+	// Canonical region #1: sources.
+	canonical1 := []byte(`{"schema_version":2,"metadata":{"name":"x"},"sources":null`)
+	if _, err := fw.Write(canonical1); err != nil {
+		t.Fatalf("write canonical1: %v", err)
 	}
-	// Flip suppress + write the closing } to the hash (as StreamBuild
-	// does), then the suppressed real bytes (including the real
-	// closing "}") go to the file only.
+	// Suppressed region #1: images, bodies, source_images, source_bodies.
+	fw.suppress = true
+	suppressed1 := []byte(`,"images":{},"source_images":null`)
+	if _, err := fw.Write(suppressed1); err != nil {
+		t.Fatalf("write suppressed1: %v", err)
+	}
+	// Canonical region #2: facts through report_annotations.
+	fw.suppress = false
+	canonical2 := []byte(`,"facts":null,"report_annotations":null`)
+	if _, err := fw.Write(canonical2); err != nil {
+		t.Fatalf("write canonical2: %v", err)
+	}
+	// Feed the closing } to the hash (matching marshalCanonical),
+	// then suppress for embeddings.
 	_, _ = fw.hash.Write([]byte(`}`))
 	fw.suppress = true
-	suppressed := []byte(`,"images":{"img-0":{"content_type":"image/png","data":"AA=="}}}`)
-	if _, err := fw.Write(suppressed); err != nil {
-		t.Fatalf("write suppressed: %v", err)
+	suppressed2 := []byte(`,"embeddings":{"model":"m"}}`)
+	if _, err := fw.Write(suppressed2); err != nil {
+		t.Fatalf("write suppressed2: %v", err)
 	}
 
-	// The file should have received everything (canonical + suppressed,
-	// the latter already includes the real closing "}").
-	wantFile := append(canonical, suppressed...)
+	// The file should have received everything.
+	wantFile := append(append(append(canonical1, suppressed1...), canonical2...), suppressed2...)
 	if !bytes.Equal(fileBuf.Bytes(), wantFile) {
 		t.Errorf("file bytes mismatch\nwant: %s\ngot:  %s", wantFile, fileBuf.Bytes())
 	}
 
-	// The hash should be over canonical + "}" only (the suppressed
-	// bytes + the real closing "}" are excluded; the canonical closer
-	// "}" was written to the hash explicitly).
-	wantHash := sha256Sum(append(canonical, '}'))
+	// The hash should be over canonical1 + canonical2 + "}" only.
+	wantHashBytes := append(append(canonical1, canonical2...), '}')
+	wantHash := sha256Sum(wantHashBytes)
 	if got := hexEncode(h.Sum(nil)); got != wantHash {
 		t.Errorf("hash mismatch\nwant: %s\ngot:  %s", wantHash, got)
 	}

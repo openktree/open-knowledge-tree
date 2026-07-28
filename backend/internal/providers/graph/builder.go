@@ -610,17 +610,25 @@ func marshalCanonical(b *GraphBundle) ([]byte, error) {
 	// json.Marshal is deterministic for structs (fields in declaration
 	// order). Maps (embeddings vectors, images, bodies) are NOT
 	// deterministic, so we skip them in the hash computation by
-	// zeroing them temporarily.
+	// zeroing them temporarily. SourceImages and SourceBodies are
+	// also excluded (v2): they are derived from sources and don't
+	// affect graph identity.
 	savedEmb := b.Embeddings
 	savedImg := b.Images
 	savedBod := b.Bodies
+	savedSI := b.SourceImages
+	savedSB := b.SourceBodies
 	b.Embeddings = nil
 	b.Images = nil
 	b.Bodies = nil
+	b.SourceImages = nil
+	b.SourceBodies = nil
 	data, err := json.Marshal(b)
 	b.Embeddings = savedEmb
 	b.Images = savedImg
 	b.Bodies = savedBod
+	b.SourceImages = savedSI
+	b.SourceBodies = savedSB
 	return data, err
 }
 

@@ -75,11 +75,14 @@ func (b *BundleBuilder) StreamBuild(ctx context.Context, meta BundleMetadata, w 
 
 	// Hasher over the canonical bytes. We tee the real output through
 	// a forkWriter that:
-	//   - forwards the "canonical" region (everything up through
-	//     source_images) to the hasher;
-	//   - drops the "suppressed" region (source_bodies / images /
-	//     bodies / embeddings — the 3 zeroed fields in
-	//     marshalCanonical) from the hasher.
+	//   - forwards the "canonical" region to the hasher;
+	//   - drops the "suppressed" region (images / bodies /
+	//     source_images / source_bodies / embeddings — the derived
+	//     fields marshalCanonical zeroes) from the hasher.
+	// v2 field order: the suppressed region is split into two blocks
+	// (images/bodies/source_images/source_bodies before facts, and
+	// embeddings after report_annotations). The forkWriter's suppress
+	// bool is toggled on/off to bracket each block.
 	// When shaOverride is set (pass 2), hashing is skipped (hasher is
 	// nil) since the caller already has the hash.
 	var hasher hash.Hash
@@ -105,7 +108,7 @@ func (b *BundleBuilder) StreamBuild(ctx context.Context, meta BundleMetadata, w 
 
 	// ── schema_version + metadata ─────────────────────────────────
 	jw.writeRaw(`{"schema_version":`)
-	jw.writeJSON(1)
+	jw.writeJSON(SchemaVersion)
 	jw.writeRaw(`,"metadata":`)
 	writeMetadataJSON(jw, meta)
 
@@ -159,6 +162,127 @@ func (b *BundleBuilder) StreamBuild(ctx context.Context, meta BundleMetadata, w 
 		jw.writeRaw(`]`)
 	}
 	stats.SourceCount = len(srcRows)
+
+	// ── v2: query source_images NOW (before facts) so sourceImageIdxByID
+	// is available for image-fact SourceImageIdx resolution during the
+	// facts loop below. This is the key v2 change: source_images is
+	// queried and emitted before facts, eliminating the forward reference.
+	type imgRef struct {
+		ref         string
+		storageKey  string
+		contentType *string
+	}
+	var imageRefs []imgRef
+	var siRows []store.ListAllSourceImagesForExportRow
+	if b.storage != nil {
+		siRows, err = b.queries.ListAllSourceImagesForExport(ctx, b.repoID)
+		if err != nil {
+			return nil, fmt.Errorf("export: listing source_images: %w", err)
+		}
+	}
+	for i, r := range siRows {
+		idx := i
+		sourceImageIdxByID[asUUID(r.ID)] = idx
+		sIdx, ok := sourceIdxByID[asUUID(r.SourceID)]
+		if !ok {
+			continue
+		}
+		if b.includeImages && r.StorageKey != nil && *r.StorageKey != "" && (r.Url == nil || *r.Url == "") {
+			ref := fmt.Sprintf("img-%d", idx)
+			imageRefs = append(imageRefs, imgRef{ref: ref, storageKey: *r.StorageKey, contentType: r.ContentType})
+		}
+		_ = sIdx // used below in the source_images emit
+	}
+	stats.ImageCount = len(imageRefs)
+
+	// ── suppressed region #1: images, bodies, source_images, source_bodies ──
+	// These are derived from sources and excluded from the canonical hash.
+	// Toggle the forkWriter to suppress before emitting, then toggle back.
+	if fw != nil {
+		fw.suppress = true
+	}
+
+	// ── images ── (omitempty; only when includeImages and refs exist)
+	if b.includeImages && len(imageRefs) > 0 {
+		jw.writeRaw(`,"images":{`)
+		for i, ir := range imageRefs {
+			if i > 0 {
+				jw.writeRaw(`,`)
+			}
+			jw.writeJSONKey(ir.ref)
+			jw.writeRaw(`:`)
+			if err := b.streamImageFile(ctx, jw, ir.storageKey, ir.contentType); err != nil {
+				log.Printf("export: embedding source image ref %s: %v", ir.ref, err)
+				jw.writeRaw(`null`)
+			}
+		}
+		jw.writeRaw(`}`)
+	}
+
+	// ── bodies + source_bodies ── (omitempty; only when bodies collected)
+	if b.includeImages || b.includeBodies {
+		if bodyRefs := b.drainBodies(); len(bodyRefs) > 0 {
+			jw.writeRaw(`,"source_bodies":[`)
+			for i, br := range bodyRefs {
+				if i > 0 {
+					jw.writeRaw(`,`)
+				}
+				jw.writeJSON(br.ref)
+			}
+			jw.writeRaw(`],"bodies":{`)
+			for i, br := range bodyRefs {
+				if i > 0 {
+					jw.writeRaw(`,`)
+				}
+				jw.writeJSONKey(br.ref)
+				jw.writeRaw(`:`)
+				jw.writeRaw(br.jsonBytes) // pre-marshaled FileBytes
+			}
+			jw.writeRaw(`}`)
+		}
+	}
+
+	// ── source_images ── (always present; null when empty)
+	jw.writeRaw(`,"source_images":`)
+	if len(siRows) == 0 {
+		jw.writeRaw(`null`)
+	} else {
+		jw.writeRaw(`[`)
+		for i, r := range siRows {
+			idx := i
+			sIdx, ok := sourceIdxByID[asUUID(r.SourceID)]
+			if !ok {
+				continue
+			}
+			row := SourceImageRow{
+				Idx:         idx,
+				SourceIdx:   sIdx,
+				Kind:        r.Kind,
+				PageNumber:  ptrInt(r.PageNumber),
+				Position:    int(r.Position),
+				URL:         ptrStr(r.Url),
+				Width:       ptrInt(r.Width),
+				Height:      ptrInt(r.Height),
+				Bytes:       ptrInt(r.Bytes),
+				AltText:     ptrStr(r.AltText),
+				ContentType: ptrStr(r.ContentType),
+			}
+			if b.includeImages && r.StorageKey != nil && *r.StorageKey != "" && (r.Url == nil || *r.Url == "") {
+				ref := fmt.Sprintf("img-%d", idx)
+				row.ImageRef = ref
+			}
+			if i > 0 {
+				jw.writeRaw(`,`)
+			}
+			jw.writeJSON(row)
+		}
+		jw.writeRaw(`]`)
+	}
+
+	// ── end suppressed region #1: toggle back to canonical ──
+	if fw != nil {
+		fw.suppress = false
+	}
 
 	// ── facts ──
 	jw.writeRaw(`,"facts":`)
@@ -404,126 +528,14 @@ func (b *BundleBuilder) StreamBuild(ctx context.Context, meta BundleMetadata, w 
 	}
 	streamReportAnnotations(jw, raRows, reportIdxByID, factIdxByID)
 
-	// ── source_images ── (last field in the canonical/hashed region)
-	jw.writeRaw(`,"source_images":`)
-	// imageRefs collects (ref, storageKey, contentType) for the
-	// images map we emit after the suppressed-region begins.
-	type imgRef struct {
-		ref         string
-		storageKey  string
-		contentType *string
-	}
-	var imageRefs []imgRef
-	var siRows []store.ListAllSourceImagesForExportRow
-	if b.storage != nil {
-		siRows, err = b.queries.ListAllSourceImagesForExport(ctx, b.repoID)
-		if err != nil {
-			return nil, fmt.Errorf("export: listing source_images: %w", err)
-		}
-	}
-	if len(siRows) == 0 {
-		jw.writeRaw(`null`)
-	} else {
-		jw.writeRaw(`[`)
-		for i, r := range siRows {
-			idx := i
-			sourceImageIdxByID[asUUID(r.ID)] = idx
-			sIdx, ok := sourceIdxByID[asUUID(r.SourceID)]
-			if !ok {
-				continue
-			}
-			row := SourceImageRow{
-				Idx:         idx,
-				SourceIdx:   sIdx,
-				Kind:        r.Kind,
-				PageNumber:  ptrInt(r.PageNumber),
-				Position:    int(r.Position),
-				URL:         ptrStr(r.Url),
-				Width:       ptrInt(r.Width),
-				Height:      ptrInt(r.Height),
-				Bytes:       ptrInt(r.Bytes),
-				AltText:     ptrStr(r.AltText),
-				ContentType: ptrStr(r.ContentType),
-			}
-			if b.includeImages && r.StorageKey != nil && *r.StorageKey != "" && (r.Url == nil || *r.Url == "") {
-				ref := fmt.Sprintf("img-%d", idx)
-				row.ImageRef = ref
-				imageRefs = append(imageRefs, imgRef{ref: ref, storageKey: *r.StorageKey, contentType: r.ContentType})
-			}
-			if i > 0 {
-				jw.writeRaw(`,`)
-			}
-			jw.writeJSON(row)
-		}
-		jw.writeRaw(`]`)
-	}
-	stats.ImageCount = len(imageRefs)
-
-	// ── suppressed region begins ──────────────────────────────────
-	// Everything from here on (source_bodies, images, bodies,
-	// embeddings) is excluded from the canonical hash. Tell the fork
-	// writer to stop feeding the hasher; real bytes still flow to the
-	// gzip writer. Before flipping suppress, feed the hasher the
-	// closing `}` that marshalCanonical emits as the last byte of the
-	// canonical object (source_images is the final field there; the
-	// 3 zeroed fields are omitted, so the canonical JSON ends with
-	// `}` immediately after source_images).
+	// ── suppressed region #2: embeddings ──
+	// report_annotations is the last canonical field. Feed the
+	// closing `}` to the hash (matching marshalCanonical, which ends
+	// with `}` after report_annotations when SourceImages/Bodies/
+	// Images/Embeddings are nil'd), then suppress for embeddings.
 	if fw != nil {
 		_, _ = fw.hash.Write([]byte(`}`))
 		fw.suppress = true
-	}
-
-	// ── source_bodies + bodies (only when include_bodies) ──
-	// The bodies were embedded inline during the sources loop above
-	// (streamSourceBody appended to the Bodies map + SourceBodies
-	// slice that we emit here). When include_bodies is false, both
-	// sections are omitted (omitempty).
-	// NOTE: because we stream, we can't emit source_bodies/bodies
-	// from the earlier loop — we collected bodyRefs there and emit
-	// them now. (See streamSourceBody: it records into bodyRefs.)
-	// This is handled below via b.drainBodies.
-
-	// ── images ── (omitempty; only when includeImages and refs exist)
-	if b.includeImages && len(imageRefs) > 0 {
-		jw.writeRaw(`,"images":{`)
-		for i, ir := range imageRefs {
-			if i > 0 {
-				jw.writeRaw(`,`)
-			}
-			jw.writeJSONKey(ir.ref)
-			jw.writeRaw(`:`)
-			if err := b.streamImageFile(ctx, jw, ir.storageKey, ir.contentType); err != nil {
-				log.Printf("export: embedding source image ref %s: %v", ir.ref, err)
-				// Emit a null so the JSON stays valid even if the
-				// storage read failed mid-stream.
-				jw.writeRaw(`null`)
-			}
-		}
-		jw.writeRaw(`}`)
-	}
-
-	// ── bodies ── (omitempty; only when includeBodies and bodies collected)
-	if b.includeImages || b.includeBodies {
-		// drain any bodies collected during the sources loop
-		if bodyRefs := b.drainBodies(); len(bodyRefs) > 0 {
-			jw.writeRaw(`,"source_bodies":[`)
-			for i, br := range bodyRefs {
-				if i > 0 {
-					jw.writeRaw(`,`)
-				}
-				jw.writeJSON(br.ref)
-			}
-			jw.writeRaw(`],"bodies":{`)
-			for i, br := range bodyRefs {
-				if i > 0 {
-					jw.writeRaw(`,`)
-				}
-				jw.writeJSONKey(br.ref)
-				jw.writeRaw(`:`)
-				jw.writeRaw(br.jsonBytes) // pre-marshaled FileBytes
-			}
-			jw.writeRaw(`}`)
-		}
 	}
 
 	// ── embeddings ── (omitempty; nil when Qdrant unconfigured or empty)
