@@ -46,28 +46,32 @@ type PushGraphResult struct {
 
 // PushGraph pushes a gzipped graph bundle to the registry. The body
 // is the raw gzipped bytes (see internal/providers/graph.MarshalGzip);
-// the registry ungzips to peek at the metadata section, then stores
-// the original gzipped bytes in S3. Returns the resolved graph id
-// (deduped by (name, sha256) when the bundle's metadata.id is empty).
+// the registry streams the body opaquely to S3 and indexes the graph
+// from the X-Graph-* headers this client sets from meta. Returns the
+// resolved graph id (deduped by (name, sha256) when meta.ID is empty).
 //
 // Mirrors PushSource: a write operation (uses writeKey), returns the
 // registry-assigned id. For multi-GB bundles prefer PushGraphStream
 // (streams the body instead of buffering it in a []byte).
-func (c *Client) PushGraph(ctx context.Context, gzippedBundle []byte) (*PushGraphResult, error) {
-	return c.PushGraphStream(ctx, bytes.NewReader(gzippedBundle), int64(len(gzippedBundle)))
+func (c *Client) PushGraph(ctx context.Context, meta *GraphMeta, gzippedBundle []byte) (*PushGraphResult, error) {
+	return c.PushGraphStream(ctx, meta, bytes.NewReader(gzippedBundle), int64(len(gzippedBundle)))
 }
 
 // PushGraphStream pushes a gzipped graph bundle to the registry from
 // an io.Reader, avoiding the in-memory []byte buffer that PushGraph
-// requires. The reader yields the raw gzipped bytes (the same format
-// PushGraph sends); contentLength is set as Content-Length when > 0
-// (enables chunked transfer-encoding when unknown). Auth is Bearer
-// only (addAuth doesn't sign the body), so streaming is safe.
+// requires. The reader yields the raw gzipped bytes; contentLength is
+// set as Content-Length when > 0 (enables chunked transfer-encoding
+// when unknown). Auth is Bearer only (addAuth doesn't sign the body),
+// so streaming is safe.
 //
-// Use this for large repos whose gzipped bundle exceeds the worker's
-// memory budget — the export task streams the temp file straight to
-// the HTTP request body without buffering.
-func (c *Client) PushGraphStream(ctx context.Context, body io.Reader, contentLength int64) (*PushGraphResult, error) {
+// The registry indexes the graph from the X-Graph-* headers this
+// client sets from meta — the body is a pure byte pipe to S3, never
+// parsed by the registry. This is the wire format introduced in
+// registry v0.6.0 (replacing the embedded-metadata body-decode path
+// that broke on multi-GB bundles). The body's internal metadata
+// section (the one the importer reads) is unchanged; only the
+// registry stops parsing the body for its own indexing.
+func (c *Client) PushGraphStream(ctx context.Context, meta *GraphMeta, body io.Reader, contentLength int64) (*PushGraphResult, error) {
 	if c.baseURL == "" {
 		return nil, ErrRegistryDisabled
 	}
@@ -80,6 +84,9 @@ func (c *Client) PushGraphStream(ctx context.Context, body io.Reader, contentLen
 	if contentLength > 0 {
 		req.ContentLength = contentLength
 	}
+	// Indexing metadata in headers — the registry reads these
+	// instead of parsing the body. See the wire-format note above.
+	setGraphHeaders(req.Header, meta)
 	c.addAuth(req, nil, true)
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -95,6 +102,40 @@ func (c *Client) PushGraphStream(ctx context.Context, body io.Reader, contentLen
 		return nil, fmt.Errorf("registry: decoding push graph response: %w", err)
 	}
 	return &result, nil
+}
+
+// setGraphHeaders sets the X-Graph-* indexing headers on the outbound
+// POST /api/v1/graphs request from meta. The registry reads these
+// instead of parsing the body, keeping the body a pure byte pipe to
+// S3. Tags is JSON-marshaled; counts + schema_version are stringified.
+func setGraphHeaders(h http.Header, meta *GraphMeta) {
+	h.Set("X-Graph-Name", meta.Name)
+	if meta.Description != "" {
+		h.Set("X-Graph-Description", meta.Description)
+	}
+	if meta.Owner != "" {
+		h.Set("X-Graph-Owner", meta.Owner)
+	}
+	if len(meta.Tags) > 0 {
+		if tagsJSON, err := json.Marshal(meta.Tags); err == nil {
+			h.Set("X-Graph-Tags", string(tagsJSON))
+		}
+	}
+	if meta.SourceCount != 0 {
+		h.Set("X-Graph-Source-Count", strconv.Itoa(meta.SourceCount))
+	}
+	if meta.FactCount != 0 {
+		h.Set("X-Graph-Fact-Count", strconv.Itoa(meta.FactCount))
+	}
+	if meta.ConceptCount != 0 {
+		h.Set("X-Graph-Concept-Count", strconv.Itoa(meta.ConceptCount))
+	}
+	if meta.SHA256 != "" {
+		h.Set("X-Graph-SHA256", meta.SHA256)
+	}
+	if meta.SchemaVersion != 0 {
+		h.Set("X-Graph-Schema-Version", strconv.Itoa(meta.SchemaVersion))
+	}
 }
 
 // PullGraph fetches a graph's metadata (GET /api/v1/graphs/{id}). The

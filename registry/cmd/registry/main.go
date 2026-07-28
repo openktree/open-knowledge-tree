@@ -117,6 +117,12 @@ func main() {
 		ReadTimeout:       0,
 		WriteTimeout:      5 * time.Minute,
 		IdleTimeout:       60 * time.Second,
+		// MaxHeaderBytes: the default 1 MB is tight for the graph
+		// push path, which carries indexing metadata in X-Graph-*
+		// headers (name, description, tags, counts). A pathological
+		// multi-MB description would trip the default; 2 MB covers
+		// realistic descriptions with headroom.
+		MaxHeaderBytes: 2 << 20,
 	}
 	log.Printf("  http: read_header_timeout=10s, write_timeout=5m, idle_timeout=60s")
 

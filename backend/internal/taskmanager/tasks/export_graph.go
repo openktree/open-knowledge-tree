@@ -182,6 +182,9 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	// Push the temp file. Re-open for reading, then stream to the
 	// registry. Content-Length is known (stat the temp file) so the
 	// HTTP client can set it (avoids chunked encoding when possible).
+	// Indexing metadata travels in X-Graph-* headers (set by
+	// PushGraphStream from pushMeta); the body is a pure byte pipe
+	// to the registry's S3 — the registry never parses it.
 	info, err := os.Stat(tmpName)
 	if err != nil {
 		return fmt.Errorf("export_graph: stating temp file: %w", err)
@@ -191,7 +194,17 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		return fmt.Errorf("export_graph: reopening temp file: %w", err)
 	}
 	defer tmpRead.Close()
-	result, err := client.PushGraphStream(ctx, tmpRead, info.Size())
+	pushMeta := &registryclient.GraphMeta{
+		Name:          args.Name,
+		Description:   args.Description,
+		Tags:          args.Tags,
+		SourceCount:   pass2Stats.SourceCount,
+		FactCount:     pass2Stats.FactCount,
+		ConceptCount:  pass2Stats.ConceptCount,
+		SHA256:        pass2Stats.SHA256,
+		SchemaVersion: graph.SchemaVersion,
+	}
+	result, err := client.PushGraphStream(ctx, pushMeta, tmpRead, info.Size())
 	if err != nil {
 		return fmt.Errorf("export_graph: pushing graph: %w", err)
 	}

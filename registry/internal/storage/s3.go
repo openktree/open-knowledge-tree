@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -114,60 +113,129 @@ func (s *S3Store) Store(ctx context.Context, key string, body []byte, contentTyp
 	return err
 }
 
-// StoreStream uploads body to S3 via PutObject with a reader body,
-// avoiding the in-memory []byte buffer that Store requires. The AWS
-// SDK natively streams from an io.Reader, so multi-GB bundles don't
-// buffer in registry memory. Used by the graph push handler.
+// StoreStream uploads body to S3 using a multipart upload, avoiding
+// the in-memory []byte buffer that Store requires. Used by the graph
+// push handler for multi-GB bundles.
 //
-// If body is not seekable (the common case — the Push handler hands
-// us an io.MultiReader wrapping a tee buffer + r.Body), the SDK can't
-// rewind it for a PutObject retry, so a transient failure on a
-// multi-GB upload fails the whole push with "request stream is not
-// seekable". To make retries safe, StoreStream spools a non-seekable
-// body to a temp file first, then uploads the seekable temp file.
-// This trades a second disk write on the registry side for retry
-// safety; the OKT export worker already spooled to a temp file on
-// its side, so the bytes hit disk twice total instead of once. The
-// temp file is removed before StoreStream returns.
+// Multipart upload (CreateMultipartUpload + UploadPart +
+// CompleteMultipartUpload) is the standard S3 pattern for large
+// objects: body is read in bounded parts (defaultPartSize, 64 MB),
+// each part is uploaded with a fresh bytes.Reader (seekable, so the
+// SDK can retry the part on a transient failure without rewinding the
+// whole body), and the parts are committed at the end. Peak memory
+// is one part at a time (64 MB), bounded independently of bundle
+// size. On an unrecoverable part failure, the upload is aborted
+// (AbortMultipartUpload) so orphaned parts don't accumulate in R2.
+//
+// This replaces the previous PutObject path, which passed the raw
+// non-seekable body and failed on retry with "request stream is not
+// seekable"; and the spool-to-temp-file patch, which doubled disk
+// write cost. Multipart keeps the body a pure stream (no disk spool)
+// while making retries safe per-part.
 func (s *S3Store) StoreStream(ctx context.Context, key string, body io.Reader, contentType string) (int64, error) {
-	uploadBody := body
-	// Probe for seekability. io.MultiReader (tee buffer + r.Body,
-	// what the Push handler builds) is non-seekable, and the AWS SDK
-	// can't rewind a non-seekable stream to retry a failed PutObject —
-	// a transient failure on a multi-GB upload then fails the whole
-	// push with "request stream is not seekable". When the body isn't
-	// seekable, spool it to a temp file so PutObject can retry safely.
-	if _, seekable := body.(io.ReadSeeker); !seekable {
-		f, err := os.CreateTemp("", "okt-registry-s3-*.bin")
-		if err != nil {
-			return 0, fmt.Errorf("creating s3 spool temp file: %w", err)
-		}
-		tmpName := f.Name()
-		defer func() {
-			_ = f.Close()
-			_ = os.Remove(tmpName)
-		}()
-		if _, err := io.Copy(f, body); err != nil {
-			return 0, fmt.Errorf("spooling body to temp file: %w", err)
-		}
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return 0, fmt.Errorf("rewinding spool temp file: %w", err)
-		}
-		uploadBody = f
-	}
+	const defaultPartSize = 64 << 20 // 64 MB — well above S3's 5 MB part minimum
 
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+	// Initiate the multipart upload.
+	createOut, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
-		Body:        uploadBody,
 		ContentType: aws.String(contentType),
 	})
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("creating multipart upload: %w", err)
 	}
-	// PutObject doesn't report bytes written; return -1 to signal
-	// "unknown" to callers that only care about success.
-	return -1, nil
+	uploadID := aws.ToString(createOut.UploadId)
+	// Abort on any failure path so orphaned parts don't accrue
+	// storage charges in R2. The deferred flag is cleared on the
+	// happy path after CompleteMultipartUpload succeeds.
+	aborted := false
+	defer func() {
+		if !aborted {
+			return
+		}
+		_, _ = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+			Bucket:   aws.String(s.bucket),
+			Key:      aws.String(key),
+			UploadId: aws.String(uploadID),
+		})
+	}()
+
+	// Upload parts. Each part is read into a bounded buffer, wrapped
+	// in a bytes.Reader (seekable — the SDK retries the part by
+	// rewinding the reader, no body-wide rewind needed).
+	var completedParts []s3types.CompletedPart
+	partBuf := make([]byte, defaultPartSize)
+	var totalBytes int64
+	partNumber := int32(1)
+	for {
+		n, readErr := io.ReadFull(body, partBuf)
+		if n > 0 {
+			part := partBuf[:n]
+			uploadOut, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
+				Bucket:     aws.String(s.bucket),
+				Key:        aws.String(key),
+				UploadId:   aws.String(uploadID),
+				PartNumber: aws.Int32(partNumber),
+				Body:       bytes.NewReader(part),
+			})
+			if err != nil {
+				aborted = true
+				return totalBytes, fmt.Errorf("uploading part %d: %w", partNumber, err)
+			}
+			completedParts = append(completedParts, s3types.CompletedPart{
+				ETag:       uploadOut.ETag,
+				PartNumber: aws.Int32(partNumber),
+			})
+			totalBytes += int64(n)
+			partNumber++
+		}
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			// io.ReadFull returns ErrUnexpectedEOF when it read
+			// some bytes but couldn't fill the buffer — the n>0
+			// branch above already uploaded them. EOF means no
+			// bytes were read and the body is exhausted.
+			break
+		}
+		if readErr != nil {
+			aborted = true
+			return totalBytes, fmt.Errorf("reading body part %d: %w", partNumber, readErr)
+		}
+	}
+
+	// S3 requires at least one part. An empty body (zero-byte upload)
+	// is handled by uploading a single empty part.
+	if len(completedParts) == 0 {
+		uploadOut, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket:     aws.String(s.bucket),
+			Key:        aws.String(key),
+			UploadId:   aws.String(uploadID),
+			PartNumber: aws.Int32(1),
+			Body:       bytes.NewReader(nil),
+		})
+		if err != nil {
+			aborted = true
+			return 0, fmt.Errorf("uploading empty part: %w", err)
+		}
+		completedParts = append(completedParts, s3types.CompletedPart{
+			ETag:       uploadOut.ETag,
+			PartNumber: aws.Int32(1),
+		})
+	}
+
+	// Commit.
+	_, err = s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(s.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &s3types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	})
+	if err != nil {
+		aborted = true
+		return totalBytes, fmt.Errorf("completing multipart upload: %w", err)
+	}
+	return totalBytes, nil
 }
 
 func (s *S3Store) Get(ctx context.Context, key string) (StoredFile, error) {

@@ -21,13 +21,13 @@ import (
 
 // graphTestEnv wires a GraphHandler against an in-memory sqlite store
 // + a recording storage mock, the minimum needed to exercise the Push
-// handler's metadata-decode + storage-stream path end to end.
+// handler's header-based metadata + storage-stream path end to end.
 type graphTestEnv struct {
-	t        *testing.T
-	handler  *GraphHandler
-	storage  *recordingStorage
-	rec      *httptest.ResponseRecorder
-	store    store.MetadataStore
+	t       *testing.T
+	handler *GraphHandler
+	storage *recordingStorage
+	rec     *httptest.ResponseRecorder
+	store   store.MetadataStore
 }
 
 func newGraphTestEnv(t *testing.T) *graphTestEnv {
@@ -55,12 +55,15 @@ func newGraphTestEnv(t *testing.T) *graphTestEnv {
 	}
 }
 
-// pushBundle issues a POST /api/v1/graphs with the given gzipped bundle
-// bytes and returns the recorded response.
-func (e *graphTestEnv) pushBundle(body []byte) *httptest.ResponseRecorder {
+// pushBundle issues a POST /api/v1/graphs with the given headers + body
+// bytes and returns the recorded response. headers may be nil.
+func (e *graphTestEnv) pushBundle(headers map[string]string, body []byte) *httptest.ResponseRecorder {
 	e.t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/graphs", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/gzip")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	// Pretend to be an authenticated user with an email so the owner
 	// field gets populated (mirrors the real middleware).
 	ctx := auth.WithUserEmail(req.Context(), "tester@example.com")
@@ -70,61 +73,27 @@ func (e *graphTestEnv) pushBundle(body []byte) *httptest.ResponseRecorder {
 	return e.rec
 }
 
-// makeGzipBundle builds a gzipped graph bundle with the given metadata
-// and an optional trailing payload (simulating the rest of a real
-// bundle: sources, facts, …). The metadata.description is the field
-// the caller can bloat to force the metadata envelope past a given
-// compressed size.
-func makeGzipBundle(t *testing.T, metadata graphBundleEnvelope, trailing []byte) []byte {
+// makeGzipBody returns a gzipped body of the given byte size (random-ish
+// repeated content), used to simulate a graph bundle payload without
+// needing a real bundle. The registry treats the body as opaque.
+func makeGzipBody(t *testing.T, size int) []byte {
 	t.Helper()
-	// Marshal metadata + trailing as a single JSON object: we emit
-	// metadata first, then any extra fields the caller wants, so the
-	// decoder's read of schema_version + metadata reflects the real
-	// wire order.
+	payload := bytes.Repeat([]byte("graph-bundle-payload-"), size/20+1)
+	payload = payload[:size]
 	var buf bytes.Buffer
-	buf.WriteByte('{')
-	first := true
-	writeField := func(key string, val any) {
-		if !first {
-			buf.WriteByte(',')
-		}
-		first = false
-		k, _ := json.Marshal(key)
-		buf.Write(k)
-		buf.WriteByte(':')
-		v, _ := json.Marshal(val)
-		buf.Write(v)
-	}
-	if metadata.SchemaVersion != 0 || true {
-		writeField("schema_version", metadata.SchemaVersion)
-	}
-	writeField("metadata", metadata.Metadata)
-	// Append the trailing payload as already-marshalled JSON fields
-	// (the caller passes e.g. `"sources":[...]`). If empty, nothing.
-	if len(bytes.TrimSpace(trailing)) > 0 {
-		buf.WriteByte(',')
-		// Trim leading/trailing braces if the caller wrapped them.
-		trimmed := bytes.TrimSpace(trailing)
-		trimmed = bytes.TrimPrefix(trimmed, []byte("{"))
-		trimmed = bytes.TrimSuffix(trimmed, []byte("}"))
-		buf.Write(bytes.TrimSpace(trimmed))
-	}
-	buf.WriteByte('}')
-
-	var gzBuf bytes.Buffer
-	gz := gzip.NewWriter(&gzBuf)
-	if _, err := gz.Write(buf.Bytes()); err != nil {
-		t.Fatalf("gzipping bundle: %v", err)
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(payload); err != nil {
+		t.Fatalf("gzipping body: %v", err)
 	}
 	if err := gz.Close(); err != nil {
 		t.Fatalf("closing gzip: %v", err)
 	}
-	return gzBuf.Bytes()
+	return buf.Bytes()
 }
 
 // recordingStorage is a minimal Storage double that records the bytes
 // written via StoreStream so a test can assert storage received the
-// complete original gzipped stream.
+// complete body.
 type recordingStorage struct {
 	mu       sync.Mutex
 	key      string
@@ -172,25 +141,17 @@ func (r *recordingStorage) PresignedPUTURL(_ context.Context, key string, _ time
 
 var _ service.Storage = (*recordingStorage)(nil)
 
-// TestGraphPush_SmallBundle verifies the streaming-decode path handles
-// a small bundle (metadata fits in the old 256 KB head buffer) and:
-//   - returns 201 with a graph_id;
-//   - hands storage the *complete* original gzipped bytes (the test
-//     re-gunzips the stored bytes and confirms the trailing payload
-//     survives the tee + MultiReader replay intact).
+// TestGraphPush_SmallBundle verifies the header-based metadata path:
+// X-Graph-Name + a small gzip body → 201, storage receives the body
+// bytes verbatim.
 func TestGraphPush_SmallBundle(t *testing.T) {
 	env := newGraphTestEnv(t)
-
-	bundle := makeGzipBundle(t, graphBundleEnvelope{
-		SchemaVersion: 1,
-		Metadata: graphMetaSection{
-			Name:        "Small Graph",
-			Description: "tiny",
-			SourceCount: 2,
-		},
-	}, []byte(`"sources":[{"idx":0,"url":"http://example.com/a"},{"idx":1,"url":"http://example.com/b"}]`))
-
-	rec := env.pushBundle(bundle)
+	body := makeGzipBody(t, 1<<10) // 1 KB
+	rec := env.pushBundle(map[string]string{
+		"X-Graph-Name":        "Small Graph",
+		"X-Graph-Description": "tiny",
+		"X-Graph-Source-Count": "2",
+	}, body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -201,145 +162,105 @@ func TestGraphPush_SmallBundle(t *testing.T) {
 	if result.GraphID == "" {
 		t.Errorf("expected non-empty graph_id, got %q", result.GraphID)
 	}
-
-	// Storage must have received the full original gzipped bytes.
-	stored := env.storage.data
-	if !bytes.Equal(stored, bundle) {
-		t.Errorf("storage bytes != request bytes (stored=%d, sent=%d)", len(stored), len(bundle))
+	// Storage must have received the exact body bytes.
+	if !bytes.Equal(env.storage.data, body) {
+		t.Errorf("storage bytes != request bytes (stored=%d, sent=%d)", len(env.storage.data), len(body))
 	}
-	// And those bytes must gunzip to valid JSON containing the
-	// trailing "sources" field the handler never decoded.
-	gz, err := gzip.NewReader(bytes.NewReader(stored))
+	// The indexed metadata should reflect the headers.
+	meta, err := env.store.GetGraph(context.Background(), result.GraphID)
 	if err != nil {
-		t.Fatalf("stored bytes are not valid gzip: %v", err)
+		t.Fatalf("GetGraph: %v", err)
 	}
-	jsonBytes, err := io.ReadAll(gz)
-	if err != nil {
-		t.Fatalf("gunzipping stored bytes: %v", err)
+	if meta.Name != "Small Graph" {
+		t.Errorf("expected name %q, got %q", "Small Graph", meta.Name)
 	}
-	if !strings.Contains(string(jsonBytes), `"sources"`) || !strings.Contains(string(jsonBytes), "example.com/a") {
-		t.Errorf("stored bundle is missing the trailing payload the handler must replay to storage: %s", jsonBytes)
+	if meta.Description != "tiny" {
+		t.Errorf("expected description %q, got %q", "tiny", meta.Description)
+	}
+	if meta.SourceCount != 2 {
+		t.Errorf("expected source_count 2, got %d", meta.SourceCount)
 	}
 }
 
-// TestGraphPush_MetadataLargerThan256KB is the regression case for the
-// bug that caused the original `bufio: buffer full` 400: the metadata
-// envelope (here, a deliberately bloated description) decompresses to
-// more than the old 256 KB head buffer could hold. The old grow-loop
-// called bufio.Peek(>256KB) on a 256KB-buffered reader and died with
-// `bufio: buffer full`. The streaming-decode replacement must accept
-// this bundle and return 201.
-func TestGraphPush_MetadataLargerThan256KB(t *testing.T) {
+// TestGraphPush_BodyStreamedUnmodifiedToStorage is the core invariant
+// test: a large body (well past the old 16 MB backstop) with a small
+// metadata header set must succeed, and storage must receive the body
+// bytes byte-for-byte. This is the prod case that the previous
+// body-decode path failed on.
+func TestGraphPush_BodyStreamedUnmodifiedToStorage(t *testing.T) {
 	env := newGraphTestEnv(t)
-
-	// ~1 MB of description — comfortably past the old 256 KB cap,
-	// well under the 16 MB backstop. Decompressed > 1 MB; the gzip
-	// reader pulls only as many compressed bytes as json.Decode needs
-	// to consume the metadata object, then stops.
-	big := strings.Repeat("this is a long description. ", 40_000) // ~1.1 MB
-	bundle := makeGzipBundle(t, graphBundleEnvelope{
-		SchemaVersion: 1,
-		Metadata: graphMetaSection{
-			Name:        "Big Metadata Graph",
-			Description: big,
-			SourceCount: 1,
-		},
-	}, []byte(`"sources":[{"idx":0,"url":"http://example.com/big"}]`))
-
-	rec := env.pushBundle(bundle)
+	body := makeGzipBody(t, 20<<20) // 20 MB
+	rec := env.pushBundle(map[string]string{
+		"X-Graph-Name": "Big Bundle",
+	}, body)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for >256KB metadata, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 201 for big bundle, got %d: %s", rec.Code, rec.Body.String())
 	}
-
-	// Storage still gets the full bundle, bloated description included.
-	gz, err := gzip.NewReader(bytes.NewReader(env.storage.data))
-	if err != nil {
-		t.Fatalf("stored bytes are not valid gzip: %v", err)
-	}
-	jsonBytes, _ := io.ReadAll(gz)
-	if !strings.Contains(string(jsonBytes), "this is a long description") {
-		t.Errorf("stored bundle lost the bloated description")
-	}
-	if !strings.Contains(string(jsonBytes), "example.com/big") {
-		t.Errorf("stored bundle lost the trailing sources field")
+	if !bytes.Equal(env.storage.data, body) {
+		t.Errorf("storage bytes != request bytes (stored=%d, sent=%d)", len(env.storage.data), len(body))
 	}
 }
 
-// TestGraphPush_BigBundleSmallMetadata is the regression case for the
-// bug where dec.Decode(&env) pulled the entire bundle through the
-// gzip reader (reading to the top-level closing '}' to validate
-// trailing fields), tripping the 16 MB compressed backstop on any
-// real bundle. The token-walk decodeMetadata stops after the
-// "metadata" value, so a bundle with a tiny metadata prefix but a
-// multi-MB trailing payload must now succeed even when the total
-// compressed size is far beyond the backstop. This is the prod case:
-// the OKT export_graph worker's bundle exceeded 16 MB compressed and
-// was rejected with "bundle metadata too large".
-func TestGraphPush_BigBundleSmallMetadata(t *testing.T) {
+// TestGraphPush_MissingNameHeader verifies the handler rejects a
+// request without X-Graph-Name (the required header).
+func TestGraphPush_MissingNameHeader(t *testing.T) {
 	env := newGraphTestEnv(t)
+	body := makeGzipBody(t, 64)
+	rec := env.pushBundle(nil, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing X-Graph-Name, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
 
-	// ~20 MB of compressed trailing payload — comfortably past the
-	// 16 MB backstop that the old dec.Decode(&env) tripped. The
-	// metadata prefix is tiny, so the token walk pulls only a few
-	// KB of compressed bytes for it and leaves the 20 MB tail in
-	// r.Body for storage to stream.
-	big := strings.Repeat("a", 20<<20) // 20 MB
-	trailing := []byte(`"sources":[{"idx":0,"payload":"` + big + `"}]`)
-	bundle := makeGzipBundle(t, graphBundleEnvelope{
-		SchemaVersion: 1,
-		Metadata: graphMetaSection{
-			Name:        "Big Bundle Small Meta",
-			SourceCount: 1,
-		},
-	}, trailing)
-
-	rec := env.pushBundle(bundle)
+// TestGraphPush_TagsHeader verifies X-Graph-Tags is parsed as a JSON
+// array and indexed.
+func TestGraphPush_TagsHeader(t *testing.T) {
+	env := newGraphTestEnv(t)
+	body := makeGzipBody(t, 64)
+	rec := env.pushBundle(map[string]string{
+		"X-Graph-Name": "Tagged Graph",
+		"X-Graph-Tags": `["alpha","beta"]`,
+	}, body)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for big-bundle/small-metadata, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	// Storage must have received the full original gzipped bytes.
-	if !bytes.Equal(env.storage.data, bundle) {
-		t.Errorf("storage bytes != request bytes (stored=%d, sent=%d)", len(env.storage.data), len(bundle))
+	var result model.GraphPushResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decoding response: %v", err)
 	}
-}
-
-// TestGraphPush_NotGzip verifies the handler rejects a non-gzip body
-// with 400 (preserves the old error posture for malformed requests).
-func TestGraphPush_NotGzip(t *testing.T) {
-	env := newGraphTestEnv(t)
-	rec := env.pushBundle([]byte(`{"schema_version":1,"metadata":{"name":"x"}}`))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for non-gzip body, got %d: %s", rec.Code, rec.Body.String())
+	meta, err := env.store.GetGraph(context.Background(), result.GraphID)
+	if err != nil {
+		t.Fatalf("GetGraph: %v", err)
+	}
+	if len(meta.Tags) != 2 || meta.Tags[0] != "alpha" || meta.Tags[1] != "beta" {
+		t.Errorf("expected tags [alpha beta], got %v", meta.Tags)
 	}
 }
 
-// TestGraphPush_MissingName verifies the handler rejects a bundle
-// whose metadata.name is empty (the registry indexes by name).
-func TestGraphPush_MissingName(t *testing.T) {
+// TestGraphPush_TagsHeaderInvalid verifies a malformed X-Graph-Tags
+// header is rejected with 400.
+func TestGraphPush_TagsHeaderInvalid(t *testing.T) {
 	env := newGraphTestEnv(t)
-	bundle := makeGzipBundle(t, graphBundleEnvelope{
-		SchemaVersion: 1,
-		Metadata:      graphMetaSection{Name: ""},
-	}, nil)
-	rec := env.pushBundle(bundle)
+	body := makeGzipBody(t, 64)
+	rec := env.pushBundle(map[string]string{
+		"X-Graph-Name": "Bad Tags",
+		"X-Graph-Tags": `not-json`,
+	}, body)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing metadata.name, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 400 for invalid X-Graph-Tags, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
 // TestGraphPush_OwnerFromAuth verifies the handler populates the
 // indexed graph's owner from the authenticated user's email rather
-// than the bundle's declared owner.
+// than the X-Graph-Owner header.
 func TestGraphPush_OwnerFromAuth(t *testing.T) {
 	env := newGraphTestEnv(t)
-	bundle := makeGzipBundle(t, graphBundleEnvelope{
-		SchemaVersion: 1,
-		Metadata: graphMetaSection{
-			Name:  "Owner Test",
-			Owner: "bundle-declared@example.com",
-		},
-	}, nil)
-	rec := env.pushBundle(bundle)
+	body := makeGzipBody(t, 64)
+	rec := env.pushBundle(map[string]string{
+		"X-Graph-Name":  "Owner Test",
+		"X-Graph-Owner": "bundle-declared@example.com",
+	}, body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -353,5 +274,70 @@ func TestGraphPush_OwnerFromAuth(t *testing.T) {
 	}
 	if meta.Owner != "tester@example.com" {
 		t.Errorf("expected owner from auth email, got %q", meta.Owner)
+	}
+}
+
+// TestGraphPush_SHA256AndSchemaVersion verifies the optional numeric
+// + string headers flow through to the indexed metadata.
+func TestGraphPush_SHA256AndSchemaVersion(t *testing.T) {
+	env := newGraphTestEnv(t)
+	body := makeGzipBody(t, 64)
+	rec := env.pushBundle(map[string]string{
+		"X-Graph-Name":            "SHA Test",
+		"X-Graph-SHA256":          "deadbeef",
+		"X-Graph-Schema-Version":  "1",
+		"X-Graph-Fact-Count":      "42",
+		"X-Graph-Concept-Count":   "7",
+	}, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result model.GraphPushResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	meta, err := env.store.GetGraph(context.Background(), result.GraphID)
+	if err != nil {
+		t.Fatalf("GetGraph: %v", err)
+	}
+	if meta.SHA256 != "deadbeef" {
+		t.Errorf("expected sha256 deadbeef, got %q", meta.SHA256)
+	}
+	if meta.SchemaVersion != 1 {
+		t.Errorf("expected schema_version 1, got %d", meta.SchemaVersion)
+	}
+	if meta.FactCount != 42 {
+		t.Errorf("expected fact_count 42, got %d", meta.FactCount)
+	}
+	if meta.ConceptCount != 7 {
+		t.Errorf("expected concept_count 7, got %d", meta.ConceptCount)
+	}
+}
+
+// TestGraphPush_BigDescription verifies a large X-Graph-Description
+// header (near the 2 MB MaxHeaderBytes budget) is accepted. The
+// previous body-decode path tripped on a >256 KB description; the
+// header path has no such limit below MaxHeaderBytes.
+func TestGraphPush_BigDescription(t *testing.T) {
+	env := newGraphTestEnv(t)
+	body := makeGzipBody(t, 64)
+	big := strings.Repeat("this is a long description. ", 40_000) // ~1.1 MB
+	rec := env.pushBundle(map[string]string{
+		"X-Graph-Name":        "Big Description",
+		"X-Graph-Description": big,
+	}, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for big description, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result model.GraphPushResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	meta, err := env.store.GetGraph(context.Background(), result.GraphID)
+	if err != nil {
+		t.Fatalf("GetGraph: %v", err)
+	}
+	if len(meta.Description) != len(big) {
+		t.Errorf("expected description length %d, got %d", len(big), len(meta.Description))
 	}
 }
