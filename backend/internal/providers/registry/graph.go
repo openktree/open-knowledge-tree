@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 )
 
@@ -233,7 +234,85 @@ func (c *Client) FetchGraphPresigned(ctx context.Context, graphID string) ([]byt
 	return body, nil
 }
 
-// ListGraphs fetches a paginated, optionally searched list of shared
+// FetchGraphPresignedToStream downloads the raw gzipped bundle for a
+// graph to a temp file and returns a read-only *os.File positioned at
+// byte 0, the temp file's path, and the file size. The caller must
+// close the file and remove the path when done (typically via defer).
+//
+// This is the streaming-safe variant of FetchGraphPresigned, used by
+// the import_graph worker for multi-GB bundles: instead of buffering
+// the entire compressed bundle in a []byte (8+ GB → OOM kill), it
+// streams the HTTP response body straight to disk. The caller then
+// feeds the file to graph.UnmarshalGzipReader, which gunzips +
+// decodes in a streaming pass without buffering the compressed or
+// decompressed bytes wholesale.
+//
+// The tempDir argument controls where the temp file is created (""
+// = OS default, typically /tmp). The caller should set it to a
+// mounted volume in containerized environments so a multi-GB bundle
+// doesn't fill the container's writable layer.
+func (c *Client) FetchGraphPresignedToStream(ctx context.Context, graphID, tempDir string) (f *os.File, path string, size int64, err error) {
+	if c.baseURL == "" {
+		return nil, "", 0, ErrRegistryDisabled
+	}
+	meta, err := c.PullGraph(ctx, graphID)
+	if err != nil {
+		return nil, "", 0, err
+	}
+
+	var downloadURL string
+	if meta.PresignedURL != "" {
+		downloadURL = meta.PresignedURL
+	} else {
+		downloadURL = fmt.Sprintf("%s/api/v1/graphs/%s/bundle", c.baseURL, url.PathEscape(graphID))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("registry: creating graph fetch request: %w", err)
+	}
+	if meta.PresignedURL == "" {
+		c.addAuth(req, nil, false)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("registry: fetching graph bundle: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, "", 0, fmt.Errorf("registry: graph fetch returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	tmp, err := os.CreateTemp(tempDir, "okt-import-*.json.gz")
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("registry: creating import temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	// On any failure path, clean up the temp file. The caller owns
+	// the file on the happy path (they close + remove it).
+	success := false
+	defer func() {
+		if !success {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+	n, err := io.Copy(tmp, resp.Body)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("registry: streaming graph bundle to temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, "", 0, fmt.Errorf("registry: closing import temp file: %w", err)
+	}
+	// Reopen for reading, positioned at byte 0.
+	readFile, err := os.Open(tmpName)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("registry: reopening import temp file: %w", err)
+	}
+	success = true
+	return readFile, tmpName, n, nil
+}
 // graphs from the registry. The q parameter is a free-text LIKE over
 // name + description; tag is an exact tag match. Either may be empty
 // (empty = no filter). Mirrors ListSources.

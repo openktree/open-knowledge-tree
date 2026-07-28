@@ -1,7 +1,8 @@
-import { createResource, For, Show } from "solid-js";
+import { createEffect, createResource, For, onCleanup, Show } from "solid-js";
 import Badge from "../../components/Badge";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
+import ExportProgress from "../../components/ExportProgress";
 import { api } from "../../services/api";
 import { formatDurationMs, STATE_BADGE } from "./constants";
 import TraceTable from "./TraceTable";
@@ -21,6 +22,21 @@ export default function JobDetail(props) {
 
   const job = () => jobData() || props.job;
   const now = useNowTicker();
+
+  const isGraphJob = () => job()?.kind === "export_graph" || job()?.kind === "import_graph";
+  const isRunning = () => job()?.state === "running" || job()?.state === "retryable";
+
+  let pollTimer = null;
+  createEffect(() => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    if (isGraphJob() && isRunning()) {
+      pollTimer = setInterval(() => refetch(), 10000);
+    }
+  });
+  onCleanup(() => {
+    if (pollTimer) clearInterval(pollTimer);
+  });
 
   return (
     <div class="space-y-6">
@@ -98,6 +114,10 @@ export default function JobDetail(props) {
           </div>
         </div>
       </Card>
+
+      <Show when={isGraphJob()}>
+        <ExportProgress jobID={job().id} jobKind={job().kind} initialJob={job()} />
+      </Show>
 
       <Show when={job().encoded_args}>
         <Card>

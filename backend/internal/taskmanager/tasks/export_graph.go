@@ -6,8 +6,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/graph"
 	registryclient "github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
@@ -71,6 +73,7 @@ type ExportGraphWorker struct {
 	embeddingModel  string
 	embeddingDims   int
 	tempDir         string // "" = OS default (os.CreateTemp)
+	taskPool        *pgxpool.Pool // for writing progress to river_job.metadata
 }
 
 func NewExportGraphWorker(
@@ -82,6 +85,7 @@ func NewExportGraphWorker(
 	embeddingModel string,
 	embeddingDims int,
 	tempDir string,
+	taskPool *pgxpool.Pool,
 ) *ExportGraphWorker {
 	return &ExportGraphWorker{
 		registryClients: registryClients,
@@ -92,6 +96,7 @@ func NewExportGraphWorker(
 		embeddingModel:  embeddingModel,
 		embeddingDims:   embeddingDims,
 		tempDir:         tempDir,
+		taskPool:        taskPool,
 	}
 }
 
@@ -104,6 +109,12 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	if err := repoID.Scan(args.RepositoryID); err != nil {
 		return fmt.Errorf("export_graph: invalid repository_id: %w", err)
 	}
+
+	now := time.Now().UTC()
+	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+		Phase:     "pass1_hashing",
+		StartedAt: now,
+	})
 
 	// Resolve the registry client. Default to the repo's configured
 	// registry_id; fall back to "default" when the arg is empty.
@@ -158,8 +169,17 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	// Pass 1: hash-only.
 	pass1Stats, err := builder.StreamBuild(ctx, meta, io.Discard, "")
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: streaming bundle (pass 1 hash): %w", err)
 	}
+
+	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+		Phase:        "pass2_writing",
+		StartedAt:    now,
+		SourceCount:  pass1Stats.SourceCount,
+		FactCount:    pass1Stats.FactCount,
+		ConceptCount: pass1Stats.ConceptCount,
+	})
 
 	// Pass 2: stream to a temp file with the real sha in metadata.
 	tmp, err := os.CreateTemp(w.tempDir, "okt-export-*.json.gz")
@@ -173,9 +193,11 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	}()
 	pass2Stats, err := builder.StreamBuild(ctx, meta, tmp, pass1Stats.SHA256)
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: streaming bundle (pass 2 write): %w", err)
 	}
 	if err := tmp.Close(); err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: closing temp file: %w", err)
 	}
 
@@ -187,8 +209,19 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	// to the registry's S3 — the registry never parses it.
 	info, err := os.Stat(tmpName)
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: stating temp file: %w", err)
 	}
+
+	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+		Phase:        "pushing",
+		StartedAt:    now,
+		SourceCount:  pass2Stats.SourceCount,
+		FactCount:    pass2Stats.FactCount,
+		ConceptCount: pass2Stats.ConceptCount,
+		BundleBytes:  info.Size(),
+	})
+
 	tmpRead, err := os.Open(tmpName)
 	if err != nil {
 		return fmt.Errorf("export_graph: reopening temp file: %w", err)
@@ -206,6 +239,7 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	}
 	result, err := client.PushGraphStream(ctx, pushMeta, tmpRead, info.Size())
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: pushing graph: %w", err)
 	}
 
@@ -213,6 +247,16 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		args.RepositoryID, result.GraphID,
 		pass2Stats.SourceCount, pass2Stats.FactCount, pass2Stats.ConceptCount,
 		info.Size())
+
+	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+		Phase:        "completed",
+		StartedAt:    now,
+		SourceCount:  pass2Stats.SourceCount,
+		FactCount:    pass2Stats.FactCount,
+		ConceptCount: pass2Stats.ConceptCount,
+		BundleBytes:  info.Size(),
+		GraphID:      result.GraphID,
+	})
 
 	return river.RecordOutput(ctx, &ExportGraphResult{
 		RepositoryID: args.RepositoryID,

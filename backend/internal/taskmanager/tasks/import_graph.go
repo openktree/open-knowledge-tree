@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/graph"
 	registryclient "github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
@@ -89,6 +92,8 @@ type ImportGraphWorker struct {
 	storageBackend  storage.FileStorage
 	embeddingModel  string
 	reembedEnqueuer GraphImportReembedEnqueuer
+	taskPool        *pgxpool.Pool // for writing progress to river_job.metadata
+	tempDir         string         // "" = OS default for download temp file
 }
 
 func NewImportGraphWorker(
@@ -99,6 +104,8 @@ func NewImportGraphWorker(
 	storageBackend storage.FileStorage,
 	embeddingModel string,
 	reembedEnqueuer GraphImportReembedEnqueuer,
+	taskPool *pgxpool.Pool,
+	tempDir string,
 ) *ImportGraphWorker {
 	return &ImportGraphWorker{
 		registryClients: registryClients,
@@ -108,6 +115,8 @@ func NewImportGraphWorker(
 		storageBackend:  storageBackend,
 		embeddingModel:  embeddingModel,
 		reembedEnqueuer: reembedEnqueuer,
+		taskPool:        taskPool,
+		tempDir:         tempDir,
 	}
 }
 
@@ -121,8 +130,14 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		return fmt.Errorf("import_graph: invalid repository_id: %w", err)
 	}
 
-	// Resolve the bundle bytes.
-	var gzBundle []byte
+	now := time.Now().UTC()
+
+	// Resolve the bundle. For registry-sourced bundles, stream the
+	// download to a temp file (avoiding the 8+ GB in-memory buffer
+	// that OOM-killed the previous io.ReadAll path). For uploaded
+	// bundles, stream from storage to a temp file too (same reason).
+	var tmpFile *os.File
+	var tmpPath string
 	switch args.SourceKind {
 	case ImportSourceRegistry:
 		regID := args.RegistryID
@@ -133,25 +148,49 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		if !ok || !client.IsConfigured() {
 			return fmt.Errorf("import_graph: registry %q is not configured", regID)
 		}
-		data, err := client.FetchGraphPresigned(ctx, args.RegistryGraphID)
+		updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+			Phase:     "downloading",
+			StartedAt: now,
+		})
+		f, path, size, err := client.FetchGraphPresignedToStream(ctx, args.RegistryGraphID, w.tempDir)
 		if err != nil {
+			progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 			return fmt.Errorf("import_graph: fetching graph bundle: %w", err)
 		}
-		gzBundle = data
+		tmpFile = f
+		tmpPath = path
+		updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+			Phase:       "downloading",
+			StartedAt:   now,
+			BundleBytes: size,
+		})
 	case ImportSourceUpload:
 		if w.storageBackend == nil {
 			return fmt.Errorf("import_graph: storage backend not configured for upload path")
 		}
+		updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+			Phase:     "downloading",
+			StartedAt: now,
+		})
 		f, err := w.storageBackend.Get(ctx, args.UploadKey)
 		if err != nil {
+			progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 			return fmt.Errorf("import_graph: reading uploaded bundle: %w", err)
 		}
 		defer f.Body.Close()
-		data, err := io.ReadAll(f.Body)
+		tmp, err := os.CreateTemp(w.tempDir, "okt-import-upload-*.json.gz")
 		if err != nil {
-			return fmt.Errorf("import_graph: reading upload body: %w", err)
+			progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
+			return fmt.Errorf("import_graph: creating upload temp file: %w", err)
 		}
-		gzBundle = data
+		tmpPath = tmp.Name()
+		if _, err := io.Copy(tmp, f.Body); err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+			progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
+			return fmt.Errorf("import_graph: streaming upload to temp file: %w", err)
+		}
+		tmpFile = tmp
 		// Best-effort cleanup of the temp upload.
 		if dErr := w.storageBackend.Delete(ctx, args.UploadKey); dErr != nil {
 			log.Printf("import_graph: deleting temp upload %s: %v", args.UploadKey, dErr)
@@ -160,19 +199,49 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		return fmt.Errorf("import_graph: unknown source_kind %q", args.SourceKind)
 	}
 
-	// Ungzip.
-	bundle, err := graph.UnmarshalGzip(gzBundle)
+	defer func() {
+		if tmpFile != nil {
+			_ = tmpFile.Close()
+		}
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	// If we have a temp file from the upload path, reopen it for
+	// reading (FetchGraphPresignedToStream already returns an open
+	// reader; the upload path needs us to seek back to 0).
+	var bundleReader io.Reader
+	if args.SourceKind == ImportSourceUpload && tmpFile != nil {
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
+			return fmt.Errorf("import_graph: rewinding upload temp file: %w", err)
+		}
+		bundleReader = tmpFile
+	} else {
+		bundleReader = tmpFile
+	}
+
+	// Gunzip + decode in a streaming pass (no full-body buffer).
+	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+		Phase:     "decoding",
+		StartedAt: now,
+	})
+	bundle, err := graph.UnmarshalGzipReader(bundleReader)
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("import_graph: decoding bundle: %w", err)
 	}
 
 	// Resolve the per-repo pool.
 	dbName, err := w.systemQueries.GetRepositoryDatabaseName(ctx, repoID)
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("import_graph: resolving repository database: %w", err)
 	}
 	pool := w.registry.Get(dbName)
 	if pool == nil || pool.Pool == nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", "no pool for database")
 		return fmt.Errorf("import_graph: no pool for database %q", dbName)
 	}
 	queries := store.New(pool.Pool)
@@ -180,10 +249,18 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 	// Resolve the repo slug for image_url remapping on image facts.
 	repo, err := w.systemQueries.GetRepositoryByID(ctx, repoID)
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("import_graph: resolving repository slug: %w", err)
 	}
 
 	// Import.
+	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+		Phase:        "importing",
+		StartedAt:    now,
+		SourceCount:  len(bundle.Sources),
+		FactCount:    len(bundle.Facts),
+		ConceptCount: len(bundle.Concepts),
+	})
 	mode := graph.ImportModeNew
 	if args.Mode == "existing" {
 		mode = graph.ImportModeExisting
@@ -191,6 +268,7 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 	importer := graph.NewBundleImporter(queries, w.qdrant, w.storageBackend, repoID, repo.Slug, w.embeddingModel)
 	result, err := importer.Import(ctx, bundle, mode)
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("import_graph: applying bundle: %w", err)
 	}
 
@@ -224,6 +302,14 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		result.ImportedSources, result.ImportedFacts, result.ImportedConcepts,
 		result.ImportedSummaries, result.ImportedSyntheses,
 		result.ImportedReports, result.ImportedInvestigations, result.NeedsReembed)
+
+	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
+		Phase:        "completed",
+		StartedAt:    now,
+		SourceCount:  result.ImportedSources,
+		FactCount:    result.ImportedFacts,
+		ConceptCount: result.ImportedConcepts,
+	})
 
 	return river.RecordOutput(ctx, &ImportGraphResult{
 		RepositoryID:           args.RepositoryID,

@@ -49,6 +49,31 @@ func UnmarshalGzip(data []byte) (*GraphBundle, error) {
 	return &b, nil
 }
 
+// UnmarshalGzipReader decodes a gzipped JSON GraphBundle from an
+// io.Reader (e.g. a *os.File temp file), avoiding the in-memory
+// []byte buffer that UnmarshalGzip requires. The gzip reader
+// decompresses in bounded chunks; json.NewDecoder streams the JSON
+// tokens without buffering the entire decompressed payload. Peak
+// memory is bounded by gzip's internal buffer (~hundreds of KB) +
+// the JSON decoder's token buffer, not the full ~30 GB decompressed
+// bundle.
+//
+// Used by the import_graph worker for multi-GB bundles downloaded to
+// a temp file via FetchGraphPresignedToStream. The caller is
+// responsible for closing the reader when done.
+func UnmarshalGzipReader(r io.Reader) (*GraphBundle, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("opening gzip reader: %w", err)
+	}
+	defer gz.Close()
+	var b GraphBundle
+	if err := json.NewDecoder(gz).Decode(&b); err != nil {
+		return nil, fmt.Errorf("decoding graph bundle: %w", err)
+	}
+	return &b, nil
+}
+
 // MarshalGzipTo serializes a GraphBundle to gzipped JSON, writing
 // directly to the provided writer (instead of buffering in memory).
 // Used by the download endpoint so peak memory stays bounded for

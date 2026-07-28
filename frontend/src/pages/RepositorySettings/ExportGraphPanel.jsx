@@ -1,5 +1,6 @@
 import { createSignal, Show } from "solid-js";
 import Card from "../../components/Card";
+import ExportProgress from "../../components/ExportProgress";
 import { api } from "../../services/api";
 import { useRBAC } from "../../store/rbac";
 
@@ -29,6 +30,7 @@ export default function ExportGraphPanel(props) {
   const [downloading, setDownloading] = createSignal(false);
   const [includeBodies, setIncludeBodies] = createSignal(false);
   const [includeImages, setIncludeImages] = createSignal(true);
+  const [progressJobID, setProgressJobID] = createSignal(null);
 
   const handleExport = async () => {
     const slug = props.slug?.();
@@ -49,10 +51,7 @@ export default function ExportGraphPanel(props) {
         include_bodies: includeBodies(),
         include_images: includeImages(),
       });
-      props.onAlert?.({
-        variant: "success",
-        message: `Graph export enqueued (job: ${res.job_id}). Poll /tasks/${res.job_id} for completion.`,
-      });
+      setProgressJobID(res.job_id);
       setName("");
       setDescription("");
       setTags("");
@@ -61,6 +60,22 @@ export default function ExportGraphPanel(props) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleProgressComplete = (jobData) => {
+    setBusy(false);
+    if (jobData?.state === "completed") {
+      props.onAlert?.({
+        variant: "success",
+        message: `Graph exported successfully (job: ${jobData.id}).`,
+      });
+    } else {
+      props.onAlert?.({
+        variant: "error",
+        message: `Export ${jobData?.state || "failed"} (job: ${jobData?.id}). See task details for errors.`,
+      });
+    }
+    setProgressJobID(null);
   };
 
   // handleDownload builds the bundle synchronously and saves it as a
@@ -213,6 +228,13 @@ export default function ExportGraphPanel(props) {
             "Download" saves the bundle as a gzipped JSON file you can re-import on any OKT instance
             via the Shared Graphs upload path (no registry needed).
           </p>
+          <Show when={progressJobID()}>
+            <ExportProgress
+              jobID={progressJobID()}
+              jobKind="export_graph"
+              onComplete={handleProgressComplete}
+            />
+          </Show>
         </div>
       </Card>
     </Show>
