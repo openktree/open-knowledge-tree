@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.3...api-v0.6.0) (2026-07-28)
+
+
+### Features
+
+* **api,frontend:** stream import download + phase-level progress for export/import ([cae972c](https://github.com/openktree/open-knowledge-tree/commit/cae972c034b8b3341c7873ba39853341fc4ac6ab))
+
 ## [0.5.3](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.2...api-v0.5.3) (2026-07-28)
 
 
