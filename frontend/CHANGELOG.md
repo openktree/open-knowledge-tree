@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.4.0...frontend-v0.5.0) (2026-07-28)
+
+
+### Features
+
+* **api,frontend:** stream import download + phase-level progress for export/import ([cae972c](https://github.com/openktree/open-knowledge-tree/commit/cae972c034b8b3341c7873ba39853341fc4ac6ab))
+
+
+### Bug Fixes
+
+* **api:** provider-agnostic model matching + auto-whitelist repo's own fact model ([8553f69](https://github.com/openktree/open-knowledge-tree/commit/8553f694558b29c4af07c2d83a537884e2e0969f))
+
 ## [0.4.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.3.0...frontend-v0.4.0) (2026-07-27)
 
 
