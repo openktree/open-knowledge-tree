@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.4...registry-v0.5.5) (2026-07-28)
+
+
+### Bug Fixes
+
+* **registry:** remove WriteTimeout that 502'd long graph pushes ([e8c4b5b](https://github.com/openktree/open-knowledge-tree/commit/e8c4b5b44b0dca3729a5aa22fff2d4ef93184684))
+
 ## [0.5.4](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.3...registry-v0.5.4) (2026-07-28)
 
 
