@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.0...api-v0.5.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **registry,api:** move graph metadata to headers + S3 multipart upload ([81c6a8d](https://github.com/openktree/open-knowledge-tree/commit/81c6a8d713ddba05e9f9d61e77aa707ce7e4934d))
+
 ## [0.5.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.4.3...api-v0.5.0) (2026-07-27)
 
 
