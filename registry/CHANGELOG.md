@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.6](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.5...registry-v0.5.6) (2026-07-28)
+
+
+### Bug Fixes
+
+* **registry:** persist promptset_hash + add enable_validation ([23e3ce2](https://github.com/openktree/open-knowledge-tree/commit/23e3ce22fca792216ed93f470d701f923830d784))
+
 ## [0.5.5](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.4...registry-v0.5.5) (2026-07-28)
 
 
