@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.2...registry-v0.5.3) (2026-07-28)
+
+
+### Bug Fixes
+
+* **registry:** spool non-seekable graph bundle to a temp file before S3 PutObject ([95013ff](https://github.com/openktree/open-knowledge-tree/commit/95013ff0dee75ceef0d3818d2b2a67f7b5c1f573))
+
 ## [0.5.2](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.1...registry-v0.5.2) (2026-07-27)
 
 
