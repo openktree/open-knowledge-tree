@@ -61,7 +61,17 @@ func New(cfg config.RegistryConfig) *Client {
 	return &Client{
 		baseURL: cfg.URL,
 		http: &http.Client{
-			Timeout: 5 * time.Minute,
+			// No client-level timeout (Timeout=0). The per-call
+			// context governs: River workers inherit the job's
+			// context (JobTimeout, default 4h), and HTTP-handler-
+			// driven calls inherit the request's context (bounded
+			// by the server's ReadTimeout/WriteTimeout). A blanket
+			// client timeout was the wrong knob — it cut off the
+			// graph push (an 8 GB upload to R2 via multipart) at
+			// 5 min, well before the registry could finish, failing
+			// the export with "Client.Timeout exceeded while
+			// awaiting headers". Let the context own the deadline.
+			Timeout: 0,
 		},
 		models:   cfg.AllowedModels,
 		authMode: cfg.AuthMode,
