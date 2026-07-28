@@ -111,7 +111,15 @@ func (m *mockStorage) getCalls() []storeCall {
 
 // newTestRegistry builds a Registry with an in-memory SQLite store
 // and a mock storage. The caller can configure the mock's delay.
+// Promptset validation is disabled (the legacy default).
 func newTestRegistry(t *testing.T, storeDelay time.Duration) (*Registry, *mockStorage) {
+	return newTestRegistryWithValidation(t, storeDelay, false)
+}
+
+// newTestRegistryWithValidation builds a Registry with the given
+// promptset-validation flag. Used by the promptset_hash tests to
+// exercise both the legacy (off) and enforcing (on) behaviors.
+func newTestRegistryWithValidation(t *testing.T, storeDelay time.Duration, validation bool) (*Registry, *mockStorage) {
 	t.Helper()
 	s, err := store.NewSQLiteStore("file::memory:?cache=shared&_pragma=busy_timeout=5000")
 	if err != nil {
@@ -127,7 +135,7 @@ func newTestRegistry(t *testing.T, storeDelay time.Duration) (*Registry, *mockSt
 		t.Fatalf("creating default repo: %v", err)
 	}
 	ms := &mockStorage{storeDelay: storeDelay}
-	r := New(s, ms, 3600, 0, 0)
+	r := New(s, ms, 3600, 0, 0, validation)
 	return r, ms
 }
 
@@ -452,5 +460,172 @@ func TestPullSource_PresignDisabled(t *testing.T) {
 	}
 	if d.PresignedURL != "" {
 		t.Errorf("presigned_url = %q, want empty (presign disabled)", d.PresignedURL)
+	}
+}
+
+// TestPushDecomposition_PromptsetHash_Persisted verifies the
+// promptset_hash on a pushed DecompositionPackage round-trips
+// through the registry: it lands on the decompositions row
+// (visible via ListDecompositions), echoes on the DecompRef
+// PullSource returns, and survives in the S3 JSON PullDecomposition
+// returns. This is the contract the OKT backend's pull-side
+// RelevanceFilter.AllowsPromptset relies on to filter decompositions
+// by philosophy — before the fix the registry silently dropped the
+// field on receive, so the filter was a no-op.
+func TestPushDecomposition_PromptsetHash_Persisted(t *testing.T) {
+	r, _ := newTestRegistry(t, 0)
+	ctx := context.Background()
+
+	if _, err := r.PushSource(ctx, &model.SourceData{
+		ID:    "src-ps",
+		URL:   "http://example.com/ps",
+		Title: "PS Source",
+	}); err != nil {
+		t.Fatalf("PushSource: %v", err)
+	}
+
+	const hash = "abc123registryhash"
+	if _, err := r.PushDecomposition(ctx, "src-ps", &model.DecompositionPackage{
+		ModelID:       "test-model",
+		PromptsetHash: hash,
+		Facts:         makeFacts(2),
+	}); err != nil {
+		t.Fatalf("PushDecomposition: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond) // let the fire-and-forget S3 write land
+
+	// PullDecomposition returns the hash from the S3 JSON.
+	decomp, err := r.PullDecomposition(ctx, "src-ps", "test-model")
+	if err != nil {
+		t.Fatalf("PullDecomposition: %v", err)
+	}
+	if decomp.PromptsetHash != hash {
+		t.Errorf("PullDecomposition: promptset_hash = %q, want %q", decomp.PromptsetHash, hash)
+	}
+
+	// PullSource echoes the hash on the embedded DecompRef (read
+	// from the metadata DB, not the S3 JSON). This is the field the
+	// backend's ListRelevantDecompositions filter reads.
+	pkg, err := r.PullSource(ctx, "src-ps")
+	if err != nil {
+		t.Fatalf("PullSource: %v", err)
+	}
+	if len(pkg.Decompositions) != 1 {
+		t.Fatalf("expected 1 decomposition, got %d", len(pkg.Decompositions))
+	}
+	if got := pkg.Decompositions[0].PromptsetHash; got != hash {
+		t.Errorf("PullSource DecompRef promptset_hash = %q, want %q", got, hash)
+	}
+}
+
+// TestPushDecomposition_PromptsetHash_RejectedWhenValidationEnabled
+// verifies that when promptset.enable_validation is true, a push
+// without a promptset_hash is rejected with ErrPromptsetHashRequired
+// (the handler maps this to 400 Bad Request). This is the forcing
+// function that guarantees every decomposition on a validating
+// registry carries a real philosophy hash so pullers can filter.
+func TestPushDecomposition_PromptsetHash_RejectedWhenValidationEnabled(t *testing.T) {
+	r, _ := newTestRegistryWithValidation(t, 0, true)
+	ctx := context.Background()
+
+	if _, err := r.PushSource(ctx, &model.SourceData{
+		ID:    "src-vs",
+		URL:   "http://example.com/vs",
+		Title: "VS Source",
+	}); err != nil {
+		t.Fatalf("PushSource: %v", err)
+	}
+
+	// Empty hash → rejected.
+	_, err := r.PushDecomposition(ctx, "src-vs", &model.DecompositionPackage{
+		ModelID: "test-model",
+		Facts:   makeFacts(1),
+	})
+	if err != ErrPromptsetHashRequired {
+		t.Errorf("PushDecomposition with empty hash: err = %v, want ErrPromptsetHashRequired", err)
+	}
+
+	// Non-empty hash → accepted.
+	const hash = "validregistryhash"
+	if _, err := r.PushDecomposition(ctx, "src-vs", &model.DecompositionPackage{
+		ModelID:       "test-model",
+		PromptsetHash: hash,
+		Facts:         makeFacts(1),
+	}); err != nil {
+		t.Errorf("PushDecomposition with hash: unexpected err %v", err)
+	}
+}
+
+// TestPushDecomposition_PromptsetHash_AcceptedWhenValidationDisabled
+// verifies the legacy default: when validation is off, an empty
+// promptset_hash is accepted (stored as NULL/empty). This preserves
+// backward compatibility for existing registries and deployments
+// that haven't configured promptsets on their contributing backends.
+func TestPushDecomposition_PromptsetHash_AcceptedWhenValidationDisabled(t *testing.T) {
+	r, _ := newTestRegistry(t, 0) // validation off (default)
+	ctx := context.Background()
+
+	if _, err := r.PushSource(ctx, &model.SourceData{
+		ID:    "src-legacy",
+		URL:   "http://example.com/legacy",
+		Title: "Legacy Source",
+	}); err != nil {
+		t.Fatalf("PushSource: %v", err)
+	}
+
+	if _, err := r.PushDecomposition(ctx, "src-legacy", &model.DecompositionPackage{
+		ModelID: "test-model",
+		Facts:   makeFacts(1),
+	}); err != nil {
+		t.Errorf("PushDecomposition with empty hash (validation off): unexpected err %v", err)
+	}
+}
+
+// TestPushDecomposition_PromptsetHash_UpdatedOnRepush verifies a
+// re-push of the same (source, model) updates the stored
+// promptset_hash (the ON CONFLICT DO UPDATE clause covers it). A
+// contributing backend that switches promptsets and re-pushes must
+// overwrite the old hash so pullers see the current philosophy.
+func TestPushDecomposition_PromptsetHash_UpdatedOnRepush(t *testing.T) {
+	r, _ := newTestRegistry(t, 0)
+	ctx := context.Background()
+
+	if _, err := r.PushSource(ctx, &model.SourceData{
+		ID:    "src-re",
+		URL:   "http://example.com/re",
+		Title: "Re Source",
+	}); err != nil {
+		t.Fatalf("PushSource: %v", err)
+	}
+
+	const oldHash = "oldhash"
+	if _, err := r.PushDecomposition(ctx, "src-re", &model.DecompositionPackage{
+		ModelID:       "test-model",
+		PromptsetHash: oldHash,
+		Facts:         makeFacts(1),
+	}); err != nil {
+		t.Fatalf("first PushDecomposition: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	const newHash = "newhash"
+	if _, err := r.PushDecomposition(ctx, "src-re", &model.DecompositionPackage{
+		ModelID:       "test-model",
+		PromptsetHash: newHash,
+		Facts:         makeFacts(1),
+	}); err != nil {
+		t.Fatalf("second PushDecomposition: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	pkg, err := r.PullSource(ctx, "src-re")
+	if err != nil {
+		t.Fatalf("PullSource: %v", err)
+	}
+	if len(pkg.Decompositions) != 1 {
+		t.Fatalf("expected 1 decomposition, got %d", len(pkg.Decompositions))
+	}
+	if got := pkg.Decompositions[0].PromptsetHash; got != newHash {
+		t.Errorf("promptset_hash after re-push = %q, want %q (should be updated)", got, newHash)
 	}
 }

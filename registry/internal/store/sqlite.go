@@ -83,12 +83,14 @@ func migrateSQLite(db *sql.DB) error {
 			embedding_model TEXT,
 			embedding_dims  INTEGER NOT NULL DEFAULT 0,
 			s3_key          TEXT NOT NULL,
+			promptset_hash  TEXT,
 			created_at      TEXT NOT NULL,
 			UNIQUE(source_id, model_id)
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_decompositions_source ON decompositions(source_id);
 		CREATE INDEX IF NOT EXISTS idx_decompositions_model ON decompositions(model_id);
+		CREATE INDEX IF NOT EXISTS idx_decompositions_promptset ON decompositions(promptset_hash);
 
 		CREATE TABLE IF NOT EXISTS fact_hashes (
 			content_hash     TEXT NOT NULL,
@@ -309,22 +311,25 @@ func (s *SQLiteStore) SearchBySHA256(ctx context.Context, repoID, sha256 string)
 func (s *SQLiteStore) IndexDecomposition(ctx context.Context, meta *model.DecompMeta) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO decompositions (id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   fact_count=excluded.fact_count, summary_count=excluded.summary_count,
-		   has_embeddings=excluded.has_embeddings, s3_key=excluded.s3_key`,
+		   has_embeddings=excluded.has_embeddings, s3_key=excluded.s3_key,
+		   promptset_hash=excluded.promptset_hash`,
 		meta.ID, meta.SourceID, meta.ModelID, meta.DecomposedBy,
 		nullTime(meta.DecomposedAt), meta.FactCount, meta.SummaryCount,
 		btoi(meta.HasEmbeddings), nullString(meta.EmbeddingModel), meta.EmbeddingDims,
-		meta.S3Key, meta.CreatedAt.UTC().Format(time.RFC3339))
+		meta.S3Key, nullString(meta.PromptsetHash), meta.CreatedAt.UTC().Format(time.RFC3339))
 	return err
 }
 
 func (s *SQLiteStore) ListDecompositions(ctx context.Context, sourceID string) ([]model.DecompMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at
 		 FROM decompositions WHERE source_id = ? ORDER BY decomposed_at DESC`, sourceID)
 	if err != nil {
 		return nil, err
@@ -336,7 +341,8 @@ func (s *SQLiteStore) ListDecompositions(ctx context.Context, sourceID string) (
 func (s *SQLiteStore) GetDecompositionBySourceAndModel(ctx context.Context, sourceID, modelID string) (*model.DecompMeta, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at
 		 FROM decompositions WHERE source_id = ? AND model_id = ?`, sourceID, modelID)
 	return scanDecomp(row)
 }
@@ -347,7 +353,8 @@ func (s *SQLiteStore) ListAllDecompositions(ctx context.Context, limit, offset i
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at
 		 FROM decompositions ORDER BY created_at ASC LIMIT ? OFFSET ?`,
 		limit, offset)
 	if err != nil {
@@ -743,11 +750,11 @@ func scanSources(rows interface {
 
 func scanDecomp(row interface{ Scan(...any) error }) (*model.DecompMeta, error) {
 	var id, sourceID, modelID, s3key, ca string
-	var decBy, embModel sql.NullString
+	var decBy, embModel, psHash sql.NullString
 	var decAt sql.NullString
 	var factCount, summaryCount, embDims, embModelVal int
 	if err := row.Scan(&id, &sourceID, &modelID, &decBy, &decAt,
-		&factCount, &summaryCount, &embModelVal, &embModel, &embDims, &s3key, &ca); err != nil {
+		&factCount, &summaryCount, &embModelVal, &embModel, &embDims, &s3key, &psHash, &ca); err != nil {
 		return nil, err
 	}
 	createdAt, _ := time.Parse(time.RFC3339, ca)
@@ -759,7 +766,8 @@ func scanDecomp(row interface{ Scan(...any) error }) (*model.DecompMeta, error) 
 		ID: id, SourceID: sourceID, ModelID: modelID, DecomposedBy: decBy.String,
 		DecomposedAt: decomposedAt, FactCount: factCount, SummaryCount: summaryCount,
 		HasEmbeddings: embModelVal != 0, EmbeddingModel: embModel.String,
-		EmbeddingDims: embDims, S3Key: s3key, CreatedAt: createdAt,
+		EmbeddingDims: embDims, S3Key: s3key, PromptsetHash: psHash.String,
+		CreatedAt: createdAt,
 	}, nil
 }
 

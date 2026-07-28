@@ -46,7 +46,7 @@ func newGraphTestEnv(t *testing.T) *graphTestEnv {
 		t.Fatalf("creating default repo: %v", err)
 	}
 	rs := &recordingStorage{}
-	reg := service.New(s, rs, 3600, 0, 0)
+	reg := service.New(s, rs, 3600, 0, 0, false)
 	return &graphTestEnv{
 		t:       t,
 		handler: NewGraphHandler(reg),
@@ -148,8 +148,8 @@ func TestGraphPush_SmallBundle(t *testing.T) {
 	env := newGraphTestEnv(t)
 	body := makeGzipBody(t, 1<<10) // 1 KB
 	rec := env.pushBundle(map[string]string{
-		"X-Graph-Name":        "Small Graph",
-		"X-Graph-Description": "tiny",
+		"X-Graph-Name":         "Small Graph",
+		"X-Graph-Description":  "tiny",
 		"X-Graph-Source-Count": "2",
 	}, body)
 	if rec.Code != http.StatusCreated {
@@ -283,11 +283,11 @@ func TestGraphPush_SHA256AndSchemaVersion(t *testing.T) {
 	env := newGraphTestEnv(t)
 	body := makeGzipBody(t, 64)
 	rec := env.pushBundle(map[string]string{
-		"X-Graph-Name":            "SHA Test",
-		"X-Graph-SHA256":          "deadbeef",
-		"X-Graph-Schema-Version":  "1",
-		"X-Graph-Fact-Count":      "42",
-		"X-Graph-Concept-Count":   "7",
+		"X-Graph-Name":           "SHA Test",
+		"X-Graph-SHA256":         "deadbeef",
+		"X-Graph-Schema-Version": "1",
+		"X-Graph-Fact-Count":     "42",
+		"X-Graph-Concept-Count":  "7",
 	}, body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())

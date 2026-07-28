@@ -163,22 +163,25 @@ func (s *PostgresStore) SearchBySHA256(ctx context.Context, repoID, sha256 strin
 func (s *PostgresStore) IndexDecomposition(ctx context.Context, meta *model.DecompMeta) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO decompositions (id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT(id) DO UPDATE SET
 		   fact_count=EXCLUDED.fact_count, summary_count=EXCLUDED.summary_count,
-		   has_embeddings=EXCLUDED.has_embeddings, s3_key=EXCLUDED.s3_key`,
+		   has_embeddings=EXCLUDED.has_embeddings, s3_key=EXCLUDED.s3_key,
+		   promptset_hash=EXCLUDED.promptset_hash`,
 		meta.ID, meta.SourceID, meta.ModelID, meta.DecomposedBy,
 		nullTimePtrPG(meta.DecomposedAt), meta.FactCount, meta.SummaryCount,
 		meta.HasEmbeddings, nullStringPtr(meta.EmbeddingModel), meta.EmbeddingDims,
-		meta.S3Key, meta.CreatedAt)
+		meta.S3Key, nullStringPtr(meta.PromptsetHash), meta.CreatedAt)
 	return err
 }
 
 func (s *PostgresStore) ListDecompositions(ctx context.Context, sourceID string) ([]model.DecompMeta, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at
 		 FROM decompositions WHERE source_id = $1 ORDER BY decomposed_at DESC`, sourceID)
 	if err != nil {
 		return nil, err
@@ -190,7 +193,8 @@ func (s *PostgresStore) ListDecompositions(ctx context.Context, sourceID string)
 func (s *PostgresStore) GetDecompositionBySourceAndModel(ctx context.Context, sourceID, modelID string) (*model.DecompMeta, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at
 		 FROM decompositions WHERE source_id = $1 AND model_id = $2`, sourceID, modelID)
 	return scanDecompPG(row)
 }
@@ -201,7 +205,8 @@ func (s *PostgresStore) ListAllDecompositions(ctx context.Context, limit, offset
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, source_id, model_id, decomposed_by, decomposed_at,
-		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key, created_at
+		   fact_count, summary_count, has_embeddings, embedding_model, embedding_dims, s3_key,
+		   promptset_hash, created_at
 		 FROM decompositions ORDER BY created_at ASC LIMIT $1 OFFSET $2`,
 		limit, offset)
 	if err != nil {
@@ -647,12 +652,12 @@ func scanSourcesPG(rows pgxRows) ([]model.SourceMeta, error) {
 func scanDecompPG(row interface{ Scan(...any) error }) (*model.DecompMeta, error) {
 	var id, sourceID, modelID, s3key string
 	var ca time.Time
-	var decBy, embModel *string
+	var decBy, embModel, psHash *string
 	var decAt *time.Time
 	var factCount, summaryCount, embDims int
 	var hasEmb bool
 	if err := row.Scan(&id, &sourceID, &modelID, &decBy, &decAt,
-		&factCount, &summaryCount, &hasEmb, &embModel, &embDims, &s3key, &ca); err != nil {
+		&factCount, &summaryCount, &hasEmb, &embModel, &embDims, &s3key, &psHash, &ca); err != nil {
 		return nil, err
 	}
 	decAtVal := time.Time{}
@@ -663,7 +668,8 @@ func scanDecompPG(row interface{ Scan(...any) error }) (*model.DecompMeta, error
 		ID: id, SourceID: sourceID, ModelID: modelID, DecomposedBy: ptrStr(decBy),
 		DecomposedAt: decAtVal, FactCount: factCount, SummaryCount: summaryCount,
 		HasEmbeddings: hasEmb, EmbeddingModel: ptrStr(embModel),
-		EmbeddingDims: embDims, S3Key: s3key, CreatedAt: ca,
+		EmbeddingDims: embDims, S3Key: s3key, PromptsetHash: ptrStr(psHash),
+		CreatedAt: ca,
 	}, nil
 }
 

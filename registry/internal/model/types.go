@@ -47,6 +47,15 @@ type DecompRef struct {
 	HasEmbeddings  bool   `json:"has_embeddings"`
 	EmbeddingModel string `json:"embedding_model,omitempty"`
 	PresignedURL   string `json:"presigned_url"`
+	// PromptsetHash is the registry-compatibility hash (see
+	// backend/internal/promptset.RegistryHashPromptset) of the
+	// philosophy that produced this decomposition. Pulling repos
+	// read it to filter decompositions whose philosophy isn't in
+	// their accepted set (RelevanceFilter.AllowsPromptset). Empty
+	// when the registry server predates the field or the producing
+	// backend hadn't configured a promptset; the pull filter treats
+	// empty as always-accepted (legacy behavior).
+	PromptsetHash string `json:"promptset_hash,omitempty"`
 }
 
 type DecompMeta struct {
@@ -61,7 +70,14 @@ type DecompMeta struct {
 	EmbeddingModel string    `json:"embedding_model,omitempty"`
 	EmbeddingDims  int       `json:"embedding_dimensions,omitempty"`
 	S3Key          string    `json:"s3_key"`
-	CreatedAt      time.Time `json:"created_at"`
+	// PromptsetHash is the registry-compatibility hash of the
+	// philosophy that produced this decomposition. Mirrors the
+	// column added by migration 0002_promptset_hash. Set by
+	// PushDecomposition from DecompositionPackage.PromptsetHash;
+	// read by ListDecompositions and echoed on the DecompRef
+	// PullSource returns so the backend's pull-side filter sees it.
+	PromptsetHash string    `json:"promptset_hash,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type SourcePackage struct {
@@ -97,10 +113,21 @@ type ImageRef struct {
 }
 
 type DecompositionPackage struct {
-	SchemaVersion     int            `json:"schema_version"`
-	ModelID           string         `json:"model_id"`
-	DecomposedBy      string         `json:"decomposed_by,omitempty"`
-	DecomposedAt      time.Time      `json:"decomposed_at"`
+	SchemaVersion int       `json:"schema_version"`
+	ModelID       string    `json:"model_id"`
+	DecomposedBy  string    `json:"decomposed_by,omitempty"`
+	DecomposedAt  time.Time `json:"decomposed_at"`
+	// PromptsetHash is the registry-compatibility hash (see
+	// backend/internal/promptset.RegistryHashPromptset — a hash
+	// over the 4 shared phases) of the philosophy that produced
+	// this decomposition. The producer (OKT backend's
+	// contribute_source worker) stamps it from the repo's
+	// effective promptset; the registry persists it on the
+	// decompositions row and echoes it on DecompRef so pulling
+	// repos can filter by accepted philosophy. Empty when the
+	// producer hasn't configured a promptset; the registry accepts
+	// it unless promptset.enable_validation is true.
+	PromptsetHash     string         `json:"promptset_hash,omitempty"`
 	Facts             []FactData     `json:"facts"`
 	Concepts          []ConceptData  `json:"concepts"`
 	Summaries         []SummaryData  `json:"summaries,omitempty"`

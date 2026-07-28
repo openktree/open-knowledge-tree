@@ -72,7 +72,7 @@ Large bodies and images bypass the registry process entirely: the registry hands
 
 - **`repositories`** — the registry currently serves a single logical namespace (`default`). Spin up another registry instance for isolation. Columns: `id`, `name`, `description`, `owner`, timestamps.
 - **`sources`** — one row per fetched source. `UNIQUE(url)`, `UNIQUE(doi)`; indexed on `repo_id` and `sha256`. The `s3_key` points at the source package in the object store.
-- **`decompositions`** — one row per (source, model) pair. `UNIQUE(source_id, model_id)`; indexed on both. Carries `fact_count`, `summary_count`, `has_embeddings`, `embedding_model`, `embedding_dims`, and the `s3_key` of the decomposition JSON.
+- **`decompositions`** — one row per (source, model) pair. `UNIQUE(source_id, model_id)`; indexed on both. Carries `fact_count`, `summary_count`, `has_embeddings`, `embedding_model`, `embedding_dims`, `promptset_hash`, and the `s3_key` of the decomposition JSON. `promptset_hash` is the registry-compatibility hash of the philosophy that produced the decomposition (set on push, echoed on the `DecompRef` returned by `PullSource` so pullers can filter by accepted philosophy; see [Interchange Schemas](/docs/reference/schemas/decomposition-package)).
 - **`fact_hashes`** — maps each fact's content hash to its (source, decomposition, fact_id) so callers can detect cross-source fact overlap without re-embedding. PK is `(content_hash, source_id, decomposition_id)`.
 - **`contexts`** — the canonical context vocabulary (`label` PK).
 - **`users`** / **`api_tokens`** — registry auth; tokens are scoped `read` / `write` / `readwrite`.

@@ -109,6 +109,23 @@ There is also a small server-rendered UI under `/ui` (login, register, dashboard
 
 The OKT backend's registry client is configured with `auth_mode: none` (no header) or `bearer` (API key). A separate read-only key (`read_api_key`) lets you hand out public read access while keeping the write key restricted.
 
+## Promptset validation
+
+Every decomposition pushed to the registry can carry a `promptset_hash` — the SHA-256 of the 4 shared promptset phases that produced it (see [Decomposition Package — the promptset_hash contract](/docs/reference/schemas/decomposition-package#the-promptset_hash-contract)). The hash lets pulling repos filter decompositions by philosophy so incompatible promptsets don't cross-contaminate graphs via the shared registry.
+
+By default the registry accepts any `promptset_hash` value, including empty (the legacy behavior that predates the field). Set `promptset.enable_validation: true` to **reject** pushes that omit the hash with `400 Bad Request`. This is the forcing function that guarantees every decomposition on a validating registry carries a real philosophy hash:
+
+```yaml
+promptset:
+  enable_validation: true
+```
+
+When enabling validation:
+
+- Every contributing OKT backend must have a promptset resolver configured (the built-in default promptset counts — a backend with no promptset configured would start receiving 400s on `contribute_source`). See [Config — promptset](/docs/reference/config) for the backend-side promptset config.
+- Pre-existing decomposition rows with NULL `promptset_hash` stay pullable. Validation only gates **new pushes**; the pull-side filter treats an empty hash as always-accepted so legacy rows keep working. NULL means "predates the feature" per the migration that added the column.
+- The pull-side whitelist (`accepted_promptset_hashes` per repo, plus the always-accepted `DefaultRegistryHashes`) is independent of the registry flag — it's enforced by the pulling OKT backend, not the registry. Enabling validation on the registry makes the catalog clean; the whitelist makes each consumer selective.
+
 ## Storage backends
 
 | Layer | Options | Default |
@@ -134,6 +151,7 @@ The registry reads its config from a YAML file and env vars with prefix `REGISTR
 | `auth.auth_mode` | `open` | `open` / `read-open` / `closed`. |
 | `auth.jwt_secret` | `change-me-in-production` | JWT signing secret. |
 | `auth.bootstrap_admins` | (empty) | Emails promoted to admin on first login. |
+| `promptset.enable_validation` | `false` | Reject `PushDecomposition` calls that omit `promptset_hash` with `400 Bad Request`. See [Promptset validation](#promptset-validation). |
 
 ## Wiring it into an OKT instance
 

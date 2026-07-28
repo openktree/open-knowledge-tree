@@ -61,6 +61,15 @@ const sidebars = {
             "reference/examples/shadowfleet",
           ],
         },
+        {
+          type: "category",
+          label: "Interchange Schemas",
+          link: { type: "doc", id: "reference/schemas/overview" },
+          items: [
+            "reference/schemas/decomposition-package",
+            "reference/schemas/graph-bundle",
+          ],
+        },
         "reference/expected-cost",
         "reference/registry",
         "reference/config",

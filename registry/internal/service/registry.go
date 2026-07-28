@@ -46,6 +46,13 @@ type Registry struct {
 	store      store.MetadataStore
 	storage    Storage
 	presignTTL time.Duration
+	// promptsetValidation, when true, rejects PushDecomposition calls
+	// whose DecompositionPackage.PromptsetHash is empty. Mirrors
+	// config.PromptsetConfig.EnableValidation. Default false: the
+	// registry accepts any value (including empty) and indexes it
+	// as-is, preserving the legacy behavior for deployments that
+	// haven't configured promptsets on their contributing backends.
+	promptsetValidation bool
 	// pushSem/pullSem bound the number of in-flight heavy-memory
 	// operations. Each push/pull of a decomposition can hold ~80–
 	// 100MB (request body + re-marshalled JSON + struct
@@ -57,17 +64,29 @@ type Registry struct {
 	pullSem chan struct{}
 }
 
+// ErrPromptsetHashRequired is returned by PushDecomposition when
+// promptset validation is enabled and the caller omitted
+// promptset_hash. The HTTP handler maps it to 400 Bad Request so a
+// misconfigured contributing backend gets a clear client error
+// instead of a silent 500. The 400 surfaces the standardization
+// contract: the registry won't index a decomposition that pullers
+// can't filter by philosophy.
+var ErrPromptsetHashRequired = errors.New("promptset_hash required when validation enabled")
+
 // New constructs a Registry. push/pull are the concurrency caps
 // for heavy-memory operations (0 or negative = unbounded).
-func New(mstore store.MetadataStore, s3store Storage, presignTTL int, push, pull int) *Registry {
+// promptsetValidation mirrors config.PromptsetConfig.EnableValidation;
+// pass false to preserve the legacy accept-any-hash behavior.
+func New(mstore store.MetadataStore, s3store Storage, presignTTL int, push, pull int, promptsetValidation bool) *Registry {
 	ttl := time.Duration(presignTTL) * time.Second
 	if ttl <= 0 {
 		ttl = 1 * time.Hour
 	}
 	r := &Registry{
-		store:      mstore,
-		storage:    s3store,
-		presignTTL: ttl,
+		store:               mstore,
+		storage:             s3store,
+		presignTTL:          ttl,
+		promptsetValidation: promptsetValidation,
 	}
 	if push > 0 {
 		r.pushSem = make(chan struct{}, push)
@@ -324,6 +343,9 @@ func (r *Registry) findExistingSource(ctx context.Context, data *model.SourceDat
 }
 
 func (r *Registry) PushDecomposition(ctx context.Context, sourceID string, decomp *model.DecompositionPackage) (*model.PushResult, error) {
+	if r.promptsetValidation && decomp.PromptsetHash == "" {
+		return nil, ErrPromptsetHashRequired
+	}
 	if err := acquire(ctx, r.pushSem); err != nil {
 		return nil, fmt.Errorf("waiting for push concurrency slot: %w", err)
 	}
@@ -408,6 +430,7 @@ func (r *Registry) PushDecomposition(ctx context.Context, sourceID string, decom
 		EmbeddingModel: embModel,
 		EmbeddingDims:  embDims,
 		S3Key:          s3Key,
+		PromptsetHash:  decomp.PromptsetHash,
 		CreatedAt:      now,
 	}
 	if err := r.store.IndexDecomposition(ctx, meta); err != nil {
@@ -462,6 +485,7 @@ func (r *Registry) PullSource(ctx context.Context, sourceID string) (*model.Sour
 				FactCount:      d.FactCount,
 				HasEmbeddings:  d.HasEmbeddings,
 				EmbeddingModel: d.EmbeddingModel,
+				PromptsetHash:  d.PromptsetHash,
 			}
 			if d.S3Key != "" {
 				if pu, err := r.storage.PresignedURL(ctx, d.S3Key, r.presignTTL); err == nil {

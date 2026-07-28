@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -22,8 +23,8 @@ func NewSourceHandler(svc *service.Registry) *SourceHandler {
 
 func (h *SourceHandler) Search(w http.ResponseWriter, r *http.Request) {
 	q := model.SearchQuery{
-		URL:   r.URL.Query().Get("url"),
-		DOI:   r.URL.Query().Get("doi"),
+		URL:    r.URL.Query().Get("url"),
+		DOI:    r.URL.Query().Get("doi"),
 		SHA256: r.URL.Query().Get("sha256"),
 	}
 	if q.URL == "" && q.DOI == "" && q.SHA256 == "" {
@@ -67,6 +68,10 @@ func (h *SourceHandler) PushDecomposition(w http.ResponseWriter, r *http.Request
 	}
 	result, err := h.svc.PushDecomposition(r.Context(), sourceID, &decomp)
 	if err != nil {
+		if errors.Is(err, service.ErrPromptsetHashRequired) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

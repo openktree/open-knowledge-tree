@@ -23,6 +23,30 @@ type Config struct {
 	// requests beyond the cap instead of OOM-killing the VM.
 	// 0 = unbounded (legacy behavior, not recommended).
 	Concurrency ConcurrencyConfig `mapstructure:"concurrency"`
+	// Promptset governs registry-side enforcement of the
+	// promptset_hash tag on pushed decompositions. When validation
+	// is enabled, a PushDecomposition with an empty promptset_hash
+	// is rejected with 400 — the forcing function that guarantees
+	// every decomposition on the registry carries a real
+	// philosophy hash so pullers can filter by accepted promptset.
+	// Default false: existing registries keep the legacy
+	// accept-and-store-as-NULL behavior until an operator opts in.
+	Promptset PromptsetConfig `mapstructure:"promptset"`
+}
+
+// PromptsetConfig configures registry-side promptset_hash
+// enforcement. The hash itself is produced by the contributing OKT
+// backend (promptset.RegistryHashPromptset over the 4 shared
+// phases); the registry only validates and indexes it.
+type PromptsetConfig struct {
+	// EnableValidation rejects PushDecomposition calls that omit
+	// promptset_hash (400 Bad Request). Default false. Enabling
+	// this requires every contributing OKT backend to have a
+	// configured promptset resolver (the default built-in promptset
+	// counts). Pre-existing decomposition rows with NULL
+	// promptset_hash stay pullable: the pull-side filter treats an
+	// empty hash as always-accepted (legacy behavior).
+	EnableValidation bool `mapstructure:"enable_validation"`
 }
 
 type ConcurrencyConfig struct {
@@ -31,10 +55,10 @@ type ConcurrencyConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret      string        `mapstructure:"jwt_secret"`
-	TokenTTL       time.Duration `mapstructure:"token_ttl"`
-	AuthMode       string        `mapstructure:"auth_mode"` // "open" | "read-open" | "closed"
-	BootstrapAdmins []string     `mapstructure:"bootstrap_admins"`
+	JWTSecret       string        `mapstructure:"jwt_secret"`
+	TokenTTL        time.Duration `mapstructure:"token_ttl"`
+	AuthMode        string        `mapstructure:"auth_mode"` // "open" | "read-open" | "closed"
+	BootstrapAdmins []string      `mapstructure:"bootstrap_admins"`
 }
 
 type DatabaseConfig struct {
@@ -80,6 +104,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("auth.auth_mode", "open")
 	v.SetDefault("concurrency.push", 8)
 	v.SetDefault("concurrency.pull", 8)
+	v.SetDefault("promptset.enable_validation", false)
 
 	v.SetEnvPrefix("REGISTRY")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

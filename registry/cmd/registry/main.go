@@ -17,12 +17,12 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	knowledgeregistry "github.com/openktree/knowledge-registry"
 	"github.com/openktree/knowledge-registry/internal/api"
 	"github.com/openktree/knowledge-registry/internal/config"
 	"github.com/openktree/knowledge-registry/internal/service"
 	"github.com/openktree/knowledge-registry/internal/storage"
 	"github.com/openktree/knowledge-registry/internal/store"
-	knowledgeregistry "github.com/openktree/knowledge-registry"
 )
 
 func main() {
@@ -71,7 +71,7 @@ func main() {
 			Endpoint:       cfg.S3.Endpoint,
 			Region:         cfg.S3.Region,
 			Bucket:         cfg.S3.Bucket,
-			AccessKey:       cfg.S3.AccessKey,
+			AccessKey:      cfg.S3.AccessKey,
 			SecretKey:      cfg.S3.SecretKey,
 			PathStyle:      cfg.S3.PathStyle,
 			PresignTTL:     cfg.S3.PresignTTL,
@@ -84,7 +84,7 @@ func main() {
 		log.Fatalf("unknown storage backend: %s", cfg.Storage.Backend)
 	}
 
-	svc := service.New(mstore, fstore, cfg.S3.PresignTTL, cfg.Concurrency.Push, cfg.Concurrency.Pull)
+	svc := service.New(mstore, fstore, cfg.S3.PresignTTL, cfg.Concurrency.Push, cfg.Concurrency.Pull, cfg.Promptset.EnableValidation)
 	router := api.NewRouter(svc, mstore, cfg)
 
 	if err := svc.EnsureDefaultRepo(context.Background()); err != nil {
@@ -109,6 +109,11 @@ func main() {
 	}
 	log.Printf("  auth mode: %s", cfg.Auth.AuthMode)
 	log.Printf("  concurrency: push=%d, pull=%d", cfg.Concurrency.Push, cfg.Concurrency.Pull)
+	if cfg.Promptset.EnableValidation {
+		log.Printf("  promptset: validation enabled (pushes without promptset_hash rejected with 400)")
+	} else {
+		log.Printf("  promptset: validation disabled (empty promptset_hash accepted; legacy behavior)")
+	}
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
@@ -128,8 +133,8 @@ func main() {
 		// the pushSem bounds concurrency, and storage timeouts
 		// bound the S3 leg. This mirrors ReadTimeout=0 (the body
 		// upload has no server-level read deadline either).
-		WriteTimeout:      0,
-		IdleTimeout:       60 * time.Second,
+		WriteTimeout: 0,
+		IdleTimeout:  60 * time.Second,
 		// MaxHeaderBytes: the default 1 MB is tight for the graph
 		// push path, which carries indexing metadata in X-Graph-*
 		// headers (name, description, tags, counts). A pathological
