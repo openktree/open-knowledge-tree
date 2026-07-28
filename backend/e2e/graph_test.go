@@ -84,7 +84,7 @@ func TestGraph_ExportRequiresPermission(t *testing.T) {
 // attachment. An empty repo's bundle is valid (zero sources), so this
 // test doesn't need to seed any data — it asserts the response is
 // application/gzip with a Content-Disposition attachment filename, and
-// that the body gunzips to valid JSON with schema_version=1. No
+// that the body gunzips to valid JSON with schema_version=2. No
 // registry configuration is needed (the download path is registry-free).
 func TestGraph_DownloadStream(t *testing.T) {
 	env := testutil.NewTestEnv(t)
@@ -103,7 +103,7 @@ func TestGraph_DownloadStream(t *testing.T) {
 	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment; filename=\"") || !strings.HasSuffix(cd, ".json.gz\"") {
 		t.Errorf("download: expected Content-Disposition attachment filename ending .json.gz, got %q", cd)
 	}
-	// Gunzip + verify the bundle is valid JSON with schema_version=1.
+	// Gunzip + verify the bundle is valid JSON with schema_version=2.
 	gz, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("download: body is not valid gzip: %v", err)
@@ -126,8 +126,8 @@ func TestGraph_DownloadStream(t *testing.T) {
 	if err := json.Unmarshal(jsonBytes, &bundle); err != nil {
 		t.Fatalf("download: bundle is not valid JSON: %v", err)
 	}
-	if bundle.SchemaVersion != 1 {
-		t.Errorf("download: expected schema_version 1, got %d", bundle.SchemaVersion)
+	if bundle.SchemaVersion != 2 {
+		t.Errorf("download: expected schema_version 2, got %d", bundle.SchemaVersion)
 	}
 	if bundle.Metadata.Name != "GraphDownload" {
 		t.Errorf("download: expected metadata.name \"GraphDownload\", got %q", bundle.Metadata.Name)
@@ -201,8 +201,8 @@ func TestGraph_DownloadIncludeImagesFalse(t *testing.T) {
 	if err := json.Unmarshal(jsonBytes, &bundle); err != nil {
 		t.Fatalf("download: bundle is not valid JSON: %v", err)
 	}
-	if bundle.SchemaVersion != 1 {
-		t.Errorf("download: expected schema_version 1, got %d", bundle.SchemaVersion)
+	if bundle.SchemaVersion != 2 {
+		t.Errorf("download: expected schema_version 2, got %d", bundle.SchemaVersion)
 	}
 	if bundle.Images != nil {
 		t.Errorf("download: expected no images map (include_images=false + no storage), got %v", bundle.Images)
