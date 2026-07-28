@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.6.0...api-v0.7.0) (2026-07-28)
+
+
+### Features
+
+* **api:** streaming graph importer + bundle schema v2 ([2882c3c](https://github.com/openktree/open-knowledge-tree/commit/2882c3c65aa63faa7c141c66088a01b32573bf52))
+
+
+### Bug Fixes
+
+* **e2e:** update graph download tests for bundle schema v2 ([6726eac](https://github.com/openktree/open-knowledge-tree/commit/6726eac12ab2d3000d90781d068ebe5f865a729c))
+
 ## [0.6.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.3...api-v0.6.0) (2026-07-28)
 
 
