@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.5.0...frontend-v0.5.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **api,frontend:** drop SHA-256 two-pass export, single-pass build ([4aa6936](https://github.com/openktree/open-knowledge-tree/commit/4aa6936418ac6d13a4e9ac378cf089fa50bde14f))
+
 ## [0.5.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.4.0...frontend-v0.5.0) (2026-07-28)
 
 
