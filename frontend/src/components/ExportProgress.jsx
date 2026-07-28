@@ -5,8 +5,7 @@ import Badge from "./Badge";
 const POLL_INTERVAL = 10000;
 
 const EXPORT_PHASES = [
-  { key: "pass1_hashing", label: "Pass 1: Hashing", icon: "#" },
-  { key: "pass2_writing", label: "Pass 2: Writing", icon: "W" },
+  { key: "building", label: "Building Bundle", icon: "B" },
   { key: "pushing", label: "Pushing to Registry", icon: "↑" },
   { key: "completed", label: "Completed", icon: "✓" },
 ];

@@ -3,7 +3,6 @@ package tasks
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"time"
@@ -144,20 +143,15 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	}
 	queries := store.New(pool.Pool)
 
-	// Build the bundle in streaming mode: two passes through
-	// StreamBuild so the metadata.sha256 (the registry's dedup key)
-	// is populated in the pushed bytes without materializing the
-	// whole ~11 GB bundle in memory.
-	//
-	// Pass 1: stream to io.Discard with shaOverride="" — computes the
-	// canonical sha (over the bytes with embeddings/images/bodies
-	// zeroed, matching marshalCanonical) and returns it in
-	// stats.SHA256. No temp file written.
-	//
-	// Pass 2: stream to a temp file with shaOverride=stats.SHA256 —
-	// writes the dedup-correct bundle (metadata.sha256 populated) to
-	// disk, then push the temp file straight to the registry via
-	// PushGraphStream (no []byte buffering).
+	// Build the bundle in a single streaming pass: stream every entity
+	// from the DB/Qdrant/storage to a gzipped temp file, then push the
+	// temp file to the registry. No SHA-256 dedup pass — graph pushes
+	// are infrequent and the registry treats empty sha256 as "always
+	// create new graph" (findExistingGraph returns nil). This halves
+	// the export time vs the previous two-pass design (pass 1 hashed
+	// to io.Discard, pass 2 wrote the real file with the hash in
+	// metadata — 2x the DB reads + gzip CPU for a dedup that almost
+	// never matched).
 	builder := graph.NewBundleBuilder(queries, w.qdrant, w.storageBackend, repoID, w.embeddingModel, w.embeddingDims, args.IncludeBodies, args.IncludeImages)
 	meta := graph.BundleMetadata{
 		Name:        args.Name,
@@ -166,24 +160,15 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		Tags:        args.Tags,
 	}
 
-	// Pass 1: hash-only.
-	pass1Stats, err := builder.StreamBuild(ctx, meta, io.Discard, "")
-	if err != nil {
-		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
-		return fmt.Errorf("export_graph: streaming bundle (pass 1 hash): %w", err)
-	}
-
 	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
-		Phase:        "pass2_writing",
-		StartedAt:    now,
-		SourceCount:  pass1Stats.SourceCount,
-		FactCount:    pass1Stats.FactCount,
-		ConceptCount: pass1Stats.ConceptCount,
+		Phase:     "building",
+		StartedAt: now,
 	})
 
-	// Pass 2: stream to a temp file with the real sha in metadata.
+	// Single pass: stream to a temp file.
 	tmp, err := os.CreateTemp(w.tempDir, "okt-export-*.json.gz")
 	if err != nil {
+		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: creating temp file: %w", err)
 	}
 	tmpName := tmp.Name()
@@ -191,10 +176,10 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 	}()
-	pass2Stats, err := builder.StreamBuild(ctx, meta, tmp, pass1Stats.SHA256)
+	stats, err := builder.StreamBuild(ctx, meta, tmp, "")
 	if err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
-		return fmt.Errorf("export_graph: streaming bundle (pass 2 write): %w", err)
+		return fmt.Errorf("export_graph: streaming bundle: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
@@ -216,9 +201,9 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
 		Phase:        "pushing",
 		StartedAt:    now,
-		SourceCount:  pass2Stats.SourceCount,
-		FactCount:    pass2Stats.FactCount,
-		ConceptCount: pass2Stats.ConceptCount,
+		SourceCount:  stats.SourceCount,
+		FactCount:    stats.FactCount,
+		ConceptCount: stats.ConceptCount,
 		BundleBytes:  info.Size(),
 	})
 
@@ -231,10 +216,9 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		Name:          args.Name,
 		Description:   args.Description,
 		Tags:          args.Tags,
-		SourceCount:   pass2Stats.SourceCount,
-		FactCount:     pass2Stats.FactCount,
-		ConceptCount:  pass2Stats.ConceptCount,
-		SHA256:        pass2Stats.SHA256,
+		SourceCount:   stats.SourceCount,
+		FactCount:     stats.FactCount,
+		ConceptCount:  stats.ConceptCount,
 		SchemaVersion: graph.SchemaVersion,
 	}
 	result, err := client.PushGraphStream(ctx, pushMeta, tmpRead, info.Size())
@@ -245,15 +229,15 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 
 	log.Printf("export_graph: repo %s pushed graph %s (sources=%d facts=%d concepts=%d bytes=%d)",
 		args.RepositoryID, result.GraphID,
-		pass2Stats.SourceCount, pass2Stats.FactCount, pass2Stats.ConceptCount,
+		stats.SourceCount, stats.FactCount, stats.ConceptCount,
 		info.Size())
 
 	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
 		Phase:        "completed",
 		StartedAt:    now,
-		SourceCount:  pass2Stats.SourceCount,
-		FactCount:    pass2Stats.FactCount,
-		ConceptCount: pass2Stats.ConceptCount,
+		SourceCount:  stats.SourceCount,
+		FactCount:    stats.FactCount,
+		ConceptCount: stats.ConceptCount,
 		BundleBytes:  info.Size(),
 		GraphID:      result.GraphID,
 	})
@@ -261,9 +245,9 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 	return river.RecordOutput(ctx, &ExportGraphResult{
 		RepositoryID: args.RepositoryID,
 		GraphID:      result.GraphID,
-		SourceCount:  pass2Stats.SourceCount,
-		FactCount:    pass2Stats.FactCount,
-		ConceptCount: pass2Stats.ConceptCount,
+		SourceCount:  stats.SourceCount,
+		FactCount:    stats.FactCount,
+		ConceptCount: stats.ConceptCount,
 		Bytes:        int(info.Size()),
 	})
 }
