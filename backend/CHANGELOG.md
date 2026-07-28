@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.2...api-v0.5.3) (2026-07-28)
+
+
+### Bug Fixes
+
+* **api:** remove registry client 5m timeout that killed multi-GB graph pushes ([b25593f](https://github.com/openktree/open-knowledge-tree/commit/b25593ffeb1c761c31ecc8ff7b3ed24ef6c54a5b))
+
 ## [0.5.2](https://github.com/openktree/open-knowledge-tree/compare/api-v0.5.1...api-v0.5.2) (2026-07-28)
 
 
