@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.7.0...api-v0.7.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **api,frontend:** drop SHA-256 two-pass export, single-pass build ([4aa6936](https://github.com/openktree/open-knowledge-tree/commit/4aa6936418ac6d13a4e9ac378cf089fa50bde14f))
+
 ## [0.7.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.6.0...api-v0.7.0) (2026-07-28)
 
 
