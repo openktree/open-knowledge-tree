@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.7](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.6...registry-v0.5.7) (2026-07-28)
+
+
+### Bug Fixes
+
+* **registry:** backfill promptset_hash column on legacy SQLite volumes ([e66c1de](https://github.com/openktree/open-knowledge-tree/commit/e66c1deee39a3c67ef7afbc93cd6c7d2a8c3839a))
+
 ## [0.5.6](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.5...registry-v0.5.6) (2026-07-28)
 
 
