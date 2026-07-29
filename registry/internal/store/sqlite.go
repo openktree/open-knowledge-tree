@@ -572,7 +572,10 @@ func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("beginning tx: %w", err)
 	}
-	defer tx.Rollback()
+	// Best-effort rollback: if Commit succeeded, Rollback
+	// returns ErrTxClosed which we deliberately ignore — the
+	// idiom mirrors BatchUpsertFactHashes above.
+	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM sources WHERE id = ?`, id)
 	if err != nil {

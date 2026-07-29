@@ -363,7 +363,9 @@ func (s *PostgresStore) DeleteSource(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("beginning tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	// Best-effort rollback: if Commit succeeded, Rollback
+	// returns ErrTxClosed which we deliberately ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	ct, err := tx.Exec(ctx, `DELETE FROM sources WHERE id = $1`, id)
 	if err != nil {

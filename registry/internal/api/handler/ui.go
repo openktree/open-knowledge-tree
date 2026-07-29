@@ -59,10 +59,10 @@ type pageData struct {
 	Tokens   interface{}
 	Users    interface{}
 	// Browser pages (sources/graphs/users/tokens) populate these.
-	Sources       interface{}
-	SourcesTotal  int
-	Graphs        interface{}
-	GraphsTotal   int
+	Sources      interface{}
+	SourcesTotal int
+	Graphs       interface{}
+	GraphsTotal  int
 	// Detail-page fields. SourceDetail / GraphDetail populate
 	// these; list pages leave them nil. The template asserts on
 	// the right shape (the SourceMeta / GraphMeta struct).
@@ -72,15 +72,15 @@ type pageData struct {
 	PresignedSrc string
 	// BackURL is rendered as a "← Back to ..." link at the top
 	// of detail pages. Defaults to the list page.
-	BackURL string
+	BackURL   string
 	BackLabel string
 	// Pagination state for the list pages. Limit/Offset are the
 	// values that were used to query the underlying store; Page
 	// is the 1-indexed page number for the rendered prev/next
 	// links. HasPrev / HasNext gate the link visibility.
-	Limit  int
-	Offset int
-	Page   int
+	Limit   int
+	Offset  int
+	Page    int
 	HasPrev bool
 	HasNext bool
 	// ActiveTab is the nav tab the template should render as
@@ -252,12 +252,12 @@ func UIAuthGuard(mw *auth.Middleware) func(http.Handler) http.Handler {
 // discard them. Used by UIAuthGuard to substitute a friendlier
 // response on 401 without leaking the original JSON body.
 type bufferedResponseWriter struct {
-	w        http.ResponseWriter
-	hdr      http.Header
-	body     []byte
-	status   int
-	written  bool
-	hdrSent  bool
+	w       http.ResponseWriter
+	hdr     http.Header
+	body    []byte
+	status  int
+	written bool
+	hdrSent bool
 }
 
 func newBufferedResponseWriter(w http.ResponseWriter) *bufferedResponseWriter {
