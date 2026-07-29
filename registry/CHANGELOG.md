@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.8](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.7...registry-v0.5.8) (2026-07-29)
+
+
+### Bug Fixes
+
+* **registry:** add admin endpoint to cleanup orphaned multipart uploads ([dca837e](https://github.com/openktree/open-knowledge-tree/commit/dca837ef3303874d65ef237d7490a6c59c56fd9f))
+
 ## [0.5.7](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.6...registry-v0.5.7) (2026-07-28)
 
 
