@@ -623,13 +623,60 @@ func (h *UIHandler) TokensPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		name := r.FormValue("name")
 		scope := r.FormValue("scope")
-		if name == "" || scope == "" {
-			d.Error = "Name and scope are required"
+		if name == "" {
+			d.Error = "Name is required"
 			h.render(w, "tokens.html", d)
 			return
 		}
-		th := NewTokenHandler(h.store, h.authCfg)
-		th.Create(w, r)
+		if scope == "" {
+			scope = "read"
+		}
+		if scope != "read" && scope != "write" && scope != "readwrite" {
+			d.Error = "Scope must be read, write, or readwrite"
+			h.render(w, "tokens.html", d)
+			return
+		}
+
+		rawToken, err := auth.GenerateAPIToken()
+		if err != nil {
+			d.Error = "Failed to generate token"
+			h.render(w, "tokens.html", d)
+			return
+		}
+
+		now := time.Now()
+		var expiresAt *time.Time
+		if v := r.FormValue("expires_in_days"); v != "" {
+			if days, perr := strconv.Atoi(v); perr == nil && days > 0 {
+				t := now.Add(time.Duration(days) * 24 * time.Hour)
+				expiresAt = &t
+			}
+		}
+
+		tok := &model.APIToken{
+			ID:        uuid.New().String(),
+			UserID:    userID,
+			Name:      name,
+			TokenHash: auth.HashToken(rawToken),
+			Scope:     scope,
+			ExpiresAt: expiresAt,
+			CreatedAt: now,
+		}
+		if err := h.store.CreateAPIToken(r.Context(), tok); err != nil {
+			d.Error = "Failed to create token"
+			h.render(w, "tokens.html", d)
+			return
+		}
+
+		// Re-render the page with the newly created token shown
+		// in a copyable box. The token is only ever shown once —
+		// the DB stores the hash, not the raw value.
+		d.NewToken = rawToken
+		// Refresh the token list so the new one appears.
+		tokens, _ := h.store.ListAPITokens(r.Context(), userID)
+		d.Tokens = tokens
+		d.SourcesTotal = len(tokens)
+		h.render(w, "tokens.html", d)
 		return
 	}
 
