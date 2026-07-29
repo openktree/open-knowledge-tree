@@ -62,12 +62,17 @@ func ParseToken(secret, tokenStr string) (*Claims, error) {
 	return claims, nil
 }
 
+// GenerateAPIToken returns a random opaque API token prefixed
+// with "okr_" (OKT Registry). The prefix lets users and tools
+// distinguish registry API tokens from OKT backend tokens
+// ("okt_") at a glance. The hash stored in the DB covers the
+// full string including the prefix.
 func GenerateAPIToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generating api token: %w", err)
 	}
-	return hex.EncodeToString(b), nil
+	return "okr_" + hex.EncodeToString(b), nil
 }
 
 func HashToken(token string) string {

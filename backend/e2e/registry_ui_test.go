@@ -776,46 +776,88 @@ func TestRegistryUI_CreateTokenViaForm(t *testing.T) {
 		t.Fatalf("build create-token request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// The handler writes JSON on success (the createTokenResponse
-	// shape), so don't follow a redirect — there isn't one.
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("create token: %v", err)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create token: expected 201, got %d, body %s", resp.StatusCode, string(body))
+
+	// The form POST now renders the tokens page (200) with the
+	// new token in a copyable box — it no longer returns raw
+	// JSON (201).
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create token: expected 200 (HTML page), got %d, body %s", resp.StatusCode, string(body))
 	}
-	var out struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-		Name  string `json:"name"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatalf("create token: decode response: %v (body %s)", err, string(body))
-	}
-	if out.Name != tokenName {
-		t.Errorf("create token: expected name %q, got %q", tokenName, out.Name)
-	}
-	if out.Token == "" {
-		t.Errorf("create token: expected non-empty token in response, got %s", string(body))
-	}
-	if out.ID == "" {
-		t.Errorf("create token: expected non-empty id, got %s", string(body))
+	page := string(body)
+
+	// The token value must be present in the page and must be
+	// prefixed with okr_ (OKT Registry token convention).
+	if !strings.Contains(page, "okr_") {
+		t.Errorf("create token: expected okr_ prefix in rendered token, body %s", page)
 	}
 
-	// The token should now appear in the user's /ui/tokens list.
-	listResp, err := client.Get(baseURL + "/ui/tokens")
+	// The copy button must be present.
+	if !strings.Contains(page, "Copy") {
+		t.Errorf("create token: expected Copy button in rendered page, body %s", page)
+	}
+
+	// The success message must be present.
+	if !strings.Contains(page, "Token created") {
+		t.Errorf("create token: expected success message, body %s", page)
+	}
+
+	// The token should now appear in the user's /ui/tokens list
+	// (the rendered page already includes the list, but check
+	// the name is there to confirm persistence).
+	if !strings.Contains(page, tokenName) {
+		t.Errorf("tokens list: expected %q in body, got %s", tokenName, page)
+	}
+
+	// Extract the okr_ token value from the page so the API
+	// auth test below can reuse it.
+	rawToken := extractOKRToken(t, page)
+	if rawToken == "" {
+		t.Fatalf("create token: could not extract okr_ token from page body")
+	}
+
+	// The extracted token must authenticate against the API
+	// surface — this is the regression check for the "API tokens
+	// can't authenticate" bug (the middleware never called
+	// GetAPITokenByHash).
+	apiResp, err := http.NewRequest("GET", baseURL+"/api/v1/sources?limit=1", nil)
 	if err != nil {
-		t.Fatalf("tokens list: %v", err)
+		t.Fatalf("build API request: %v", err)
 	}
-	listBody, _ := io.ReadAll(listResp.Body)
-	listResp.Body.Close()
-	if listResp.StatusCode != http.StatusOK {
-		t.Fatalf("tokens list: expected 200, got %d, body %s", listResp.StatusCode, string(listBody))
+	apiResp.Header.Set("Authorization", "Bearer "+rawToken)
+	apiResult, err := http.DefaultClient.Do(apiResp)
+	if err != nil {
+		t.Fatalf("API auth: %v", err)
 	}
-	if !strings.Contains(string(listBody), tokenName) {
-		t.Errorf("tokens list: expected %q in body, got %s", tokenName, string(listBody))
+	apiBody, _ := io.ReadAll(apiResult.Body)
+	apiResult.Body.Close()
+	if apiResult.StatusCode != http.StatusOK {
+		t.Errorf("API auth with okr_ token: expected 200, got %d, body %s", apiResult.StatusCode, string(apiBody))
 	}
+}
+
+// extractOKRToken finds the first okr_… token value in the
+// rendered HTML page. The template puts it inside a <code> tag
+// with id="new-token".
+func extractOKRToken(t *testing.T, page string) string {
+	t.Helper()
+	idx := strings.Index(page, "okr_")
+	if idx == -1 {
+		return ""
+	}
+	// Read until we hit a closing tag or whitespace.
+	end := idx + 4
+	for end < len(page) {
+		c := page[end]
+		if c == '<' || c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+			break
+		}
+		end++
+	}
+	return page[idx:end]
 }

@@ -1,10 +1,13 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/openktree/knowledge-registry/internal/config"
+	"github.com/openktree/knowledge-registry/internal/model"
 )
 
 var roleRank = map[string]int{
@@ -15,14 +18,34 @@ var roleRank = map[string]int{
 
 func RankRole(role string) int { return roleRank[role] }
 
+// TokenStore is the subset of store.MetadataStore the auth
+// middleware needs to resolve opaque API tokens. Keeping it
+// narrow avoids importing the full interface (and lets tests
+// stub just the two methods).
+type TokenStore interface {
+	GetAPITokenByHash(ctx context.Context, hash string) (*model.APIToken, error)
+	GetUserByID(ctx context.Context, id string) (*model.User, error)
+}
+
 type Middleware struct {
 	secret string
 	cfg    *config.AuthConfig
+	store  TokenStore
 }
 
+// NewMiddleware builds a middleware that only validates JWTs.
+// Use SetStore to also accept opaque API tokens (okr_…).
 func NewMiddleware(cfg *config.AuthConfig) *Middleware {
 	return &Middleware{secret: cfg.JWTSecret, cfg: cfg}
 }
+
+// SetStore enables API-token authentication. When set, a bearer
+// that fails JWT parsing is hashed and looked up in the
+// api_tokens table; if found (and not expired), the token's
+// user + role are placed on the request context just like a JWT
+// session. Without a store, the middleware is JWT-only (the
+// legacy behavior).
+func (m *Middleware) SetStore(s TokenStore) { m.store = s }
 
 // extractToken returns the bearer token from either the
 // Authorization header or the `token` cookie (the latter is set by
@@ -40,9 +63,39 @@ func extractToken(r *http.Request) string {
 	return ""
 }
 
+// resolveToken tries to authenticate the bearer as a JWT first,
+// then (if a store is configured) as an opaque API token. On
+// success it returns the userID + role to put on the context.
+// On failure it returns "" + "" so the caller can emit a 401.
+func (m *Middleware) resolveToken(ctx context.Context, tokenStr string) (userID, role string) {
+	// Fast path: JWT session token.
+	if claims, err := ParseToken(m.secret, tokenStr); err == nil {
+		return claims.UserID, claims.Role
+	}
+	// Fallback: opaque API token (okr_…). Hash it and look it
+	// up. If no store is configured, API tokens are simply not
+	// accepted (the JWT-only legacy behavior).
+	if m.store == nil {
+		return "", ""
+	}
+	tok, err := m.store.GetAPITokenByHash(ctx, HashToken(tokenStr))
+	if err != nil || tok == nil {
+		return "", ""
+	}
+	if tok.ExpiresAt != nil && time.Now().After(*tok.ExpiresAt) {
+		return "", ""
+	}
+	user, err := m.store.GetUserByID(ctx, tok.UserID)
+	if err != nil || user == nil {
+		return "", ""
+	}
+	return user.ID, user.Role
+}
+
 // AuthRequired extracts a JWT from the Authorization header (or the
 // `token` cookie for browser sessions) and puts the user ID and role
-// on the request context.
+// on the request context. Falls back to opaque API tokens (okr_…)
+// when a store is configured (see SetStore).
 func (m *Middleware) AuthRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tokenStr := extractToken(r)
@@ -50,12 +103,12 @@ func (m *Middleware) AuthRequired(next http.Handler) http.Handler {
 			http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
 			return
 		}
-		claims, err := ParseToken(m.secret, tokenStr)
-		if err != nil {
+		userID, role := m.resolveToken(r.Context(), tokenStr)
+		if userID == "" {
 			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 			return
 		}
-		r = r.WithContext(WithUser(r.Context(), claims.UserID, claims.Role))
+		r = r.WithContext(WithUser(r.Context(), userID, role))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -86,12 +139,12 @@ func (m *Middleware) OptionalAuth(next http.Handler) http.Handler {
 		hasToken := tokenStr != ""
 
 		if hasToken {
-			claims, err := ParseToken(m.secret, tokenStr)
-			if err != nil {
+			userID, role := m.resolveToken(r.Context(), tokenStr)
+			if userID == "" {
 				http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 				return
 			}
-			r = r.WithContext(WithUser(r.Context(), claims.UserID, claims.Role))
+			r = r.WithContext(WithUser(r.Context(), userID, role))
 			next.ServeHTTP(w, r)
 			return
 		}

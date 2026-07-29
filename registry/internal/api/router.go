@@ -28,6 +28,7 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 	graphH := handler.NewGraphHandler(svc)
 
 	authMW := auth.NewMiddleware(&cfg.Auth)
+	authMW.SetStore(mstore)
 	authH := handler.NewAuthHandler(mstore, &cfg.Auth)
 	tokenH := handler.NewTokenHandler(mstore, &cfg.Auth)
 	adminH := handler.NewAdminHandler(mstore)

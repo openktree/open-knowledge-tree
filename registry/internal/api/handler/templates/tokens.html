@@ -16,7 +16,17 @@
         {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
         {{if .NewToken}}
             <div class="success">Token created! Copy it now — it won't be shown again.</div>
-            <div class="card" style="background:#f0f0f0;word-break:break-all;font-family:monospace;padding:.75rem">{{.NewToken}}</div>
+            <div class="card" style="background:#f0f0f0;padding:.75rem">
+                <div class="flex" style="align-items:flex-start;gap:.5rem">
+                    <code style="word-break:break-all;flex:1;font-size:.85rem" id="new-token">{{.NewToken}}</code>
+                    <button type="button" class="btn-sm" onclick="
+                        var t=document.getElementById('new-token').textContent;
+                        navigator.clipboard.writeText(t).then(function(){
+                            var b=this;b.textContent='Copied!';setTimeout(function(){b.textContent='Copy'},2000)
+                        }.bind(this));
+                    ">Copy</button>
+                </div>
+            </div>
         {{end}}
         <form method="POST" action="/ui/tokens">
             <label for="name">Name</label>
