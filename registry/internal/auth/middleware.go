@@ -67,11 +67,42 @@ func extractToken(r *http.Request) string {
 // then (if a store is configured) as an opaque API token. On
 // success it returns the userID + role to put on the context.
 // On failure it returns "" + "" so the caller can emit a 401.
+//
+// Role is ALWAYS read from the DB (not the JWT claim) when a
+// store is configured. This keeps role changes made via /ui/users
+// effective immediately — without it, a user promoted to admin
+// would have to log out + log back in before the admin-only
+// UI (delete buttons, role forms) appears, because their JWT
+// still carried the old role snapshot.
 func (m *Middleware) resolveToken(ctx context.Context, tokenStr string) (userID, role string) {
-	// Fast path: JWT session token.
+	// Fast path: JWT session token. We parse the JWT to get the
+	// userID, but discard the role claim if a store is available
+	// (the DB is the source of truth for the current role).
+	var jwtUserID, jwtRole string
 	if claims, err := ParseToken(m.secret, tokenStr); err == nil {
-		return claims.UserID, claims.Role
+		jwtUserID, jwtRole = claims.UserID, claims.Role
+	} else if m.store == nil {
+		// No store → can't fall back to API tokens either.
+		return "", ""
 	}
+
+	if jwtUserID != "" && m.store != nil {
+		// JWT authenticated; re-fetch the current role from the
+		// DB so role changes take effect without a re-login.
+		user, err := m.store.GetUserByID(ctx, jwtUserID)
+		if err != nil || user == nil {
+			return "", ""
+		}
+		return user.ID, user.Role
+	}
+
+	if jwtUserID != "" {
+		// JWT authenticated but no store is configured — trust
+		// the role baked into the token (legacy behavior, e.g.
+		// unit tests that don't inject a store).
+		return jwtUserID, jwtRole
+	}
+
 	// Fallback: opaque API token (okr_…). Hash it and look it
 	// up. If no store is configured, API tokens are simply not
 	// accepted (the JWT-only legacy behavior).
