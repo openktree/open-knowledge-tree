@@ -136,6 +136,15 @@ func migrateSQLite(db *sql.DB) error {
 
 		CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
 
+		CREATE TABLE IF NOT EXISTS email_verifications (
+			user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			token_hash  TEXT NOT NULL,
+			expires_at  TEXT NOT NULL,
+			created_at  TEXT NOT NULL
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_email_verifications_expires ON email_verifications(expires_at);
+
 		CREATE TABLE IF NOT EXISTS graphs (
 			id             TEXT PRIMARY KEY,
 			name           TEXT NOT NULL,
@@ -172,7 +181,22 @@ func migrateSQLite(db *sql.DB) error {
 	// Now that promptset_hash exists on both fresh and legacy DBs,
 	// create the index that references it (idempotent).
 	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_decompositions_promptset ON decompositions(promptset_hash)`)
-	return err
+	if err != nil {
+		return err
+	}
+	// email_verified (migration 0004): added to users the same way
+	// promptset_hash was added to decompositions — CREATE TABLE IF
+	// NOT EXISTS only covers fresh DBs, so an existing registry
+	// volume (e.g. the dev Fly.io persistent /data) needs the
+	// ALTER. NOT NULL DEFAULT 0 (SQLite's BOOLEAN is an INTEGER
+	// alias); existing rows backfill to 0 (unverified), which is
+	// the safe default — an operator who flips
+	// email_validation.enable_validation on after the fact is
+	// expected to mark trusted users verified manually.
+	if err := ensureColumn(db, "users", "email_verified", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ensureColumn adds `col` to `table` with the given SQL type when the
@@ -903,23 +927,24 @@ func btoi(b bool) int {
 
 func (s *SQLiteStore) CreateUser(ctx context.Context, user *model.User) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (id, email, password_hash, display_name, role, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO users (id, email, password_hash, display_name, role, email_verified, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.ID, user.Email, user.PasswordHash, user.DisplayName, user.Role,
+		boolToInt(user.EmailVerified),
 		user.CreatedAt.UTC().Format(time.RFC3339), user.UpdatedAt.UTC().Format(time.RFC3339))
 	return err
 }
 
 func (s *SQLiteStore) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
+		`SELECT id, email, password_hash, display_name, role, email_verified, created_at, updated_at
 		 FROM users WHERE email = ?`, email)
 	return scanUser(row)
 }
 
 func (s *SQLiteStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
+		`SELECT id, email, password_hash, display_name, role, email_verified, created_at, updated_at
 		 FROM users WHERE id = ?`, id)
 	return scanUser(row)
 }
@@ -933,7 +958,7 @@ func (s *SQLiteStore) UpdateUserRole(ctx context.Context, id, role string) error
 
 func (s *SQLiteStore) ListUsers(ctx context.Context) ([]model.User, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
+		`SELECT id, email, password_hash, display_name, role, email_verified, created_at, updated_at
 		 FROM users ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1002,15 +1027,73 @@ func (s *SQLiteStore) RevokeAPIToken(ctx context.Context, id, userID string) err
 
 func scanUser(row interface{ Scan(...any) error }) (*model.User, error) {
 	var id, email, hash, displayName, role, ca, ua string
-	if err := row.Scan(&id, &email, &hash, &displayName, &role, &ca, &ua); err != nil {
+	var emailVerified int
+	if err := row.Scan(&id, &email, &hash, &displayName, &role, &emailVerified, &ca, &ua); err != nil {
 		return nil, err
 	}
 	createdAt, _ := time.Parse(time.RFC3339, ca)
 	updatedAt, _ := time.Parse(time.RFC3339, ua)
 	return &model.User{
 		ID: id, Email: email, PasswordHash: hash, DisplayName: displayName,
-		Role: role, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		Role: role, EmailVerified: emailVerified != 0,
+		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}, nil
+}
+
+// boolToInt maps a bool to SQLite's INTEGER boolean encoding (0/1).
+// SQLite has no native BOOLEAN type; the email_verified column is
+// INTEGER NOT NULL DEFAULT 0.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ── Email verification tokens ───────────────────────────────────────
+
+func (s *SQLiteStore) CreateEmailVerification(ctx context.Context, v *model.EmailVerification) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO email_verifications (user_id, token_hash, expires_at, created_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   token_hash = excluded.token_hash,
+		   expires_at = excluded.expires_at,
+		   created_at = excluded.created_at`,
+		v.UserID, v.TokenHash,
+		v.ExpiresAt.UTC().Format(time.RFC3339),
+		v.CreatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *SQLiteStore) GetEmailVerificationByHash(ctx context.Context, hash string) (*model.EmailVerification, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT user_id, token_hash, expires_at, created_at
+		 FROM email_verifications WHERE token_hash = ?`, hash)
+	var userID, tokenHash, exp, ca string
+	if err := row.Scan(&userID, &tokenHash, &exp, &ca); err != nil {
+		return nil, err
+	}
+	expiresAt, _ := time.Parse(time.RFC3339, exp)
+	createdAt, _ := time.Parse(time.RFC3339, ca)
+	return &model.EmailVerification{
+		UserID:    userID,
+		TokenHash: tokenHash,
+		ExpiresAt: expiresAt,
+		CreatedAt: createdAt,
+	}, nil
+}
+
+func (s *SQLiteStore) DeleteEmailVerification(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM email_verifications WHERE user_id = ?`, userID)
+	return err
+}
+
+func (s *SQLiteStore) MarkEmailVerified(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), userID)
+	return err
 }
 
 func scanAPIToken(row interface{ Scan(...any) error }) (*model.APIToken, error) {

@@ -156,6 +156,21 @@ services:
       REGISTRY_S3_PATH_STYLE: "true"
       REGISTRY_S3_PRESIGN_TTL: "900"
       REGISTRY_S3_PRESIGN_BASE_URL: "http://minio:9000"
+      # Email validation (account verify-before-login). Uses
+      # Resend (https://resend.com) as the SMTP relay when
+      # RESEND_API is set in .env; falls back to NoopMailer
+      # (logs verification URLs to stdout) when empty so the dev
+      # stack boots without an email provider. public_base_url
+      # points at the local port so the verification link works
+      # when testing via localhost:8081.
+      REGISTRY_EMAIL_VALIDATION_ENABLE_VALIDATION: "true"
+      REGISTRY_EMAIL_VALIDATION_FROM_ADDRESS: "no-reply@openktree.com"
+      REGISTRY_EMAIL_VALIDATION_PUBLIC_BASE_URL: "http://localhost:8081"
+      REGISTRY_EMAIL_VALIDATION_SMTP_HOST: "smtp.resend.com"
+      REGISTRY_EMAIL_VALIDATION_SMTP_PORT: "587"
+      REGISTRY_EMAIL_VALIDATION_SMTP_USERNAME: "resend"
+      REGISTRY_EMAIL_VALIDATION_SMTP_PASSWORD: ${RESEND_API:-}
+      REGISTRY_EMAIL_VALIDATION_SMTP_TLS: "true"
     ports:
       - "8081:8081"
     volumes:

@@ -114,6 +114,16 @@ func main() {
 	} else {
 		log.Printf("  promptset: validation disabled (empty promptset_hash accepted; legacy behavior)")
 	}
+	if cfg.EmailValidation.EnableValidation {
+		log.Printf("  email validation: enabled (from=%s, ttl=%s, public_base_url=%s, smtp=%s:%d)",
+			cfg.EmailValidation.FromAddress, cfg.EmailValidation.TokenTTL, cfg.EmailValidation.PublicBaseURL,
+			cfg.EmailValidation.SMTP.Host, cfg.EmailValidation.SMTP.Port)
+		if cfg.EmailValidation.SMTP.Host == "" {
+			log.Printf("    mailer: noop (logs verification URLs to stdout; set email_validation.smtp.host to send real mail)")
+		}
+	} else {
+		log.Printf("  email validation: disabled (register issues immediate JWT; legacy behavior)")
+	}
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

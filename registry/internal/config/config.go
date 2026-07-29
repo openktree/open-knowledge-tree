@@ -32,6 +32,59 @@ type Config struct {
 	// Default false: existing registries keep the legacy
 	// accept-and-store-as-NULL behavior until an operator opts in.
 	Promptset PromptsetConfig `mapstructure:"promptset"`
+	// EmailValidation governs account email validation. When
+	// enabled, Register issues a verification token (stored hashed
+	// in email_verifications) and emails a link instead of an
+	// immediate JWT; Login refuses unverified accounts. Off by
+	// default so existing registries keep the legacy auto-login
+	// behavior. Mirrors the Promptset opt-in toggle shape.
+	EmailValidation EmailValidationConfig `mapstructure:"email_validation"`
+}
+
+// EmailValidationConfig configures account email validation. KISS:
+// one toggle, one SMTP block, one TTL. When EnableValidation is
+// false (the default) Register/Login keep their legacy behavior
+// (immediate JWT, no verification step) and the email_verifications
+// table is simply unused. When true, Register mints a random
+// token (auth.GenerateAPIToken) + hashes it (auth.HashToken),
+// stores the hash, and emails a link to <PublicBaseURL>/ui/verify-email?token=…;
+// the user must click before Login accepts them.
+type EmailValidationConfig struct {
+	// EnableValidation turns on the verify-before-login flow.
+	// Default false. Mirrors promptset.enable_validation.
+	EnableValidation bool `mapstructure:"enable_validation"`
+	// FromAddress is the envelope sender used in the verification
+	// email. Optional; defaults to "no-reply@localhost" (fine for
+	// dev; operators set a real address in production).
+	FromAddress string `mapstructure:"from_address"`
+	// PublicBaseURL is the base the verification link is built
+	// against (e.g. "https://registry.example.com"). Required
+	// when EnableValidation is true so the link resolves to a
+	// real route. Trailing slash is trimmed.
+	PublicBaseURL string `mapstructure:"public_base_url"`
+	// TokenTTL is how long a verification token lives. Default 24h.
+	TokenTTL time.Duration `mapstructure:"token_ttl"`
+	// ResendCooldown bounds how fast a user can request a new
+	// verification email via /api/v1/auth/resend-verification.
+	// Default 60s. The handler looks at the most recent
+	// email_verifications row's created_at; a request within the
+	// cooldown is a no-op (still returns 200, no email sent).
+	ResendCooldown time.Duration `mapstructure:"resend_cooldown"`
+	// SMTP is the outbound mail config. When Host is empty the
+	// mailer falls back to NoopMailer (logs the verification URL
+	// to stdout instead of sending) — the dev path so a local
+	// registry boots without an SMTP server.
+	SMTP SMTPConfig `mapstructure:"smtp"`
+}
+
+// SMTPConfig is the outbound SMTP envelope. Stdlib net/smtp only;
+// no third-party mailer dependency, no SES/SendGrid adapter (KISS).
+type SMTPConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+	TLS      bool   `mapstructure:"tls"`
 }
 
 // PromptsetConfig configures registry-side promptset_hash
@@ -105,6 +158,22 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("concurrency.push", 8)
 	v.SetDefault("concurrency.pull", 8)
 	v.SetDefault("promptset.enable_validation", false)
+
+	// Email validation defaults: disabled (legacy auto-login), a
+	// 24h token TTL, a 60s resend cooldown, and an empty SMTP
+	// host (NoopMailer fallback so dev boots without a mail
+	// server). Operators opt in via REGISTRY_EMAIL_VALIDATION_ENABLE_VALIDATION=true
+	// and friends.
+	v.SetDefault("email_validation.enable_validation", false)
+	v.SetDefault("email_validation.from_address", "no-reply@localhost")
+	v.SetDefault("email_validation.public_base_url", "")
+	v.SetDefault("email_validation.token_ttl", "24h")
+	v.SetDefault("email_validation.resend_cooldown", "60s")
+	v.SetDefault("email_validation.smtp.host", "")
+	v.SetDefault("email_validation.smtp.port", 587)
+	v.SetDefault("email_validation.smtp.username", "")
+	v.SetDefault("email_validation.smtp.password", "")
+	v.SetDefault("email_validation.smtp.tls", false)
 
 	v.SetEnvPrefix("REGISTRY")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

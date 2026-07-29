@@ -98,6 +98,20 @@ type MetadataStore interface {
 	GetUserByID(ctx context.Context, id string) (*model.User, error)
 	UpdateUserRole(ctx context.Context, id, role string) error
 	ListUsers(ctx context.Context) ([]model.User, error)
+	// MarkEmailVerified sets users.email_verified = true for the
+	// given user id. Called by the VerifyEmail handler after a
+	// valid token. No-op (still returns nil) when the user is
+	// already verified.
+	MarkEmailVerified(ctx context.Context, userID string) error
+
+	// Email verification tokens. One row per user (PK = user_id);
+	// CreateEmailVerification is an upsert that replaces any prior
+	// un-used token. TokenHash is the sha256-hex of the raw token
+	// the user receives (auth.HashToken); the DB never stores the
+	// raw token, mirroring api_tokens.token_hash.
+	CreateEmailVerification(ctx context.Context, v *model.EmailVerification) error
+	GetEmailVerificationByHash(ctx context.Context, hash string) (*model.EmailVerification, error)
+	DeleteEmailVerification(ctx context.Context, userID string) error
 
 	// API tokens
 	CreateAPIToken(ctx context.Context, tok *model.APIToken) error

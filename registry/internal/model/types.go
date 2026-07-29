@@ -199,13 +199,26 @@ type SearchQuery struct {
 }
 
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	DisplayName  string    `json:"display_name"`
-	Role         string    `json:"role"` // "viewer" | "editor" | "admin"
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Email         string    `json:"email"`
+	PasswordHash  string    `json:"-"`
+	DisplayName   string    `json:"display_name"`
+	Role          string    `json:"role"` // "viewer" | "editor" | "admin"
+	EmailVerified bool      `json:"email_verified"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// EmailVerification is the per-user pending-verification row.
+// One row per user (PK = user_id); a resend overwrites it.
+// TokenHash is the sha256-hex of the random token the user
+// receives in the email link (auth.HashToken), so the DB never
+// stores the raw token — same pattern as APIToken.TokenHash.
+type EmailVerification struct {
+	UserID    string    `json:"user_id"`
+	TokenHash string    `json:"-"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type APIToken struct {

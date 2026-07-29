@@ -13,6 +13,17 @@
 #   REGISTRY_S3_ACCESS_KEY=... REGISTRY_S3_SECRET_KEY=...
 #   REGISTRY_AUTH_JWT_SECRET=<strong-random>
 #   REGISTRY_AUTH_AUTH_MODE=closed
+#   REGISTRY_AUTH_BOOTSTRAP_ADMINS=<comma-separated-emails>
+# Email validation (account verify-before-login). Uses Resend as
+# the SMTP relay; the password is the RESEND_API key:
+#   REGISTRY_EMAIL_VALIDATION_ENABLE_VALIDATION=true
+#   REGISTRY_EMAIL_VALIDATION_FROM_ADDRESS=no-reply@openktree.com
+#   REGISTRY_EMAIL_VALIDATION_PUBLIC_BASE_URL=https://registry.openktree.com
+#   REGISTRY_EMAIL_VALIDATION_SMTP_HOST=smtp.resend.com
+#   REGISTRY_EMAIL_VALIDATION_SMTP_PORT=587
+#   REGISTRY_EMAIL_VALIDATION_SMTP_USERNAME=resend
+#   REGISTRY_EMAIL_VALIDATION_SMTP_PASSWORD=<RESEND_API key>
+#   REGISTRY_EMAIL_VALIDATION_SMTP_TLS=true
 #
 # The Postgres cluster (okt-registry-prod-db) was provisioned separately
 # via `flyctl postgres create`. It runs in the same org (okt-1) and is
@@ -25,6 +36,16 @@ dockerfile = 'Dockerfile.registry'
 
 [env]
 # All runtime config (database, storage, auth) is set via Fly secrets.
+# Email validation (account verify-before-login). The SMTP password
+# is the RESEND_API key, set as a Fly secret
+# (REGISTRY_EMAIL_VALIDATION_SMTP_PASSWORD) — never in this file.
+REGISTRY_EMAIL_VALIDATION_ENABLE_VALIDATION = 'true'
+REGISTRY_EMAIL_VALIDATION_FROM_ADDRESS = 'no-reply@openktree.com'
+REGISTRY_EMAIL_VALIDATION_PUBLIC_BASE_URL = 'https://registry.openktree.com'
+REGISTRY_EMAIL_VALIDATION_SMTP_HOST = 'smtp.resend.com'
+REGISTRY_EMAIL_VALIDATION_SMTP_PORT = '587'
+REGISTRY_EMAIL_VALIDATION_SMTP_USERNAME = 'resend'
+REGISTRY_EMAIL_VALIDATION_SMTP_TLS = 'true'
 
 [http_service]
 internal_port = 8080

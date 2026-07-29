@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Resend verification — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <div class="card" style="max-width:28rem;margin:2rem auto">
+        <h1>Resend verification email</h1>
+        {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="success">{{.Success}}</div>{{end}}
+        <form method="POST" action="/ui/resend-verification">
+            <label for="email">Email</label>
+            <input type="email" name="email" id="email" value="{{.PrefillEmail}}" required autofocus>
+            <button type="submit">Resend</button>
+        </form>
+        <p class="text-sm mt-1"><a href="/ui/login">Back to login</a></p>
+    </div>
+</div>
+</body>
+</html>

@@ -9,6 +9,7 @@ import (
 	"github.com/openktree/knowledge-registry/internal/api/handler"
 	"github.com/openktree/knowledge-registry/internal/auth"
 	"github.com/openktree/knowledge-registry/internal/config"
+	"github.com/openktree/knowledge-registry/internal/mailer"
 	"github.com/openktree/knowledge-registry/internal/service"
 	"github.com/openktree/knowledge-registry/internal/store"
 )
@@ -29,10 +30,11 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 
 	authMW := auth.NewMiddleware(&cfg.Auth)
 	authMW.SetStore(mstore)
-	authH := handler.NewAuthHandler(mstore, &cfg.Auth)
+	m := mailer.NewFromConfig(cfg.EmailValidation)
+	authH := handler.NewAuthHandler(mstore, &cfg.Auth, &cfg.EmailValidation, m)
 	tokenH := handler.NewTokenHandler(mstore, &cfg.Auth)
 	adminH := handler.NewAdminHandler(mstore)
-	uiH := handler.NewUIHandler(mstore, svc, &cfg.Auth)
+	uiH := handler.NewUIHandler(mstore, svc, &cfg.Auth, &cfg.EmailValidation, m)
 
 	// Exempted from auth
 	r.Get("/health", healthH.Health)
@@ -43,6 +45,13 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 		r.Post("/login", uiH.LoginPage)
 		r.Get("/register", uiH.RegisterPage)
 		r.Post("/register", uiH.RegisterPage)
+		// Email-validation UI (only functional when
+		// email_validation.enable_validation is on; the handlers
+		// return 404 otherwise, so registering the routes
+		// unconditionally is safe).
+		r.Get("/verify-email", uiH.VerifyEmailPage)
+		r.Get("/resend-verification", uiH.ResendVerificationPage)
+		r.Post("/resend-verification", uiH.ResendVerificationPage)
 
 		// Authenticated UI
 		uiAuth := handler.UIAuthGuard(authMW)
@@ -81,6 +90,12 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 		// Auth endpoints (always open)
 		r.Post("/auth/register", authH.Register)
 		r.Post("/auth/login", authH.Login)
+		// Email-validation endpoints. The handlers return 404
+		// when email_validation.enable_validation is off, so
+		// registering them unconditionally is safe and keeps the
+		// route table stable across toggles.
+		r.Get("/auth/verify-email", authH.VerifyEmail)
+		r.Post("/auth/resend-verification", authH.ResendVerification)
 
 		// Token management (authenticated)
 		r.Group(func(r chi.Router) {

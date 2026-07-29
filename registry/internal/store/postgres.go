@@ -523,23 +523,23 @@ func (s *PostgresStore) ListContexts(ctx context.Context) ([]model.ContextClass,
 
 func (s *PostgresStore) CreateUser(ctx context.Context, user *model.User) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (id, email, password_hash, display_name, role, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		`INSERT INTO users (id, email, password_hash, display_name, role, email_verified, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		user.ID, user.Email, user.PasswordHash, user.DisplayName, user.Role,
-		user.CreatedAt, user.UpdatedAt)
+		user.EmailVerified, user.CreatedAt, user.UpdatedAt)
 	return err
 }
 
 func (s *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
+		`SELECT id, email, password_hash, display_name, role, email_verified, created_at, updated_at
 		 FROM users WHERE email = $1`, email)
 	return scanUserPG(row)
 }
 
 func (s *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
+		`SELECT id, email, password_hash, display_name, role, email_verified, created_at, updated_at
 		 FROM users WHERE id = $1`, id)
 	return scanUserPG(row)
 }
@@ -552,7 +552,7 @@ func (s *PostgresStore) UpdateUserRole(ctx context.Context, id, role string) err
 
 func (s *PostgresStore) ListUsers(ctx context.Context) ([]model.User, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
+		`SELECT id, email, password_hash, display_name, role, email_verified, created_at, updated_at
 		 FROM users ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -714,14 +714,51 @@ func scanDecompsPG(rows pgxRows) ([]model.DecompMeta, error) {
 
 func scanUserPG(row interface{ Scan(...any) error }) (*model.User, error) {
 	var id, email, hash, displayName, role string
+	var emailVerified bool
 	var ca, ua time.Time
-	if err := row.Scan(&id, &email, &hash, &displayName, &role, &ca, &ua); err != nil {
+	if err := row.Scan(&id, &email, &hash, &displayName, &role, &emailVerified, &ca, &ua); err != nil {
 		return nil, err
 	}
 	return &model.User{
 		ID: id, Email: email, PasswordHash: hash, DisplayName: displayName,
-		Role: role, CreatedAt: ca, UpdatedAt: ua,
+		Role: role, EmailVerified: emailVerified, CreatedAt: ca, UpdatedAt: ua,
 	}, nil
+}
+
+// ── Email verification tokens ───────────────────────────────────────
+
+func (s *PostgresStore) CreateEmailVerification(ctx context.Context, v *model.EmailVerification) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO email_verifications (user_id, token_hash, expires_at, created_at)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (user_id) DO UPDATE SET
+		   token_hash = EXCLUDED.token_hash,
+		   expires_at = EXCLUDED.expires_at,
+		   created_at = EXCLUDED.created_at`,
+		v.UserID, v.TokenHash, v.ExpiresAt, v.CreatedAt)
+	return err
+}
+
+func (s *PostgresStore) GetEmailVerificationByHash(ctx context.Context, hash string) (*model.EmailVerification, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT user_id, token_hash, expires_at, created_at
+		 FROM email_verifications WHERE token_hash = $1`, hash)
+	var v model.EmailVerification
+	if err := row.Scan(&v.UserID, &v.TokenHash, &v.ExpiresAt, &v.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+func (s *PostgresStore) DeleteEmailVerification(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM email_verifications WHERE user_id = $1`, userID)
+	return err
+}
+
+func (s *PostgresStore) MarkEmailVerified(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users SET email_verified = true, updated_at = now() WHERE id = $1`, userID)
+	return err
 }
 
 func scanAPITokenPG(row interface{ Scan(...any) error }) (*model.APIToken, error) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/openktree/knowledge-registry/internal/auth"
 	"github.com/openktree/knowledge-registry/internal/config"
+	"github.com/openktree/knowledge-registry/internal/mailer"
 	"github.com/openktree/knowledge-registry/internal/model"
 	"github.com/openktree/knowledge-registry/internal/service"
 	"github.com/openktree/knowledge-registry/internal/store"
@@ -25,13 +26,15 @@ import (
 var templateFS embed.FS
 
 type UIHandler struct {
-	store   store.MetadataStore
-	svc     *service.Registry
-	authCfg *config.AuthConfig
-	tmpl    *template.Template
+	store    store.MetadataStore
+	svc      *service.Registry
+	authCfg  *config.AuthConfig
+	emailCfg *config.EmailValidationConfig
+	mailer   mailer.Mailer
+	tmpl     *template.Template
 }
 
-func NewUIHandler(store store.MetadataStore, svc *service.Registry, cfg *config.AuthConfig) *UIHandler {
+func NewUIHandler(store store.MetadataStore, svc *service.Registry, cfg *config.AuthConfig, emailCfg *config.EmailValidationConfig, m mailer.Mailer) *UIHandler {
 	sub, err := fs.Sub(templateFS, "templates")
 	if err != nil {
 		panic(err)
@@ -46,18 +49,28 @@ func NewUIHandler(store store.MetadataStore, svc *service.Registry, cfg *config.
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
 	}).ParseFS(sub, "*.html"))
-	return &UIHandler{store: store, svc: svc, authCfg: cfg, tmpl: tmpl}
+	return &UIHandler{store: store, svc: svc, authCfg: cfg, emailCfg: emailCfg, mailer: m, tmpl: tmpl}
 }
 
 type pageData struct {
-	UserID   string
-	IsAdmin  bool
-	Error    string
-	Success  string
-	Token    string
-	NewToken string
-	Tokens   interface{}
-	Users    interface{}
+	UserID  string
+	IsAdmin bool
+	Error   string
+	Success string
+	// ResendURL, when set, renders a "Resend verification email"
+	// link below the error slot on the login page. Used by the
+	// email-validation gate so the user can re-trigger the
+	// verification flow without leaving the login page. Empty
+	// means no link is rendered.
+	ResendURL string
+	// PrefillEmail pre-fills the email field on the resend-
+	// verification form. Set from ?email= on the login page's
+	// resend link so the user doesn't retype it.
+	PrefillEmail string
+	Token        string
+	NewToken     string
+	Tokens       interface{}
+	Users        interface{}
 	// Browser pages (sources/graphs/users/tokens) populate these.
 	Sources      interface{}
 	SourcesTotal int
@@ -122,6 +135,19 @@ func (h *UIHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Email-validation gate: render the login page with a
+		// resend link instead of issuing a session. The
+		// /ui/resend-verification form is pre-filled via the
+		// ?email= query param so the user doesn't retype it.
+		// Mirrors the API's 403 email_not_verified response.
+		if h.emailCfg != nil && h.emailCfg.EnableValidation && !user.EmailVerified {
+			h.render(w, "login.html", pageData{
+				Error:     "Please verify your email before logging in.",
+				ResendURL: "/ui/resend-verification?email=" + url.QueryEscape(user.Email),
+			})
+			return
+		}
+
 		token, err := auth.GenerateToken(h.authCfg.JWTSecret, h.authCfg.TokenTTL, user.ID, user.Email, user.Role)
 		if err != nil {
 			h.render(w, "login.html", pageData{Error: "Failed to generate token"})
@@ -144,8 +170,18 @@ func (h *UIHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d := h.withUserData(r)
-	if r.URL.Query().Get("error") != "" {
-		d.Error = friendlyLoginError(r.URL.Query().Get("error"))
+	q := r.URL.Query()
+	if q.Get("error") != "" {
+		d.Error = friendlyLoginError(q.Get("error"))
+	}
+	// Email-validation feedback. ?verified=1 is set by
+	// VerifyEmailPage after a successful click; ?verify=1 is set
+	// by RegisterPage when validation is on, prompting the user
+	// to check their inbox. Both render in the success slot.
+	if q.Get("verified") == "1" {
+		d.Success = "Your email is verified. You can log in now."
+	} else if q.Get("verify") == "1" {
+		d.Success = "Account created. Check your email for a verification link before logging in."
 	}
 	h.render(w, "login.html", d)
 }
@@ -198,12 +234,93 @@ func (h *UIHandler) RegisterPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Email-validation path: mint + email the verification
+		// token, then land on the login page with a "check your
+		// email" success message instead of auto-logging-in. The
+		// API path returns a JSON status; the UI path redirects
+		// to /ui/login so the user sees the standard login form
+		// with the verification prompt.
+		if h.emailCfg != nil && h.emailCfg.EnableValidation {
+			if err := issueEmailVerification(r.Context(), h.store, h.mailer, h.emailCfg, user); err != nil {
+				log.Printf("register(ui): issueVerification for %s: %v", user.Email, err)
+				h.render(w, "register.html", pageData{Error: "Account created but failed to send verification email. Use the resend link on the login page."})
+				return
+			}
+			http.Redirect(w, r, "/ui/login?registered=1&verify=1", http.StatusFound)
+			return
+		}
+
 		http.Redirect(w, r, "/ui/login?registered=1", http.StatusFound)
 		return
 	}
 
 	d := h.withUserData(r)
 	h.render(w, "register.html", d)
+}
+
+// VerifyEmailPage handles GET /ui/verify-email?token=<raw>. It's the
+// landing page the verification email links to. On success it
+// redirects to /ui/login?verified=1; on a bad/expired token it
+// renders the login page with an error so the user can request a
+// resend. The token-validation logic is shared with the API path
+// via AuthHandler.verifyEmail; this UI variant passes
+// redirectOnSuccess=true so the user lands on the login form
+// instead of getting a JSON body.
+func (h *UIHandler) VerifyEmailPage(w http.ResponseWriter, r *http.Request) {
+	if h.emailCfg == nil || !h.emailCfg.EnableValidation {
+		http.NotFound(w, r)
+		return
+	}
+	tokenStr := strings.TrimSpace(r.URL.Query().Get("token"))
+	if tokenStr == "" {
+		h.render(w, "login.html", pageData{Error: "Missing verification token."})
+		return
+	}
+	// Reuse the shared verify core. We build a temporary
+	// AuthHandler to access verifyEmail; it only needs the store,
+	// emailCfg, and jwtSecret (the latter unused on the redirect
+	// path). This avoids duplicating the verify logic across the
+	// two handler types.
+	ah := &AuthHandler{store: h.store, authCfg: h.authCfg, emailCfg: h.emailCfg, mailer: h.mailer, jwtSecret: h.authCfg.JWTSecret}
+	ah.verifyEmail(w, r, tokenStr, true)
+}
+
+// ResendVerificationPage handles GET (show form) and POST (trigger
+// resend) for /ui/resend-verification. GET pre-fills the email
+// field from ?email= (set by the login page's resend link). POST
+// always renders the form with a success message ("if that email
+// is registered and unverified, a message has been sent") to match
+// the API's enumeration-safe 200.
+func (h *UIHandler) ResendVerificationPage(w http.ResponseWriter, r *http.Request) {
+	if h.emailCfg == nil || !h.emailCfg.EnableValidation {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodPost {
+		email := strings.TrimSpace(r.FormValue("email"))
+		if email == "" {
+			h.render(w, "resend_verification.html", pageData{Error: "Email is required.", PrefillEmail: email})
+			return
+		}
+		// Reuse the API handler's resend logic so the
+		// enumeration-safe behavior is identical. We build a
+		// temporary AuthHandler the same way VerifyEmailPage does.
+		ah := &AuthHandler{store: h.store, authCfg: h.authCfg, emailCfg: h.emailCfg, mailer: h.mailer, jwtSecret: h.authCfg.JWTSecret}
+		rec := newBufferedResponseWriter(w)
+		ah.ResendVerification(rec, r)
+		if rec.status == http.StatusOK {
+			h.render(w, "resend_verification.html", pageData{
+				Success:      "If that email is registered and unverified, a verification link has been sent.",
+				PrefillEmail: email,
+			})
+			return
+		}
+		h.render(w, "resend_verification.html", pageData{Error: "Failed to send verification email. Please try again.", PrefillEmail: email})
+		return
+	}
+	// GET: render the form with the email pre-filled from ?email=
+	// (the login page's resend link sets it).
+	h.render(w, "resend_verification.html", pageData{PrefillEmail: r.URL.Query().Get("email")})
 }
 
 func (h *UIHandler) Dashboard(w http.ResponseWriter, r *http.Request) {

@@ -12,6 +12,8 @@
     <div class="card" style="max-width:28rem;margin:2rem auto">
         <h1>Login</h1>
         {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+        {{if .ResendURL}}<div class="error"><a href="{{.ResendURL}}">Resend verification email</a></div>{{end}}
+        {{if .Success}}<div class="success">{{.Success}}</div>{{end}}
         <form method="POST" action="/ui/login">
             <label for="email">Email</label>
             <input type="email" name="email" id="email" required autofocus>

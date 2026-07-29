@@ -31,6 +31,9 @@ services:
     build:
       context: ../registry
       dockerfile: Dockerfile.registry
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       REGISTRY_PORT: "8081"
       REGISTRY_DATABASE_DRIVER: sqlite
@@ -44,6 +47,17 @@ services:
       REGISTRY_S3_PATH_STYLE: "true"
       REGISTRY_S3_PRESIGN_TTL: "900"
       REGISTRY_S3_PRESIGN_BASE_URL: "http://minio:9000"
+      # Email validation. Reads RESEND_API from .env (loaded via
+      # env_file above) as the SMTP password; empty → NoopMailer
+      # so the stack boots without an email provider.
+      REGISTRY_EMAIL_VALIDATION_ENABLE_VALIDATION: "true"
+      REGISTRY_EMAIL_VALIDATION_FROM_ADDRESS: "no-reply@openktree.com"
+      REGISTRY_EMAIL_VALIDATION_PUBLIC_BASE_URL: "http://localhost:8081"
+      REGISTRY_EMAIL_VALIDATION_SMTP_HOST: "smtp.resend.com"
+      REGISTRY_EMAIL_VALIDATION_SMTP_PORT: "587"
+      REGISTRY_EMAIL_VALIDATION_SMTP_USERNAME: "resend"
+      REGISTRY_EMAIL_VALIDATION_SMTP_PASSWORD: ${RESEND_API:-}
+      REGISTRY_EMAIL_VALIDATION_SMTP_TLS: "true"
     ports:
       - "8081:8081"
     depends_on:
