@@ -371,7 +371,7 @@ func (s *S3Store) CleanupMultipartUploads(ctx context.Context, maxAge time.Durat
 			}
 			info := MultipartUploadInfo{
 				Key:       key,
-				UploadID:   uploadID,
+				UploadID:  uploadID,
 				Initiated: initiated,
 			}
 			if _, aerr := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
