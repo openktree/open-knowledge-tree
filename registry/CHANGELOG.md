@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.8...registry-v0.6.0) (2026-07-29)
+
+
+### Features
+
+* **registry:** add browser UI with sources/graphs/users/tokens pages ([67a54ef](https://github.com/openktree/open-knowledge-tree/commit/67a54ef0051d0495cf93b238677ac854d3a0abc7))
+* **registry:** browser UI with sources/graphs/users/tokens pages ([d6b1346](https://github.com/openktree/open-knowledge-tree/commit/d6b1346d55504977a8c3cb2713aacbb54f12141a))
+
+
+### Bug Fixes
+
+* **registry:** accept JWT from `token` cookie in auth middleware ([8f53013](https://github.com/openktree/open-knowledge-tree/commit/8f53013a4e03b9125e37a4aded407b5cf398cf27))
+
 ## [0.5.8](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.7...registry-v0.5.8) (2026-07-29)
 
 
