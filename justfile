@@ -121,6 +121,13 @@ docs-serve:
 docs-down:
 	docker compose -f backend/docker-compose.yml --profile docs down
 
+# Run the backend e2e suite. Boots an isolated tmpfs test Postgres on
+# :5433 (never the dev DB on :5432). The registry UI e2e tests run
+# against a live registry only when OKT_TEST_REGISTRY_URL is set; point
+# it at dev (e.g. https://okt-registry-dev.fly.dev), NEVER prod — the
+# tests mutate data (register users, push/delete sources) and the
+# test guard fatals on a prod-looking URL. CI never sets the var, so
+# the registry UI tests skip there.
 test-e2e:
 	docker compose -f backend/docker-compose.yml --profile test up -d test-postgres
 	until docker compose -f backend/docker-compose.yml --profile test exec -T test-postgres pg_isready -U okt -d okt; do sleep 0.5; done

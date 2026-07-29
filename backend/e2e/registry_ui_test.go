@@ -20,8 +20,48 @@ import (
 // the e2e suite stays green in a keyless dev env. The authoritative
 // dev instance is https://registry.openktree-dev.com/ (per the
 // registry_ui_test plan: live dev, not prod).
-func registryUIBaseURL() string {
-	return os.Getenv("OKT_TEST_REGISTRY_URL")
+//
+// These tests MUTATE the registry (register users, push + delete
+// sources). They must NEVER run against prod: a bad
+// OKT_TEST_REGISTRY_URL must fail the suite immediately rather than
+// silently polluting production data. registryUIBaseURL therefore
+// refuses any URL that looks like prod (registry.openktree.com,
+// okt-registry-prod.fly.dev, or any host containing "registry-prod")
+// with t.Fatal. An empty value still skips (the keyless-CI path).
+func registryUIBaseURL(t *testing.T) string {
+	t.Helper()
+	raw := os.Getenv("OKT_TEST_REGISTRY_URL")
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("OKT_TEST_REGISTRY_URL is not a valid URL: %q: %v", raw, err)
+	}
+	host := u.Hostname()
+	if isProdRegistryHost(host) {
+		t.Fatalf(
+			"OKT_TEST_REGISTRY_URL=%q points at the production registry (%s); "+
+				"the registry UI e2e tests mutate data (register users, push/delete sources) "+
+				"and must run against dev only (e.g. https://okt-registry-dev.fly.dev). "+
+				"Refusing to pollute prod.",
+			raw, host,
+		)
+	}
+	return raw
+}
+
+// isProdRegistryHost reports whether host looks like the production
+// registry. Catches the canonical prod hostname, the Fly internal
+// prod hostname, and any host containing the "registry-prod" token
+// (covers future prod variants). localhost / 127.0.0.1 and the dev
+// Fly/dev-DNS hostnames are always allowed.
+func isProdRegistryHost(host string) bool {
+	switch host {
+	case "registry.openktree.com", "okt-registry-prod.fly.dev":
+		return true
+	}
+	return strings.Contains(host, "registry-prod")
 }
 
 func newRegistryUIJarClient(t *testing.T) *http.Client {
@@ -75,7 +115,7 @@ func registryUIRegisterUser(t *testing.T, baseURL string) (string, string) {
 // page); the legacy /ui/dashboard URL still works as a back-compat
 // alias for the tokens page.
 func TestRegistryUI_LoginRedirectsAndDashboardRenders(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry UI happy-path test")
 	}
@@ -168,7 +208,7 @@ func TestRegistryUI_LoginRedirectsAndDashboardRenders(t *testing.T) {
 // /api/v1/* surface — see TestRegistryUI_ApiV1DashboardIsJSONOnly
 // below for that contract.
 func TestRegistryUI_DashboardWithoutAuth(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry UI auth-required test")
 	}
@@ -214,7 +254,7 @@ func TestRegistryUI_DashboardWithoutAuth(t *testing.T) {
 // when the password is wrong, instead of silently 302'ing or
 // emitting JSON.
 func TestRegistryUI_LoginRejectsBadCredentials(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry UI bad-credentials test")
 	}
@@ -253,7 +293,7 @@ func TestRegistryUI_LoginRejectsBadCredentials(t *testing.T) {
 // redirect to /ui/login?error=session_expired and the login form
 // must render the friendly message instead of the raw JSON 401.
 func TestRegistryUI_ExpiredTokenShowsLoginWithMessage(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry UI expired-token test")
 	}
@@ -326,7 +366,7 @@ func mustURL(t *testing.T, raw string) *url.URL {
 // highlights the active tab and that the sources page is the
 // post-login default.
 func TestRegistryUI_BrowserPagesRender(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry browser-pages test")
 	}
@@ -378,7 +418,7 @@ func TestRegistryUI_BrowserPagesRender(t *testing.T) {
 // four pages, but with no cookie. Each must redirect to the login
 // page (UIAuthGuard behavior) and never return the JSON 401 body.
 func TestRegistryUI_BrowserPagesRedirectWithoutAuth(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry browser-pages-redirect test")
 	}
@@ -443,7 +483,7 @@ func registryUILoginAndGetCookies(t *testing.T, baseURL, email, password string)
 // via the API so the assertions don't depend on whatever
 // happens to be in the registry when the suite runs.
 func TestRegistryUI_SourcesPagination(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry sources-pagination test")
 	}
@@ -490,7 +530,7 @@ func TestRegistryUI_SourcesPagination(t *testing.T) {
 // disappears from the list. The test pushes a source it owns, so
 // we don't depend on whatever else is in the registry.
 func TestRegistryUI_SourcesAdminDelete(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry sources-delete test")
 	}
@@ -569,7 +609,7 @@ func registryUIPushSource(t *testing.T, baseURL, sourceURL, title string) string
 // Pinned here so a future template refactor that drops the
 // structure is caught by e2e.
 func TestRegistryUI_TemplatesUseRowLayout(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry row-layout test")
 	}
@@ -635,7 +675,7 @@ func TestRegistryUI_TemplatesUseRowLayout(t *testing.T) {
 // decompositions list, and a back link. Also asserts the
 // admin delete button is hidden for non-admins.
 func TestRegistryUI_SourceDetailPage(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry source-detail test")
 	}
@@ -684,7 +724,7 @@ func TestRegistryUI_SourceDetailPage(t *testing.T) {
 // page with the friendly error and the navigation links back to
 // the list pages.
 func TestRegistryUI_SourceDetailNotFound(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry source-not-found test")
 	}
@@ -718,7 +758,7 @@ func TestRegistryUI_SourceDetailNotFound(t *testing.T) {
 // directly; this test pins the link so a future template refactor
 // that drops the anchor doesn't silently break navigation.
 func TestRegistryUI_SourceListLinksToDetail(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry list-link test")
 	}
@@ -756,7 +796,7 @@ func TestRegistryUI_SourceListLinksToDetail(t *testing.T) {
 // transport is honored and the token actually lands in the
 // user's list.
 func TestRegistryUI_CreateTokenViaForm(t *testing.T) {
-	baseURL := registryUIBaseURL()
+	baseURL := registryUIBaseURL(t)
 	if baseURL == "" {
 		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry create-token-via-form test")
 	}
