@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Not found — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <h1>Not found</h1>
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+    <div class="card">
+        <p>The item you requested doesn't exist (or has been deleted).</p>
+        <p>
+            <a href="/ui/sources">Browse sources</a> ·
+            <a href="/ui/graphs">Browse graphs</a> ·
+            <a href="/ui/users">Browse users</a> ·
+            <a href="/ui/tokens">View tokens</a>
+        </p>
+    </div>
+</div>
+</body>
+</html>

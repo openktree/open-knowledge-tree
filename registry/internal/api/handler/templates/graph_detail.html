@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{.Graph.Name}} — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <p class="text-sm" style="margin-top:1rem"><a href="{{.BackURL}}">← {{.BackLabel}}</a></p>
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+    <h1>{{.Graph.Name}}</h1>
+
+    <div class="card">
+        <h2>Metadata</h2>
+        <table>
+            <tr><th>ID</th><td><code>{{.Graph.ID}}</code></td></tr>
+            <tr><th>Owner</th><td>{{if .Graph.Owner}}{{.Graph.Owner}}{{else}}<em>anonymous</em>{{end}}</td></tr>
+            <tr><th>Schema version</th><td>{{.Graph.SchemaVersion}}</td></tr>
+            {{if .Graph.SHA256}}<tr><th>SHA-256</th><td><code style="word-break:break-all;font-size:.75rem">{{.Graph.SHA256}}</code></td></tr>{{end}}
+            <tr><th>S3 key</th><td><code style="word-break:break-all;font-size:.75rem">{{.Graph.S3Key}}</code></td></tr>
+            <tr><th>Created</th><td>{{.Graph.CreatedAt.Format "2006-01-02 15:04:05 MST"}}</td></tr>
+            <tr><th>Updated</th><td>{{.Graph.UpdatedAt.Format "2006-01-02 15:04:05 MST"}}</td></tr>
+            {{if .Graph.Description}}
+            <tr><th>Description</th><td>{{.Graph.Description}}</td></tr>
+            {{end}}
+        </table>
+        {{if .Graph.PresignedURL}}
+            <p style="margin-top:1rem"><a href="{{.Graph.PresignedURL}}" target="_blank" rel="noopener">Download bundle (presigned)</a></p>
+        {{end}}
+    </div>
+
+    <div class="card">
+        <h2>Counts</h2>
+        <table>
+            <tr><th>Sources</th><td>{{.Graph.SourceCount}}</td></tr>
+            <tr><th>Facts</th><td>{{.Graph.FactCount}}</td></tr>
+            <tr><th>Concepts</th><td>{{.Graph.ConceptCount}}</td></tr>
+        </table>
+    </div>
+
+    {{if .Graph.Tags}}
+    <div class="card">
+        <h2>Tags</h2>
+        <p>
+            {{range .Graph.Tags}}<span class="tag" title="{{.}}">{{.}}</span> {{end}}
+        </p>
+    </div>
+    {{end}}
+
+    {{if .IsAdmin}}
+    <div class="card">
+        <h2>Danger zone</h2>
+        <p class="text-sm">Deleting a graph removes its metadata row and the S3 bundle. Other OKT backends that have already imported this graph keep their local copy — the delete is a registry-side cleanup, not a recall.</p>
+        <form method="POST" action="/ui/graphs/{{.Graph.ID}}/delete" onsubmit="return confirm('Delete graph {{.Graph.ID}}? This cannot be undone.')">
+            <button type="submit" class="btn-sm danger">Delete graph</button>
+        </form>
+    </div>
+    {{end}}
+</div>
+</body>
+</html>

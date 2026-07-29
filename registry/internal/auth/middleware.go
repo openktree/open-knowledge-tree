@@ -24,16 +24,33 @@ func NewMiddleware(cfg *config.AuthConfig) *Middleware {
 	return &Middleware{secret: cfg.JWTSecret, cfg: cfg}
 }
 
-// AuthRequired extracts a JWT from Authorization: Bearer <token>
-// and puts the user ID and role on the request context.
+// extractToken returns the bearer token from either the
+// Authorization header or the `token` cookie (the latter is set by
+// the server-rendered UI's /ui/login). API clients should keep
+// using the Authorization header; the cookie fallback exists so
+// browser sessions on /ui/* work without the client having to
+// glue Authorization headers onto every navigation.
+func extractToken(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
+	}
+	if c, err := r.Cookie("token"); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+// AuthRequired extracts a JWT from the Authorization header (or the
+// `token` cookie for browser sessions) and puts the user ID and role
+// on the request context.
 func (m *Middleware) AuthRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenStr := r.Header.Get("Authorization")
-		if tokenStr == "" || !strings.HasPrefix(tokenStr, "Bearer ") {
+		tokenStr := extractToken(r)
+		if tokenStr == "" {
 			http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
 			return
 		}
-		claims, err := ParseToken(m.secret, strings.TrimPrefix(tokenStr, "Bearer "))
+		claims, err := ParseToken(m.secret, tokenStr)
 		if err != nil {
 			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 			return
@@ -65,8 +82,8 @@ func (m *Middleware) RequireRole(minRole string) func(http.Handler) http.Handler
 //   - Exempts: /health, /api/v1/auth/*
 func (m *Middleware) OptionalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenStr := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		hasToken := tokenStr != "" && tokenStr != r.Header.Get("Authorization")
+		tokenStr := extractToken(r)
+		hasToken := tokenStr != ""
 
 		if hasToken {
 			claims, err := ParseToken(m.secret, tokenStr)

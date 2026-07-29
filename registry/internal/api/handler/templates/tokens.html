@@ -18,7 +18,7 @@
             <div class="success">Token created! Copy it now — it won't be shown again.</div>
             <div class="card" style="background:#f0f0f0;word-break:break-all;font-family:monospace;padding:.75rem">{{.NewToken}}</div>
         {{end}}
-        <form method="POST" action="/ui/dashboard">
+        <form method="POST" action="/ui/tokens">
             <label for="name">Name</label>
             <input type="text" name="name" id="name" required placeholder="e.g. my-okt-instance">
             <label for="scope">Scope</label>
@@ -35,23 +35,30 @@
 
     <div class="card">
         <h2>Your Tokens</h2>
+        <p class="text-sm">Showing {{len .Tokens}} of {{.SourcesTotal}} total</p>
         {{if .Tokens}}
-        <table>
-            <tr><th>Name</th><th>Scope</th><th>Created</th><th>Expires</th><th></th></tr>
+        <table class="list-table">
+            <colgroup>
+                <col>
+                <col style="width:1%">
+            </colgroup>
+            <tr><th>Token</th><th class="actions"></th></tr>
             {{range .Tokens}}
             <tr>
-                <td>{{.Name}}</td>
-                <td><span class="tag">{{.Scope}}</span></td>
-                <td class="text-sm">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
-                <td class="text-sm">{{if .ExpiresAt}}{{.ExpiresAt.Format "2006-01-02"}}{{else}}never{{end}}</td>
-                <td>
-                    <form method="POST" action="/ui/tokens/{{.ID}}/revoke" class="inline">
-                        <button type="submit" class="btn-sm" onclick="return confirm('Revoke this token?')">Revoke</button>
+                <td class="title-cell">
+                    <span class="row-title" title="{{.Name}}">{{.Name}}</span>
+                    <span class="row-url" title="scope">scope: <span class="tag">{{.Scope}}</span> · expires {{if .ExpiresAt}}{{.ExpiresAt.Format "2006-01-02"}}{{else}}never{{end}} · created {{.CreatedAt.Format "2006-01-02 15:04"}}</span>
+                    <span class="row-id" title="{{.ID}}">id: {{.ID}}</span>
+                </td>
+                <td class="actions">
+                    <form method="POST" action="/ui/tokens/{{.ID}}/revoke" class="inline" onsubmit="return confirm('Revoke this token?')">
+                        <button type="submit" class="btn-sm danger">Revoke</button>
                     </form>
                 </td>
             </tr>
             {{end}}
         </table>
+        {{template "pagination" .}}
         {{else}}
         <p class="text-sm">No tokens yet. Create one above.</p>
         {{end}}
