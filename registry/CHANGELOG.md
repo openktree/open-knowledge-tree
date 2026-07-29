@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.4...registry-v0.7.0) (2026-07-29)
+
+
+### Features
+
+* **registry:** add email validation with resend, gated on enable_validation ([2bfc813](https://github.com/openktree/open-knowledge-tree/commit/2bfc81342b16dee1ed572712da1509dbf0ed6135))
+
 ## [0.6.4](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.3...registry-v0.6.4) (2026-07-29)
 
 
