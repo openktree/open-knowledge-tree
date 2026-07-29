@@ -355,6 +355,31 @@ func (s *PostgresStore) CountAllSources(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// DeleteSource removes a source's metadata row + the decomposition
+// rows that reference it, in a single transaction. Returns
+// ErrNotFound when the source id is missing.
+func (s *PostgresStore) DeleteSource(ctx context.Context, id string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	ct, err := tx.Exec(ctx, `DELETE FROM sources WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting source %s: %w", id, err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM decompositions WHERE source_id = $1`, id); err != nil {
+		return fmt.Errorf("deleting decompositions for source %s: %w", id, err)
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (s *PostgresStore) Stats(ctx context.Context) (repoCount, sourceCount int, err error) {
 	err = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM repositories`).Scan(&repoCount)
 	if err != nil {

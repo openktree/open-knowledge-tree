@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/openktree/knowledge-registry/internal/model"
 )
@@ -19,6 +20,13 @@ type MetadataStore interface {
 	GetSource(ctx context.Context, repoID, sourceID string) (*model.SourceMeta, error)
 	ListSources(ctx context.Context, repoID string, limit, offset int) ([]model.SourceMeta, error)
 	ListAllSources(ctx context.Context, limit, offset int) ([]model.SourceMeta, error)
+	// DeleteSource removes a source's metadata row + any
+	// decomposition rows that reference it, in a single
+	// transaction. Returns ErrNotFound when the source id doesn't
+	// exist. The caller is responsible for deleting the S3
+	// objects (sources/{id}.json.gz and any decompositions/*);
+	// the service layer composes this with the storage delete.
+	DeleteSource(ctx context.Context, id string) error
 
 	// Search
 	SearchByURL(ctx context.Context, repoID, url string) ([]model.SourceMeta, error)
@@ -99,3 +107,7 @@ type MetadataStore interface {
 
 	Close() error
 }
+
+// ErrNotFound is returned by store methods when a row is missing
+// (source, graph, user, etc). HTTP handlers translate it to 404.
+var ErrNotFound = errors.New("not found")

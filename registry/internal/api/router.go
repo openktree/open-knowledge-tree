@@ -31,7 +31,7 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 	authH := handler.NewAuthHandler(mstore, &cfg.Auth)
 	tokenH := handler.NewTokenHandler(mstore, &cfg.Auth)
 	adminH := handler.NewAdminHandler(mstore)
-	uiH := handler.NewUIHandler(mstore, &cfg.Auth)
+	uiH := handler.NewUIHandler(mstore, svc, &cfg.Auth)
 
 	// Exempted from auth
 	r.Get("/health", healthH.Health)
@@ -44,17 +44,30 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 		r.Post("/register", uiH.RegisterPage)
 
 		// Authenticated UI
+		uiAuth := handler.UIAuthGuard(authMW)
 		r.Group(func(r chi.Router) {
-			r.Use(authMW.AuthRequired)
+			r.Use(uiAuth)
 			r.Get("/dashboard", uiH.Dashboard)
 			r.Post("/dashboard", uiH.Dashboard)
+			r.Get("/sources", uiH.SourcesPage)
+			r.Get("/sources/{id}", uiH.SourceDetailPage)
+			r.Post("/sources/{id}/delete", uiH.SourceDetailPage)
+			r.Get("/graphs", uiH.GraphsPage)
+			r.Get("/graphs/{id}", uiH.GraphDetailPage)
+			r.Post("/graphs/{id}/delete", uiH.GraphDetailPage)
+			r.Get("/users", uiH.UsersPage)
+			r.Post("/users/{id}/role", uiH.UsersPage)
+			r.Get("/tokens", uiH.TokensPage)
+			r.Post("/tokens", uiH.TokensPage)
 			r.Post("/tokens/{id}/revoke", tokenH.Revoke)
 			r.Get("/logout", uiH.Logout)
 		})
 
-		// Admin UI
+		// Admin UI — legacy URL kept for backward compat; the
+		// handler redirects to /ui/users, which is the new
+		// user-management surface.
 		r.Group(func(r chi.Router) {
-			r.Use(authMW.AuthRequired)
+			r.Use(uiAuth)
 			r.Use(authMW.RequireRole("admin"))
 			r.Get("/admin", uiH.AdminPage)
 			r.Post("/admin", uiH.AdminPage)

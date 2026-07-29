@@ -3,24 +3,28 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Admin — Knowledge Registry</title>
+    <title>Users — Knowledge Registry</title>
     <style>{{template "styles" .}}</style>
 </head>
 <body>
 {{template "navbar" .}}
 <div class="container">
     <h1>User Management</h1>
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+    {{if .Success}}<div class="success">{{.Success}}</div>{{end}}
+    <p class="text-sm">
+        {{if .IsAdmin}}You can update any user's role below.{{else}}You are signed in as a viewer; role changes are admin-only.{{end}}
+    </p>
     <div class="card">
-        {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
-        {{if .Success}}<div class="success">{{.Success}}</div>{{end}}
         <table>
             <tr><th>Email</th><th>Display Name</th><th>Role</th><th>Created</th><th></th></tr>
             {{range .Users}}
             <tr>
                 <td>{{.Email}}</td>
-                <td>{{.DisplayName}}</td>
+                <td>{{if .DisplayName}}{{.DisplayName}}{{else}}<em class="text-sm">—</em>{{end}}</td>
                 <td>
-                    <form method="POST" action="/ui/admin/users/{{.ID}}/role" class="inline flex">
+                    {{if $.IsAdmin}}
+                    <form method="POST" action="/ui/users/{{.ID}}/role" class="inline flex">
                         <select name="role">
                             <option value="viewer" {{if eq .Role "viewer"}}selected{{end}}>Viewer</option>
                             <option value="editor" {{if eq .Role "editor"}}selected{{end}}>Editor</option>
@@ -28,8 +32,12 @@
                         </select>
                         <button type="submit" class="btn-sm">Update</button>
                     </form>
+                    {{else}}
+                    <span class="tag">{{.Role}}</span>
+                    {{end}}
                 </td>
                 <td class="text-sm">{{.CreatedAt.Format "2006-01-02"}}</td>
+                <td></td>
             </tr>
             {{end}}
         </table>

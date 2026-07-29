@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -546,8 +547,69 @@ func (r *Registry) ListDecompositions(ctx context.Context, sourceID string) ([]m
 	return r.store.ListDecompositions(ctx, sourceID)
 }
 
+// DeleteSource removes a source's metadata + decomposition rows +
+// the S3 objects (the source bundle and every decomposition
+// bundle). S3 deletes are best-effort — a missing object is fine —
+// but the metadata delete is the source of truth and returns
+// ErrNotFound when the id is missing. Mirrors DeleteGraph.
+func (r *Registry) DeleteSource(ctx context.Context, sourceID string) error {
+	meta, err := r.store.GetSource(ctx, defaultRepoID, sourceID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return store.ErrNotFound
+		}
+		return fmt.Errorf("reading source %s: %w", sourceID, err)
+	}
+
+	if err := r.store.DeleteSource(ctx, sourceID); err != nil {
+		return fmt.Errorf("deleting source %s: %w", sourceID, err)
+	}
+
+	if meta.S3Key != "" {
+		if err := r.storage.Delete(ctx, meta.S3Key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			log.Printf("registry: deleting source bundle %s: %v", sourceID, err)
+		}
+	}
+
+	// Decomposition S3 keys follow the {sourceID}/{modelID} pattern
+	// (see DecompKey in registry.go). Best-effort: list what's
+	// still recorded for this source, then delete each.
+	decomps, err := r.store.ListDecompositions(ctx, sourceID)
+	if err == nil {
+		for _, d := range decomps {
+			if d.S3Key != "" {
+				if err := r.storage.Delete(ctx, d.S3Key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+					log.Printf("registry: deleting decomposition %s/%s: %v", sourceID, d.ModelID, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 func (r *Registry) Stats(ctx context.Context) (repoCount, sourceCount int, err error) {
 	return r.store.Stats(ctx)
+}
+
+// GetSourceMeta returns the source's metadata row (no S3 read).
+// Used by the /ui/sources/{id} detail page where loading the
+// full SourcePackage would be wasteful — the bundle can be many
+// MB and the detail view only needs title/URL/DOI/SHA256 plus
+// the list of decompositions (loaded separately).
+//
+// Translates the store's sql.ErrNoRows to store.ErrNotFound so
+// the HTTP layer (and the UI detail handler) can branch on a
+// single sentinel rather than juggling two error types.
+func (r *Registry) GetSourceMeta(ctx context.Context, sourceID string) (*model.SourceMeta, error) {
+	meta, err := r.store.GetSource(ctx, defaultRepoID, sourceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return meta, nil
 }
 
 // SeedContexts populates the contexts table from the embedded

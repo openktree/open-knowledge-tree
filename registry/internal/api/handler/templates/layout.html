@@ -13,10 +13,12 @@ label { display: block; margin: .75rem 0 .25rem; font-weight: 600; font-size: .9
 input, select { width: 100%; padding: .5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
 button { background: #1a1a2e; color: #fff; border: none; padding: .6rem 1.2rem; border-radius: 4px; font-size: 1rem; cursor: pointer; margin-top: 1rem; }
 button:hover { opacity: .9; }
+button.danger { background: #c0392b; }
+button.danger:hover { background: #a93226; }
 .error { color: #c00; margin-bottom: .5rem; font-size: .9rem; }
 .success { color: #0a0; margin-bottom: .5rem; font-size: .9rem; }
-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-th, td { text-align: left; padding: .5rem; border-bottom: 1px solid #eee; font-size: .9rem; }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; table-layout: fixed; }
+th, td { text-align: left; padding: .6rem .5rem; border-bottom: 1px solid #eee; font-size: .9rem; vertical-align: top; word-break: break-word; overflow-wrap: anywhere; }
 th { font-weight: 600; color: #666; }
 .inline { display: inline; }
 .btn-sm { padding: .25rem .5rem; font-size: .8rem; margin: 0; }
@@ -24,18 +26,69 @@ th { font-weight: 600; color: #666; }
 .mt-1 { margin-top: 1rem; }
 .text-sm { font-size: .85rem; color: #666; }
 .tag { display: inline-block; background: #eef; padding: .15rem .5rem; border-radius: 4px; font-size: .8rem; }
+
+/* List rows: each row is a stack of lines so the user can scan
+   vertically without their eye hopping between columns:
+     line 1 — title (bold, full width)
+     line 2 — primary URL/owner/scope (the "thing you'd click")
+     line 3 — ID (small, muted — discoverable but not noisy)
+   Long values get an ellipsis and a title= attribute so the
+   full value is still available on hover. */
+.list-table th.actions, .list-table td.actions { width: 1%; white-space: nowrap; text-align: right; }
+.list-table td.title-cell { font-weight: 600; }
+.list-table td.title-cell .row-title { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 1rem; }
+.list-table td.title-cell .row-url { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; font-weight: normal; color: #1a1a2e; margin-top: .15rem; }
+.list-table td.title-cell .row-url a { color: #1a1a2e; text-decoration: underline; }
+.list-table td.title-cell .row-id { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7rem; color: #999; font-weight: normal; font-family: monospace; margin-top: .25rem; }
+.list-table td.title-cell .row-tags { margin-top: .35rem; }
+.list-table td.title-cell .row-tags .tag { margin-right: .25rem; }
+
+/* Pagination footer sits at the bottom of each list card. */
+.pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding-top: .75rem; border-top: 1px solid #eee; }
+.pagination .page-info { font-size: .85rem; color: #666; }
+.pagination a { display: inline-block; padding: .35rem .8rem; border: 1px solid #1a1a2e; border-radius: 4px; color: #1a1a2e; text-decoration: none; font-size: .85rem; }
+.pagination a:hover { background: #1a1a2e; color: #fff; }
+.pagination a.disabled { border-color: #ccc; color: #ccc; pointer-events: none; }
 {{end}}
 
 {{define "navbar"}}
 <nav>
     <span class="brand">Knowledge Registry</span>
     {{if .UserID}}
-        <a href="/ui/dashboard">Dashboard</a>
-        {{if .IsAdmin}}<a href="/ui/admin">Admin</a>{{end}}
+        <a href="/ui/sources" {{if eq .ActiveTab "sources"}}style="color:#fff;font-weight:600"{{end}}>Sources</a>
+        <a href="/ui/graphs" {{if eq .ActiveTab "graphs"}}style="color:#fff;font-weight:600"{{end}}>Graphs</a>
+        <a href="/ui/users" {{if eq .ActiveTab "users"}}style="color:#fff;font-weight:600"{{end}}>Users</a>
+        <a href="/ui/tokens" {{if eq .ActiveTab "tokens"}}style="color:#fff;font-weight:600"{{end}}>Tokens</a>
         <a href="/ui/logout" style="margin-left:auto">Logout</a>
     {{else}}
         <a href="/ui/login" style="margin-left:auto">Login</a>
         <a href="/ui/register">Register</a>
     {{end}}
 </nav>
+{{end}}
+
+{{define "pagination"}}
+{{/*
+    Pagination footer for list pages. Renders prev/next links
+    that preserve the current query + limit and adjust the
+    offset. Caller must have set .Limit, .Offset, .Page, .HasPrev,
+    .HasNext, .Query, and the base path is taken from the current
+    Request via .ActiveTab (the only path-agnostic field on
+    pageData). We rebuild the base path explicitly below.
+*/}}
+<div class="pagination">
+    <span class="page-info">Page {{.Page}}</span>
+    <div>
+        {{if .HasPrev}}
+            <a href="?{{if .Query}}q={{.Query}}&{{end}}limit={{.Limit}}&offset={{if gt .Offset .Limit}}{{sub .Offset .Limit}}{{else}}0{{end}}">‹ Previous</a>
+        {{else}}
+            <a class="disabled">‹ Previous</a>
+        {{end}}
+        {{if .HasNext}}
+            <a href="?{{if .Query}}q={{.Query}}&{{end}}limit={{.Limit}}&offset={{add .Offset .Limit}}" style="margin-left:.5rem">Next ›</a>
+        {{else}}
+            <a class="disabled" style="margin-left:.5rem">Next ›</a>
+        {{end}}
+    </div>
+</div>
 {{end}}

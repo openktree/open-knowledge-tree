@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/openktree/knowledge-registry/internal/model"
 	"github.com/openktree/knowledge-registry/internal/storage"
+	"github.com/openktree/knowledge-registry/internal/store"
 )
 
 // graphSchemaVersion is the bundle schema version the registry stamps
@@ -150,6 +152,9 @@ func (r *Registry) PullGraph(ctx context.Context, graphID string) (*model.GraphM
 
 	meta, err := r.store.GetGraph(ctx, graphID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
 		return nil, fmt.Errorf("reading graph %s: %w", graphID, err)
 	}
 	// Annotate with a presigned download URL so the client can fetch

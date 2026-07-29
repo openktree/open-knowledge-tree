@@ -561,6 +561,38 @@ func (s *SQLiteStore) CountAllSources(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// DeleteSource removes a source's metadata row + the decomposition
+// rows that reference it, in a single transaction. Returns
+// ErrNotFound when the source id is missing. The S3 objects
+// (sources/{id}.json.gz + decompositions/{id}/{model}.json.gz)
+// are NOT touched here — the service layer composes this with the
+// storage delete so a missing S3 object is non-fatal.
+func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM sources WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting source %s: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM decompositions WHERE source_id = ?`, id); err != nil {
+		return fmt.Errorf("deleting decompositions for source %s: %w", id, err)
+	}
+
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) Stats(ctx context.Context) (repoCount, sourceCount int, err error) {
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repositories`).Scan(&repoCount)
 	if err != nil {
