@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -197,4 +198,51 @@ func (h *GraphHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "graph deleted"})
+}
+
+// CleanupUploads handles POST /api/v1/admin/cleanup-uploads?max_age=1h.
+// Lists in-progress multipart uploads in the storage backend and
+// aborts the ones older than max_age (orphaned from failed pushes).
+// In-flight pushes younger than max_age are left alone.
+//
+// The endpoint is admin-only (mounted under the admin group in the
+// router). Non-S3 backends (filesystem/local dev) return 503 — only
+// the S3 backend has multipart uploads.
+//
+// Query param: max_age — Go duration (e.g. "1h", "30m", "2h").
+// Default "1h". 400 on parse error.
+func (h *GraphHandler) CleanupUploads(w http.ResponseWriter, r *http.Request) {
+	maxAge := 1 * time.Hour
+	if v := r.URL.Query().Get("max_age"); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "max_age must be a Go duration (e.g. 1h, 30m): "+err.Error())
+			return
+		}
+		if parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "max_age must be a positive duration")
+			return
+		}
+		maxAge = parsed
+	}
+
+	listed, aborted, failed, err := h.svc.CleanupMultipartUploads(r.Context(), maxAge)
+	if err != nil {
+		// Non-S3 backend → 503; anything else → 500.
+		if err.Error() == "cleanup not supported for this storage backend" {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		log.Printf("cleanup-uploads: %v", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"listed":  listed,
+		"aborted": aborted,
+		"failed":  len(failed),
+		"max_age": maxAge.String(),
+		"uploads": failed,
+	})
 }

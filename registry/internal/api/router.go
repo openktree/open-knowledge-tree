@@ -82,6 +82,7 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 			r.Use(authMW.RequireRole("admin"))
 			r.Get("/admin/users", adminH.ListUsers)
 			r.Put("/admin/users/{id}/role", adminH.UpdateRole)
+			r.Post("/admin/cleanup-uploads", graphH.CleanupUploads)
 		})
 
 		// Source endpoints (auth mode gating)

@@ -277,3 +277,21 @@ func MarshalGraphBundleJSON(data []byte, out interface{}) error {
 	}
 	return nil
 }
+
+// CleanupMultipartUploads lists and aborts orphaned multipart uploads
+// in the storage backend. Only the S3 backend supports multipart
+// uploads; a filesystem/local backend returns an error so the HTTP
+// handler can map it to 503. The maxAge threshold (Go duration)
+// protects in-flight pushes: only uploads initiated before
+// now - maxAge are aborted.
+//
+// Returns the count of uploads listed, the count aborted, and the
+// subset that failed to abort (with their info so the caller can
+// surface them in the response).
+func (r *Registry) CleanupMultipartUploads(ctx context.Context, maxAge time.Duration) (listed, aborted int, failed []storage.MultipartUploadInfo, err error) {
+	s3Store, ok := r.storage.(*storage.S3Store)
+	if !ok {
+		return 0, 0, nil, fmt.Errorf("cleanup not supported for this storage backend")
+	}
+	return s3Store.CleanupMultipartUploads(ctx, maxAge)
+}

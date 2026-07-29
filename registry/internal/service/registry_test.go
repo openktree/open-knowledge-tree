@@ -629,3 +629,20 @@ func TestPushDecomposition_PromptsetHash_UpdatedOnRepush(t *testing.T) {
 		t.Errorf("promptset_hash after re-push = %q, want %q (should be updated)", got, newHash)
 	}
 }
+
+// TestCleanupMultipartUploads_NotS3 verifies the service rejects
+// cleanup on a non-S3 backend (the mock is not *storage.S3Store).
+// The HTTP handler maps this error to 503 Service Unavailable.
+func TestCleanupMultipartUploads_NotS3(t *testing.T) {
+	r, _ := newTestRegistry(t, 0)
+	listed, aborted, failed, err := r.CleanupMultipartUploads(context.Background(), time.Hour)
+	if err == nil {
+		t.Fatalf("expected error for non-S3 backend, got nil")
+	}
+	if err.Error() != "cleanup not supported for this storage backend" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if listed != 0 || aborted != 0 || failed != nil {
+		t.Fatalf("expected zero counts, got listed=%d aborted=%d failed=%v", listed, aborted, failed)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"strings"
 	"time"
@@ -313,4 +314,88 @@ func (s *S3Store) ReadAll(ctx context.Context, key string) ([]byte, string, erro
 
 func (s *S3Store) StoreJSON(ctx context.Context, key string, data []byte) error {
 	return s.Store(ctx, key, data, "application/json")
+}
+
+// MultipartUploadInfo describes one in-progress (or just-aborted)
+// multipart upload surfaced by CleanupMultipartUploads. The fields
+// mirror the relevant subset of types.MultipartUpload so the admin
+// endpoint's JSON response stays decoupled from the AWS SDK.
+type MultipartUploadInfo struct {
+	Key       string    `json:"key"`
+	UploadID  string    `json:"upload_id"`
+	Initiated time.Time `json:"initiated"`
+}
+
+// CleanupMultipartUploads lists in-progress multipart uploads in the
+// bucket and aborts the ones initiated before `now - maxAge`. A push
+// that's still running is younger than maxAge and is left alone; a push
+// that died mid-upload leaves an orphan older than maxAge, and its
+// parts are released back to R2 (no further storage charges).
+//
+// `listed` is every upload the bucket reported (orphaned + in-flight);
+// `aborted` is the subset that was successfully aborted; `failed`
+// carries the orphans whose AbortMultipartUpload call returned an
+// error (logged and skipped, not retried here — the next cleanup run
+// picks them up). In-flight uploads younger than maxAge are not
+// included in `aborted` or `failed`; they're counted in `listed`.
+func (s *S3Store) CleanupMultipartUploads(ctx context.Context, maxAge time.Duration) (listed, aborted int, failed []MultipartUploadInfo, err error) {
+	cutoff := time.Now().Add(-maxAge)
+
+	var keyMarker, uploadIDMarker *string
+	for {
+		out, lerr := s.client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
+			Bucket:         aws.String(s.bucket),
+			KeyMarker:      keyMarker,
+			UploadIdMarker: uploadIDMarker,
+		})
+		if lerr != nil {
+			return listed, aborted, failed, fmt.Errorf("listing multipart uploads: %w", lerr)
+		}
+
+		for _, u := range out.Uploads {
+			listed++
+			// S3 may omit Key/UploadId on malformed entries; skip them.
+			key := aws.ToString(u.Key)
+			uploadID := aws.ToString(u.UploadId)
+			if key == "" || uploadID == "" {
+				continue
+			}
+			// nil Initiated (rare) can't be age-checked; treat as orphan
+			// so a corrupt entry gets reaped rather than leaking.
+			initiated := time.Time{}
+			if u.Initiated != nil {
+				initiated = *u.Initiated
+			}
+			if !initiated.Before(cutoff) && !initiated.IsZero() {
+				continue
+			}
+			info := MultipartUploadInfo{
+				Key:       key,
+				UploadID:   uploadID,
+				Initiated: initiated,
+			}
+			if _, aerr := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+				Bucket:   aws.String(s.bucket),
+				Key:      aws.String(key),
+				UploadId: aws.String(uploadID),
+			}); aerr != nil {
+				failed = append(failed, info)
+				log.Printf("storage: aborting multipart upload %s/%s: %v", key, uploadID, aerr)
+				continue
+			}
+			aborted++
+		}
+
+		// Pagination: S3 returns up to 1000 per call; keep paging
+		// until IsTruncated is false (no NextKeyMarker / NextUploadIDMarker).
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		keyMarker = out.NextKeyMarker
+		uploadIDMarker = out.NextUploadIdMarker
+		if keyMarker == nil && uploadIDMarker == nil {
+			break
+		}
+	}
+	return listed, aborted, failed, nil
 }
