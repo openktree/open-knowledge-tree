@@ -746,3 +746,76 @@ func TestRegistryUI_SourceListLinksToDetail(t *testing.T) {
 		t.Errorf("sources list: expected link to %s, body %s", expected, page)
 	}
 }
+
+// TestRegistryUI_CreateTokenViaForm pins the form-encoded POST
+// path that the server-rendered UI's create-token form uses.
+// Regression check for the "name is required" bug: the form
+// posts application/x-www-form-urlencoded, but the handler was
+// reading JSON; the JSON decode failed silently and the empty
+// req.Name triggered the 400. This test makes sure the form
+// transport is honored and the token actually lands in the
+// user's list.
+func TestRegistryUI_CreateTokenViaForm(t *testing.T) {
+	baseURL := registryUIBaseURL()
+	if baseURL == "" {
+		t.Skip("OKT_TEST_REGISTRY_URL not set; skipping live registry create-token-via-form test")
+	}
+
+	email, password := registryUIRegisterUser(t, baseURL)
+	cookies := registryUILoginAndGetCookies(t, baseURL, email, password)
+
+	tokenName := fmt.Sprintf("e2e-via-form-%d", time.Now().UnixNano())
+	client := newRegistryUIJarClient(t)
+	client.Jar.SetCookies(mustURL(t, baseURL), cookies)
+	form := url.Values{}
+	form.Set("name", tokenName)
+	form.Set("scope", "read")
+	form.Set("expires_in_days", "0")
+	req, err := http.NewRequest("POST", baseURL+"/ui/tokens", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("build create-token request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// The handler writes JSON on success (the createTokenResponse
+	// shape), so don't follow a redirect — there isn't one.
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create token: expected 201, got %d, body %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("create token: decode response: %v (body %s)", err, string(body))
+	}
+	if out.Name != tokenName {
+		t.Errorf("create token: expected name %q, got %q", tokenName, out.Name)
+	}
+	if out.Token == "" {
+		t.Errorf("create token: expected non-empty token in response, got %s", string(body))
+	}
+	if out.ID == "" {
+		t.Errorf("create token: expected non-empty id, got %s", string(body))
+	}
+
+	// The token should now appear in the user's /ui/tokens list.
+	listResp, err := client.Get(baseURL + "/ui/tokens")
+	if err != nil {
+		t.Fatalf("tokens list: %v", err)
+	}
+	listBody, _ := io.ReadAll(listResp.Body)
+	listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("tokens list: expected 200, got %d, body %s", listResp.StatusCode, string(listBody))
+	}
+	if !strings.Contains(string(listBody), tokenName) {
+		t.Errorf("tokens list: expected %q in body, got %s", tokenName, string(listBody))
+	}
+}
