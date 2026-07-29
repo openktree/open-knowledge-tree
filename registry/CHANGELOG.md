@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.3](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.2...registry-v0.6.3) (2026-07-29)
+
+
+### Bug Fixes
+
+* **registry:** read role from DB on every request, not stale JWT claim ([20c680d](https://github.com/openktree/open-knowledge-tree/commit/20c680d3fe16ed367a7f23105f7ddb2085dcb309))
+* **registry:** read role from DB on every request, not stale JWT claim ([4215084](https://github.com/openktree/open-knowledge-tree/commit/42150844d7a55699a94e2faf84f7e30649323968))
+
 ## [0.6.2](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.1...registry-v0.6.2) (2026-07-29)
 
 
