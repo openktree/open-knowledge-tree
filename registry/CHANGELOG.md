@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.2](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.1...registry-v0.6.2) (2026-07-29)
+
+
+### Bug Fixes
+
+* **registry:** make API tokens authenticate, prefix with okr_, render in copyable box ([93a70f2](https://github.com/openktree/open-knowledge-tree/commit/93a70f24d200c97d89ba2b88707079d9f4a7af43))
+* **registry:** make API tokens authenticate, prefix with okr_, render in copyable box ([0e674ac](https://github.com/openktree/open-knowledge-tree/commit/0e674ac63461d6914a18718c4eda89c0e4d0c451))
+
 ## [0.6.1](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.0...registry-v0.6.1) (2026-07-29)
 
 
