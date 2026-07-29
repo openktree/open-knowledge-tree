@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,7 +62,25 @@ func (h *TokenHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createTokenRequest
-	if err := decodeBody(r, &req); err != nil || req.Name == "" {
+	// The server-rendered UI posts the create-token form as
+	// application/x-www-form-urlencoded; the API surface keeps
+	// using JSON. Route on Content-Type so both transports work
+	// without the templates having to emit JSON.
+	if isFormRequest(r) {
+		req.Name = r.FormValue("name")
+		req.Scope = r.FormValue("scope")
+		if v := r.FormValue("expires_in_days"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				req.Expiry = n
+			}
+		}
+	} else {
+		if err := decodeBody(r, &req); err != nil || req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+	}
+	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
@@ -126,4 +146,13 @@ func (h *TokenHandler) Revoke(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "token revoked"})
+}
+
+// isFormRequest reports whether the caller posted a form-encoded
+// body (the server-rendered UI's token create form) rather than
+// JSON (the API surface). The token create handler reads both;
+// other handlers stay JSON-only.
+func isFormRequest(r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	return strings.HasPrefix(ct, "application/x-www-form-urlencoded")
 }
