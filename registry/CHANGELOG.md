@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.4](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.3...registry-v0.6.4) (2026-07-29)
+
+
+### Bug Fixes
+
+* **registry:** stop delete/revoke buttons from overflowing the card ([6f1f030](https://github.com/openktree/open-knowledge-tree/commit/6f1f030abc3d9038aac14425442a7ab6cd4dc468))
+* **registry:** stop delete/revoke buttons from overflowing the card ([309241e](https://github.com/openktree/open-knowledge-tree/commit/309241e6a6eb3ccd6f01ef7dbc1cf41fdee2b198))
+
 ## [0.6.3](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.2...registry-v0.6.3) (2026-07-29)
 
 
