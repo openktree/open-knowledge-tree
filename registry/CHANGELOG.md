@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.0...registry-v0.6.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **registry:** accept form-encoded POST on /ui/tokens create ([0722d39](https://github.com/openktree/open-knowledge-tree/commit/0722d39e32f53420d85e85a28bb0eed90ef839e2))
+* **registry:** accept form-encoded POST on /ui/tokens create ([321ac4b](https://github.com/openktree/open-knowledge-tree/commit/321ac4b996f6037bc1e185059dd7aac1dc85e5ab))
+
 ## [0.6.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.5.8...registry-v0.6.0) (2026-07-29)
 
 
