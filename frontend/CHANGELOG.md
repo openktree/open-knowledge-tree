@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.7.0...frontend-v0.7.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **frontend:** use top-level source_count in inline citation modal ([4a76b5c](https://github.com/openktree/open-knowledge-tree/commit/4a76b5c84ed4dcd0e29d39d4fc8e6412be2c6dee))
+
 ## [0.7.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.6.0...frontend-v0.7.0) (2026-07-31)
 
 
