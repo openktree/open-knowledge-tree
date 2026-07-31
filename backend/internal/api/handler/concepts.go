@@ -122,6 +122,14 @@ func factIDFromURL(r *http.Request) (pgtype.UUID, error) {
 // by total fact_count DESC, canonical_name ASC. Paginated by group.
 // The list response omits per-context aliases (the detail endpoint
 // returns those); each context entry still carries its fact_count.
+//
+// By default, concepts whose total_fact_count is below the configured
+// concepts.min_concept_fact_count threshold (default 5) are hidden so
+// the listing surfaces only concepts with statistically meaningful
+// fact coverage. Pass show_small=true to disable the filter and
+// return small concepts as well. The filter applies to all three
+// search paths (hybrid, q="" summary table, q!="" live FTS) and the
+// page `total` reflects the filtered set.
 func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 	pool := appmw.PoolFromContext(r.Context())
 	if pool == nil {
@@ -139,6 +147,16 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	limit, offset := parsePaging(r)
 
+	// Small-concept filter: hide groups whose total_fact_count is below
+	// the configured threshold unless the client opts in via show_small.
+	// minFactCount=0 disables the SQL/Go filter (the "show everything"
+	// mode); the summary-table path passes it as a SQL bind, the FTS
+	// and hybrid paths apply it post-grouping in Go.
+	minFactCount := int64(c.deps.Config.Concepts.MinConceptFactCountOr(5))
+	if r.URL.Query().Get("show_small") == "true" {
+		minFactCount = 0
+	}
+
 	// Hybrid search path: when the caller supplied a non-empty
 	// `q`, the qdrant store + embedding provider are wired, and
 	// the master switch is on, fuse the lexical (Postgres
@@ -154,7 +172,7 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 			EmbeddingProvider: c.deps.EmbeddingProvider,
 			EmbeddingCfg:      c.deps.Config.Providers.Embedding,
 			Hybrid:            c.deps.Config.Search.Hybrid,
-		}, repoID, q, limit, offset)
+		}, repoID, q, minFactCount, limit, offset)
 		if hErr != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to search concepts")
 			return
@@ -180,6 +198,7 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 	if q == "" {
 		pageRows, err := queries.ListConceptGroupsByRepoPage(r.Context(), store.ListConceptGroupsByRepoPageParams{
 			RepositoryID: repoID,
+			MinFactCount: minFactCount,
 			Limit:        int32(limit),
 			Offset:       int32(offset),
 		})
@@ -187,7 +206,10 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to list concepts")
 			return
 		}
-		total, err := queries.CountConceptGroupsByRepo(r.Context(), repoID)
+		total, err := queries.CountConceptGroupsByRepo(r.Context(), store.CountConceptGroupsByRepoParams{
+			RepositoryID: repoID,
+			MinFactCount: minFactCount,
+		})
 		if err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to count concepts")
 			return
@@ -258,15 +280,6 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	total, err := queries.CountGroupedConceptsByRepo(r.Context(), store.CountGroupedConceptsByRepoParams{
-		RepositoryID: repoID,
-		Q:            q,
-	})
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to count concepts")
-		return
-	}
-
 	// Group per-context rows by lower(canonical_name). The list
 	// endpoint omits per-context aliases (the detail endpoint
 	// returns them), so we pass a nil aliases map.
@@ -275,6 +288,13 @@ func (c *Concepts) ListConcepts(w http.ResponseWriter, r *http.Request) {
 		groupRows = append(groupRows, concepts.FromListGroupedConceptsByRepoRow(r))
 	}
 	groups := concepts.BuildGroups(groupRows, nil)
+	// Apply the small-concept filter post-grouping, then recompute
+	// the total from the filtered slice so the page envelope's count
+	// matches the listed rows.
+	if minFactCount > 0 {
+		groups = concepts.FilterByMinFactCount(groups, minFactCount)
+	}
+	total := int64(len(groups))
 	page := concepts.Paginate(groups, offset, limit)
 
 	httputil.WriteJSON(w, http.StatusOK, pageEnvelope{

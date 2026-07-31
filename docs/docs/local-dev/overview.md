@@ -70,7 +70,7 @@ The `.env` file at the repo root is loaded by Docker Compose. Key variables:
 | `OLLAMA_API_KEY` | no* | Ollama Cloud API key (alternative LLM provider) |
 | `OPENALEX_EMAIL` | no | Email for OpenAlex API (polite pool) |
 | `UNPAYWALL_EMAIL` | no | Email for Unpaywall DOI lookup |
-| `OKT_FETCH_IMPERSONATE` | no | TLS impersonation profile (default `chrome_124`) |
+| `OKT_FETCH_IMPERSONATE` | no | TLS impersonation profile (default `chrome_133`) |
 | `FLARESOLVERR_URL` | no | FlareSolverr endpoint (defaults to the dev service) |
 
 At least one LLM provider key (`OPENROUTER_API_KEY` or `OLLAMA_API_KEY`) is required for the pipeline to work — fact extraction, concept extraction, and synthesis all call an LLM.

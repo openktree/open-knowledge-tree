@@ -183,12 +183,20 @@ const countConceptGroupsByRepo = `-- name: CountConceptGroupsByRepo :one
 SELECT COUNT(*)::bigint
 FROM okt_repository.concept_groups
 WHERE repository_id = $1
+  AND $2::bigint <= total_fact_count
 `
 
-// Companion count for ListConceptGroupsByRepoPage. Index-only COUNT
-// on the PK prefix (repository_id).
-func (q *Queries) CountConceptGroupsByRepo(ctx context.Context, repositoryID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countConceptGroupsByRepo, repositoryID)
+type CountConceptGroupsByRepoParams struct {
+	RepositoryID pgtype.UUID `json:"repository_id"`
+	MinFactCount int64       `json:"min_fact_count"`
+}
+
+// Companion count for ListConceptGroupsByRepoPage. Must take the same
+// @min_fact_count predicate so the page total matches the listed rows.
+// Index-only COUNT on the PK prefix (repository_id) when the filter is
+// disabled (min_fact_count = 0).
+func (q *Queries) CountConceptGroupsByRepo(ctx context.Context, arg CountConceptGroupsByRepoParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countConceptGroupsByRepo, arg.RepositoryID, arg.MinFactCount)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -1129,12 +1137,14 @@ SELECT repository_id,
        any_embedded
 FROM okt_repository.concept_groups
 WHERE repository_id = $1
+  AND $2::bigint <= total_fact_count
 ORDER BY total_fact_count DESC NULLS LAST, canonical_name ASC
-LIMIT $3 OFFSET $2
+LIMIT $4 OFFSET $3
 `
 
 type ListConceptGroupsByRepoPageParams struct {
 	RepositoryID pgtype.UUID `json:"repository_id"`
+	MinFactCount int64       `json:"min_fact_count"`
 	Offset       int32       `json:"offset"`
 	Limit        int32       `json:"limit"`
 }
@@ -1153,9 +1163,17 @@ type ListConceptGroupsByRepoPageRow struct {
 // idx_concept_groups_repo_count_name. q != "" does NOT use this
 // query (it needs alias visibility the summary lacks); the handler
 // falls back to the live ListGroupedConceptsByRepo for q != "".
-// @limit / @offset apply at the group level.
+// @min_fact_count filters out groups whose total_fact_count is below
+// the threshold (the "hide small concepts by default" gate); pass 0
+// to disable the filter (show_small=true). @limit / @offset apply at
+// the group level.
 func (q *Queries) ListConceptGroupsByRepoPage(ctx context.Context, arg ListConceptGroupsByRepoPageParams) ([]ListConceptGroupsByRepoPageRow, error) {
-	rows, err := q.db.Query(ctx, listConceptGroupsByRepoPage, arg.RepositoryID, arg.Offset, arg.Limit)
+	rows, err := q.db.Query(ctx, listConceptGroupsByRepoPage,
+		arg.RepositoryID,
+		arg.MinFactCount,
+		arg.Offset,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -1237,6 +1237,13 @@ type ConceptsConfig struct {
 	// labeled "stable" (vs "weak" below it, down to the floor).
 	// Default 6.
 	StableSharedFactCount int `mapstructure:"stable_shared_fact_count"`
+	// MinConceptFactCount is the default floor for the concept
+	// list/search surfaces (REST GET /concepts and the MCP
+	// searchConcepts tool): concepts whose total_fact_count is below
+	// this threshold are hidden unless the client passes
+	// show_small=true. The intent is to surface only concepts with
+	// statistically meaningful fact coverage by default. Default 5.
+	MinConceptFactCount int `mapstructure:"min_concept_fact_count"`
 }
 
 // MinSharedFactCountOr returns the configured MinSharedFactCount or
@@ -1253,6 +1260,15 @@ func (c ConceptsConfig) MinSharedFactCountOr(def int) int {
 func (c ConceptsConfig) StableSharedFactCountOr(def int) int {
 	if c.StableSharedFactCount > 0 {
 		return c.StableSharedFactCount
+	}
+	return def
+}
+
+// MinConceptFactCountOr returns the configured MinConceptFactCount or
+// the default (5) when zero/negative.
+func (c ConceptsConfig) MinConceptFactCountOr(def int) int {
+	if c.MinConceptFactCount > 0 {
+		return c.MinConceptFactCount
 	}
 	return def
 }
@@ -1798,6 +1814,26 @@ type ResolutionProvidersConfig struct {
 	// an operator escape hatch for reordering without code
 	// changes (e.g. "unpaywall,tls,fetch,flaresolverr").
 	Chain string `mapstructure:"chain"`
+	// AutoSkip configures the per-(host,provider) auto-skip
+	// learned by the strategy from the fetch_attempts audit
+	// trail. When a (host, provider) tier has at least
+	// MinSample total attempts and a failure rate >=
+	// FailureThreshold, the strategy skips that tier for
+	// that host until the skip row expires (Cooldown). The
+	// skip decisions are stored in
+	// okt_repository.host_skip_providers so the strategy
+	// reads them cheaply at fetch time instead of
+	// re-aggregating the JSONB on every call.
+	AutoSkip AutoSkipConfig `mapstructure:"auto_skip"`
+}
+
+// AutoSkipConfig governs the learned (host,provider) skip list
+// the strategy enforces in addition to the static host_overrides.
+type AutoSkipConfig struct {
+	Enabled           bool          `mapstructure:"enabled"`
+	MinSample         int           `mapstructure:"min_sample"`
+	FailureThreshold  float64       `mapstructure:"failure_threshold"`
+	Cooldown          time.Duration `mapstructure:"cooldown"`
 }
 
 type FetchResolutionConfig struct {
@@ -1810,10 +1846,14 @@ type FetchResolutionConfig struct {
 // FetchRetryConfig configures retry behaviour for the HTTP fetch
 // and TLS impersonation resolution providers. A MaxAttempts of 1
 // disables retry. BaseDelay and MaxDelay use exponential backoff.
+// Retry403MaxAttempts caps 403-specific retries (0 = treat 403 as
+// permanent, the historical behaviour); other retryable errors
+// (429/5xx/network) continue to use MaxAttempts.
 type FetchRetryConfig struct {
-	MaxAttempts int           `mapstructure:"max_attempts"`
-	BaseDelay   time.Duration `mapstructure:"base_delay"`
-	MaxDelay    time.Duration `mapstructure:"max_delay"`
+	MaxAttempts         int           `mapstructure:"max_attempts"`
+	BaseDelay           time.Duration `mapstructure:"base_delay"`
+	MaxDelay            time.Duration `mapstructure:"max_delay"`
+	Retry403MaxAttempts int           `mapstructure:"retry_403_max_attempts"`
 }
 
 // UnpaywallProviderConfig configures the Unpaywall v2
@@ -1826,8 +1866,45 @@ type FetchRetryConfig struct {
 // supplied via the UNPAYWALL_EMAIL env var so docker
 // compose / secrets managers can keep the address out of
 // the YAML.
+//
+// Timeout and Retry govern the OA-location fetch (the
+// publisher / repository URL Unpaywall points us at after
+// the API lookup), NOT the Unpaywall API call itself (which
+// keeps its own inline 1-retry/1s loop for API 429s).
+// This split exists because the two failure modes are
+// different in kind: the Unpaywall API is fast and
+// occasionally throttles (429), while OA hosts are slow and
+// often sit behind publisher WAFs that 403 a plain HTTP
+// client. The audit trail showed ~396 OA-host 403s and
+// ~223 OA-body timeouts against zero Unpaywall API 429s,
+// so the OA-fetch path gets its own, more generous retry
+// budget matching the fetch/tls tiers (defaultRetryConfig)
+// while the API lookup stays on its tight 1-retry loop.
 type UnpaywallProviderConfig struct {
 	Email string `mapstructure:"email"`
+	// Timeout is the per-request budget for the OA-location
+	// fetch (the publisher/repository URL, not the Unpaywall
+	// API call). Defaults to 60s when zero, matching the
+	// strategy's perProviderTimeout — the previous hardcoded
+	// 30s gave up at the halfway mark of the tier's budget on
+	// slow-but-legitimate OA hosts (Europe PMC, arXiv,
+	// journals with heavy redirect chains), producing ~223
+	// timeouts in the audit trail.
+	Timeout time.Duration `mapstructure:"timeout"`
+	// Retry governs retries on the OA-location fetch only.
+	// Many OA hosts (thelancet.com, cell.com, mdpi.com,
+	// link.aps.org, nejm.org) sit behind WAFs that 403 a
+	// plain HTTP client under burst but recover in a quiet
+	// window; a short retry catches the transient 403s
+	// before the chain falls through to TLS/FlareSolverr.
+	// Timeouts on slow OA hosts are also retried.
+	// ErrInsufficientContent (a consent/JS page, not a
+	// transient error) is NOT retried. The budget mirrors
+	// defaultRetryConfig (3 attempts, 2-15s backoff) with
+	// 403 capped at retry_403_max_attempts (default 2 = 1
+	// retry on 403) since a publisher 403 is more likely
+	// permanent than a transient Cloudflare 403.
+	Retry FetchRetryConfig `mapstructure:"retry"`
 }
 
 // TLSImpersonationConfig configures the TLS-impersonation
@@ -1868,6 +1945,11 @@ type FlareSolverrConfig struct {
 	Endpoints      []string      `mapstructure:"endpoints"`
 	Timeout        time.Duration `mapstructure:"timeout"`
 	MaxConcurrency int           `mapstructure:"max_concurrency"`
+	// Retry governs retries on transient sidecar failures
+	// (network error, sidecar 5xx, decode error).
+	// ErrInsufficientContent (a genuine block that rendered
+	// no content) is NOT retried. max_attempts: 1 disables.
+	Retry FetchRetryConfig `mapstructure:"retry"`
 }
 
 type ServerConfig struct {
@@ -2086,8 +2168,13 @@ func Load(configPath string) (*Config, error) {
 	// deploys), then (when --config is a dir) the config dir.
 	loadDotEnv(".", binDir, configPath)
 
-	v := viper.New()
+	v := viper.NewWithOptions(viper.KeyDelimiter("/"))
 	v.SetConfigType("yaml")
+	// The "/" key delimiter (set above) means host names
+	// containing a "." (e.g. "reddit.com" in
+	// providers.resolution.host_overrides) are not split
+	// into nested maps. "/" never appears in any config key
+	// in this project, so it is a safe delimiter.
 
 	_, usedEmbeddedDefault, err := loadDefaultConfig(v, configPath, binDir)
 	if err != nil {
@@ -2306,6 +2393,12 @@ func Load(configPath string) (*Config, error) {
 	}
 	cfg.Concepts.MinSharedFactCount = minF
 	cfg.Concepts.StableSharedFactCount = stableF
+
+	// Concepts list/search default floor: concepts with fewer than
+	// MinConceptFactCount facts are hidden from REST GET /concepts
+	// and the MCP searchConcepts tool unless the client passes
+	// show_small=true. Coerce a non-positive value to the default (5).
+	cfg.Concepts.MinConceptFactCount = cfg.Concepts.MinConceptFactCountOr(5)
 
 	// Summarization curriculum tiers: sort by MinFacts ascending
 	// and drop invalid tiers (non-positive BatchSize) so TierFor's

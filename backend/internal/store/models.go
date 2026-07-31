@@ -160,6 +160,17 @@ type OktRepositoryFactSource struct {
 	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
 }
 
+type OktRepositoryHostSkipProvider struct {
+	RepositoryID pgtype.UUID        `json:"repository_id"`
+	Host         string             `json:"host"`
+	ProviderID   string             `json:"provider_id"`
+	FailureRate  float64            `json:"failure_rate"`
+	SampleSize   int32              `json:"sample_size"`
+	SkippedAt    pgtype.Timestamptz `json:"skipped_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	Manual       bool               `json:"manual"`
+}
+
 type OktRepositoryInvestigation struct {
 	ID           pgtype.UUID        `json:"id"`
 	RepositoryID pgtype.UUID        `json:"repository_id"`

@@ -294,13 +294,16 @@ func (m *MCP) registerTools() {
 	// searchConcepts: list concept groups in a repository.
 	m.mcpServer.AddTool(
 		mcp.NewTool("searchConcepts",
-			mcp.WithDescription("List the concept groups in a repository, optionally filtered by full-text search. Each group carries its canonical name, total fact_count across contexts, a search_rank (relevance to the query, 0 when unfiltered), and a contexts array (concept_id, context, fact_count, aliases). Use getConcept / getConceptSummaries / getRelatedConcepts with a concept_id or canonical name to drill in. The repository argument accepts a UUID or slug. This is a discovery/exploration substrate, not a targeted-QA path: the MultiHop-RAG experiment scored concept-first retrieval 0.52 on specific questions vs 0.92 for facts. Use searchFacts for specific-claim verification."),
+			mcp.WithDescription("List the concept groups in a repository, optionally filtered by full-text search. Each group carries its canonical name, total fact_count across contexts, a search_rank (relevance to the query, 0 when unfiltered), and a contexts array (concept_id, context, fact_count, aliases). Use getConcept / getConceptSummaries / getRelatedConcepts with a concept_id or canonical name to drill in. The repository argument accepts a UUID or slug. This is a discovery/exploration substrate, not a targeted-QA path: the MultiHop-RAG experiment scored concept-first retrieval 0.52 on specific questions vs 0.92 for facts. Use searchFacts for specific-claim verification.\n\nBy default, concepts whose total_fact_count is below the configured min_concept_fact_count threshold (default 5) are hidden so the listing surfaces only concepts with statistically meaningful fact coverage. Pass show_small=true to disable the filter and return small concepts as well."),
 			mcp.WithString("repository",
 				mcp.Required(),
 				mcp.Description("Repository UUID or slug (from getRepositories)."),
 			),
 			mcp.WithString("query",
 				mcp.Description("Optional full-text filter using Postgres websearch_to_tsquery syntax: space-separated words, quoted phrases, OR/AND, negation with -. Matches canonical_name (weight A), alias_text (weight A), and description (weight D), so name/alias hits rank above description-only hits. Empty returns all groups."),
+			),
+			mcp.WithBoolean("show_small",
+				mcp.Description("When true, return concepts with fewer than the configured min_concept_fact_count (default 5) facts as well. By default such small concepts are hidden so the listing surfaces only concepts with statistically meaningful fact coverage."),
 			),
 			mcp.WithNumber("limit",
 				mcp.Description("Maximum groups to return (1-200, default 50)."),
@@ -1317,6 +1320,14 @@ func (m *MCP) handleSearchConcepts(ctx context.Context, req mcp.CallToolRequest)
 		offset = 0
 	}
 
+	// Small-concept filter: hide groups whose total_fact_count is below
+	// the configured threshold unless the client opts in via show_small.
+	// minFactCount=0 disables the filter (the "show everything" mode).
+	minFactCount := int64(m.deps.Config.Concepts.MinConceptFactCountOr(5))
+	if req.GetBool("show_small", false) {
+		minFactCount = 0
+	}
+
 	repoID, pool, err := m.resolveRepoPool(ctx, repoArg)
 	if err != nil {
 		return mcp.NewToolResultError("repository not found: " + err.Error()), nil
@@ -1339,7 +1350,7 @@ func (m *MCP) handleSearchConcepts(ctx context.Context, req mcp.CallToolRequest)
 			EmbeddingProvider: m.embeddingProvider,
 			EmbeddingCfg:      m.embeddingCfg,
 			Hybrid:            m.searchHybrid,
-		}, repoID, q, limit, offset)
+		}, repoID, q, minFactCount, limit, offset)
 		if hErr != nil {
 			return mcp.NewToolResultError("failed to search concepts"), nil
 		}
@@ -1358,13 +1369,17 @@ func (m *MCP) handleSearchConcepts(ctx context.Context, req mcp.CallToolRequest)
 	if q == "" {
 		pageRows, err := queries.ListConceptGroupsByRepoPage(ctx, store.ListConceptGroupsByRepoPageParams{
 			RepositoryID: repoID,
+			MinFactCount: minFactCount,
 			Limit:        int32(limit),
 			Offset:       int32(offset),
 		})
 		if err != nil {
 			return mcp.NewToolResultError("failed to list concepts"), nil
 		}
-		total, err := queries.CountConceptGroupsByRepo(ctx, repoID)
+		total, err := queries.CountConceptGroupsByRepo(ctx, store.CountConceptGroupsByRepoParams{
+			RepositoryID: repoID,
+			MinFactCount: minFactCount,
+		})
 		if err != nil {
 			return mcp.NewToolResultError("failed to count concepts"), nil
 		}
@@ -1424,18 +1439,16 @@ func (m *MCP) handleSearchConcepts(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return mcp.NewToolResultError("failed to list concepts"), nil
 	}
-	total, err := queries.CountGroupedConceptsByRepo(ctx, store.CountGroupedConceptsByRepoParams{
-		RepositoryID: repoID,
-		Q:            q,
-	})
-	if err != nil {
-		return mcp.NewToolResultError("failed to count concepts"), nil
-	}
 	groupRows := make([]concepts.GroupRow, 0, len(rows))
 	for _, r := range rows {
 		groupRows = append(groupRows, concepts.FromListGroupedConceptsByRepoRow(r))
 	}
 	groups := concepts.BuildGroups(groupRows, nil)
+	// Apply the small-concept filter post-grouping, then recompute
+	// the total from the filtered slice so the result count matches
+	// the listed rows.
+	groups = concepts.FilterByMinFactCount(groups, minFactCount)
+	total := int64(len(groups))
 	page := concepts.Paginate(groups, offset, limit)
 	return structuredResult(map[string]any{
 		"concepts":    page,

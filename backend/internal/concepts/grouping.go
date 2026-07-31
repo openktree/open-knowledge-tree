@@ -240,6 +240,28 @@ func LoadAliasesByConceptID(ctx context.Context, queries *store.Queries, ids []p
 	return m, nil
 }
 
+// FilterByMinFactCount returns the groups whose TotalFactCount is at
+// least min. When min <= 0 the input is returned unchanged (the
+// filter is disabled). The slice is not re-sorted: callers receive
+// groups already ordered by TotalFactCount DESC / CanonicalName ASC
+// (or by SearchRank DESC for the search path), and a filter that
+// preserves that order keeps the response stable. Used by the
+// concept list/search surfaces to hide "small" concepts (groups with
+// fewer than the configured threshold of facts) by default; the
+// caller passes min=0 when the client opts in via show_small=true.
+func FilterByMinFactCount(groups []Group, min int64) []Group {
+	if min <= 0 || len(groups) == 0 {
+		return groups
+	}
+	out := make([]Group, 0, len(groups))
+	for _, g := range groups {
+		if g.TotalFactCount >= min {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 // Paginate slices groups to [offset, offset+limit) with bounds
 // clamping. Used by the list handler after BuildGroups.
 func Paginate(groups []Group, offset, limit int) []Group {
@@ -258,6 +280,7 @@ func Paginate(groups []Group, offset, limit int) []Group {
 	}
 	return groups[offset:end]
 }
+
 // PageGroupRow is one row of the concept_groups summary (migration
 // 0061): one entry per (repository_id, lower(canonical_name)). It
 // carries the group's precomputed total_fact_count and display

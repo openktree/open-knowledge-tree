@@ -348,11 +348,16 @@ type ConceptResult struct {
 // lexical path (concepts.BuildGroups), with each group's
 // SearchRank set to the MAX FusedScore across its contexts.
 //
+// minFactCount is the small-concept filter floor: groups whose
+// TotalFactCount is below it are dropped before pagination (pass 0
+// to disable). The returned Total reflects the filtered set so the
+// page envelope count matches the listed rows.
+//
 // Fail-open: qdrant/embedding errors log and return the lexical
 // result.
-func HybridConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query string, limit, offset int) (ConceptResult, error) {
+func HybridConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query string, minFactCount int64, limit, offset int) (ConceptResult, error) {
 	if !d.Available() {
-		return runLexicalConcepts(ctx, d, repoID, query, limit, offset, "lexical")
+		return runLexicalConcepts(ctx, d, repoID, query, minFactCount, limit, offset, "lexical")
 	}
 	if err := validateUUID(repoID); err != nil {
 		return ConceptResult{}, err
@@ -378,18 +383,17 @@ func HybridConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query strin
 	})
 	if err != nil {
 		log.Printf("search.hybrid: embedding query failed, falling back to lexical: %v", err)
-		return runLexicalConcepts(ctx, d, repoID, query, limit, offset, "lexical")
+		return runLexicalConcepts(ctx, d, repoID, query, minFactCount, limit, offset, "lexical")
 	}
 	if len(embedResp.Embeddings) == 0 || len(embedResp.Embeddings[0]) == 0 {
 		log.Printf("search.hybrid: embedding returned empty vector, falling back to lexical")
-		return runLexicalConcepts(ctx, d, repoID, query, limit, offset, "lexical")
+		return runLexicalConcepts(ctx, d, repoID, query, minFactCount, limit, offset, "lexical")
 	}
 	queryVec := embedResp.Embeddings[0]
 
 	type lexResult struct {
-		rows  []store.ListGroupedConceptsByRepoRow
-		total int64
-		err   error
+		rows []store.ListGroupedConceptsByRepoRow
+		err  error
 	}
 	type semResult struct {
 		hits []qdrantstore.Hit
@@ -403,19 +407,7 @@ func HybridConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query strin
 			RepositoryID: repoID,
 			Q:            query,
 		})
-		total := int64(0)
-		if lerr == nil {
-			t, terr := d.Queries.CountGroupedConceptsByRepo(ctx, store.CountGroupedConceptsByRepoParams{
-				RepositoryID: repoID,
-				Q:            query,
-			})
-			if terr != nil {
-				lerr = terr
-			} else {
-				total = t
-			}
-		}
-		lexCh <- lexResult{rows: rows, total: total, err: lerr}
+		lexCh <- lexResult{rows: rows, err: lerr}
 	}()
 	go func() {
 		hits, serr := d.Qdrant.SearchSimilarConcepts(ctx, queryVec, repoUUID, d.Hybrid.MinScore, overFetch)
@@ -430,7 +422,7 @@ func HybridConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query strin
 	}
 	if sem.err != nil {
 		log.Printf("search.hybrid: qdrant concept search failed, falling back to lexical: %v", sem.err)
-		return finalizeLexicalPageConcepts(lex.rows, lex.total, limit, offset, "lexical"), nil
+		return finalizeLexicalPageConcepts(lex.rows, minFactCount, limit, offset, "lexical"), nil
 	}
 
 	lexRanks := make([]IDRank, 0, len(lex.rows))
@@ -472,7 +464,7 @@ func HybridConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query strin
 		})
 		if merr != nil {
 			log.Printf("search.hybrid: fetching missing concept rows failed, falling back to lexical: %v", merr)
-			return finalizeLexicalPageConcepts(lex.rows, lex.total, limit, offset, "lexical"), nil
+			return finalizeLexicalPageConcepts(lex.rows, minFactCount, limit, offset, "lexical"), nil
 		}
 		for _, r := range extra {
 			id := pgUUIDToUUID(r.ID)
@@ -526,16 +518,18 @@ func HybridConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query strin
 		})
 	}
 	groups := concepts.BuildGroups(groupRows, nil)
+	groups = concepts.FilterByMinFactCount(groups, minFactCount)
+	total := int64(len(groups))
 	page := concepts.Paginate(groups, offset, limit)
 	return ConceptResult{
 		Groups:     page,
-		Total:      lex.total,
+		Total:      total,
 		ScoreByID:  scoreByID,
 		SearchMode: "hybrid",
 	}, nil
 }
 
-func runLexicalConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query string, limit, offset int, mode string) (ConceptResult, error) {
+func runLexicalConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query string, minFactCount int64, limit, offset int, mode string) (ConceptResult, error) {
 	rows, err := d.Queries.ListGroupedConceptsByRepo(ctx, store.ListGroupedConceptsByRepoParams{
 		RepositoryID: repoID,
 		Q:            query,
@@ -543,28 +537,25 @@ func runLexicalConcepts(ctx context.Context, d Deps, repoID pgtype.UUID, query s
 	if err != nil {
 		return ConceptResult{}, err
 	}
-	total, err := d.Queries.CountGroupedConceptsByRepo(ctx, store.CountGroupedConceptsByRepoParams{
-		RepositoryID: repoID,
-		Q:            query,
-	})
-	if err != nil {
-		return ConceptResult{}, err
-	}
 	groupRows := make([]concepts.GroupRow, 0, len(rows))
 	for _, r := range rows {
 		groupRows = append(groupRows, concepts.FromListGroupedConceptsByRepoRow(r))
 	}
 	groups := concepts.BuildGroups(groupRows, nil)
+	groups = concepts.FilterByMinFactCount(groups, minFactCount)
+	total := int64(len(groups))
 	page := concepts.Paginate(groups, offset, limit)
 	return ConceptResult{Groups: page, Total: total, SearchMode: mode}, nil
 }
 
-func finalizeLexicalPageConcepts(rows []store.ListGroupedConceptsByRepoRow, total int64, limit, offset int, mode string) ConceptResult {
+func finalizeLexicalPageConcepts(rows []store.ListGroupedConceptsByRepoRow, minFactCount int64, limit, offset int, mode string) ConceptResult {
 	groupRows := make([]concepts.GroupRow, 0, len(rows))
 	for _, r := range rows {
 		groupRows = append(groupRows, concepts.FromListGroupedConceptsByRepoRow(r))
 	}
 	groups := concepts.BuildGroups(groupRows, nil)
+	groups = concepts.FilterByMinFactCount(groups, minFactCount)
+	total := int64(len(groups))
 	page := concepts.Paginate(groups, offset, limit)
 	return ConceptResult{Groups: page, Total: total, SearchMode: mode}
 }

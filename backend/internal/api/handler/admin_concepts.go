@@ -477,7 +477,10 @@ func (a *Admin) PreviewRecomputeRepoConceptGroups(w http.ResponseWriter, r *http
 	queries := store.New(pool)
 	previewCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	currentGroups, err := queries.CountConceptGroupsByRepo(previewCtx, repoID)
+	currentGroups, err := queries.CountConceptGroupsByRepo(previewCtx, store.CountConceptGroupsByRepoParams{
+		RepositoryID: repoID,
+		MinFactCount: 0,
+	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "counting concept groups: "+err.Error())
 		return

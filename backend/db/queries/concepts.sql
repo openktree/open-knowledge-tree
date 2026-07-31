@@ -1159,7 +1159,10 @@ GROUP BY c.repository_id, lower(c.canonical_name);
 -- idx_concept_groups_repo_count_name. q != "" does NOT use this
 -- query (it needs alias visibility the summary lacks); the handler
 -- falls back to the live ListGroupedConceptsByRepo for q != "".
--- @limit / @offset apply at the group level.
+-- @min_fact_count filters out groups whose total_fact_count is below
+-- the threshold (the "hide small concepts by default" gate); pass 0
+-- to disable the filter (show_small=true). @limit / @offset apply at
+-- the group level.
 SELECT repository_id,
        name_key,
        canonical_name,
@@ -1168,15 +1171,19 @@ SELECT repository_id,
        any_embedded
 FROM okt_repository.concept_groups
 WHERE repository_id = @repository_id
+  AND sqlc.arg('min_fact_count')::bigint <= total_fact_count
 ORDER BY total_fact_count DESC NULLS LAST, canonical_name ASC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: CountConceptGroupsByRepo :one
--- Companion count for ListConceptGroupsByRepoPage. Index-only COUNT
--- on the PK prefix (repository_id).
+-- Companion count for ListConceptGroupsByRepoPage. Must take the same
+-- @min_fact_count predicate so the page total matches the listed rows.
+-- Index-only COUNT on the PK prefix (repository_id) when the filter is
+-- disabled (min_fact_count = 0).
 SELECT COUNT(*)::bigint
 FROM okt_repository.concept_groups
-WHERE repository_id = @repository_id;
+WHERE repository_id = @repository_id
+  AND sqlc.arg('min_fact_count')::bigint <= total_fact_count;
 
 -- name: ListConceptsByRepoNameKeys :many
 -- Fetch every per-context concept row for the groups on the current

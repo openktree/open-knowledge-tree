@@ -1374,7 +1374,10 @@ func TestConcepts_GroupedListCollapsesContexts(t *testing.T) {
 	mkConceptWithFacts("DNA", "Biomolecule", 2, srcID)
 
 	// GET /concepts returns 2 groups (Trump, DNA), not 3 rows.
-	listResp, listRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts", nil)
+	// Pass show_small=true because these concepts are deliberately
+	// small (Trump=4, DNA=2 facts, below the default min_concept_fact_count
+	// of 5); the test exercises grouping/collapsing, not the filter.
+	listResp, listRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?show_small=true", nil)
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /concepts: %d %s", listResp.StatusCode, listRaw)
 	}
@@ -1412,7 +1415,7 @@ func TestConcepts_GroupedListCollapsesContexts(t *testing.T) {
 	// canonical_name (websearch_to_tsquery stems "trump" -> "trump").
 	// The old substring search matched "tru"; the new tsvector
 	// search needs a full stem, so we use "trump" here.
-	qResp, qRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=trump", nil)
+	qResp, qRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=trump&show_small=true", nil)
 	if qResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /concepts?q=trump: %d %s", qResp.StatusCode, qRaw)
 	}
@@ -1441,7 +1444,7 @@ func TestConcepts_GroupedListCollapsesContexts(t *testing.T) {
 		t.Fatalf("add alias deoxyribonucleic acid: %v", err)
 	}
 
-	aliasResp, aliasRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=deoxyribonucleic", nil)
+	aliasResp, aliasRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=deoxyribonucleic&show_small=true", nil)
 	if aliasResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /concepts?q=deoxyribonucleic: %d %s", aliasResp.StatusCode, aliasRaw)
 	}
@@ -2067,5 +2070,130 @@ func TestConceptSources(t *testing.T) {
 	bResp, _ := admin.do("GET", "/api/v1/repositories/"+slugB+"/concepts/"+conceptIDStr+"/sources", nil)
 	if bResp.StatusCode != http.StatusNotFound {
 		t.Errorf("cross-repo concept sources: status %d, want 404 (isolation)", bResp.StatusCode)
+	}
+}
+
+// TestConcepts_ListHidesSmallConceptsByDefault verifies the
+// min_concept_fact_count default filter on the q="" list path and
+// the q!="" FTS path: concepts whose total_fact_count is below the
+// configured threshold (default 5) are hidden unless the client
+// passes show_small=true. The page `total` reflects the filtered set
+// so pagination stays consistent.
+func TestConcepts_ListHidesSmallConceptsByDefault(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "small-concepts@example.com")
+	const slug = "small-concepts-repo"
+	_, _, repoID := createRepositoryWithDB(t, admin, "Small Concepts", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	queries := store.New(env.DB)
+
+	srcID := pgtype.UUID{}
+	if err := srcID.Scan(uuid.NewString()); err != nil {
+		t.Fatalf("scan src id: %v", err)
+	}
+	if _, err := queries.CreateSource(context.Background(), store.CreateSourceParams{
+		ID: srcID, RepositoryID: pgRepo, Url: "https://example.com/small", Kind: "homepage", Status: "fetched",
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	// mkConcept creates a concept under context with nFacts linked
+	// facts, then recomputes the concept_groups summary so the q=""
+	// list path (which reads the summary) sees it.
+	mkConcept := func(name, contextLabel string, nFacts int) pgtype.UUID {
+		ctx := context.Background()
+		c, err := queries.CreateConcept(ctx, store.CreateConceptParams{
+			RepositoryID: pgRepo, CanonicalName: name, Context: contextLabel,
+		})
+		if err != nil {
+			t.Fatalf("create concept %s/%s: %v", name, contextLabel, err)
+		}
+		for i := 0; i < nFacts; i++ {
+			fidStr := insertFactWithSource(t, env, pgRepo, srcID, "A fact about "+name, int32(i))
+			fid := pgtype.UUID{}
+			if err := fid.Scan(fidStr); err != nil {
+				t.Fatalf("scan fact id: %v", err)
+			}
+			if _, err := queries.AddFactConcept(ctx, store.AddFactConceptParams{
+				FactID: fid, ConceptID: c.ID,
+			}); err != nil {
+				t.Fatalf("link fact→concept: %v", err)
+			}
+		}
+		if err := concepts.RecomputeTouchedGroups(ctx, queries, pgRepo, []string{strings.ToLower(name)}); err != nil {
+			t.Fatalf("recompute concept_groups for %s: %v", name, err)
+		}
+		return c.ID
+	}
+
+	// "Small" concept: 1 fact (below the default threshold of 5).
+	mkConcept("Obscure", "Niche", 1)
+	// "Large" concept: 5 facts (at the threshold, so it's shown by default).
+	mkConcept("Significant", "Domain", 5)
+
+	// Default list (no show_small): only the large concept is returned.
+	listResp, listRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts", nil)
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /concepts: %d %s", listResp.StatusCode, listRaw)
+	}
+	var list pageEnvelope
+	if err := json.Unmarshal(listRaw, &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Total != 1 {
+		t.Errorf("default list total = %d, want 1 (only Significant, Obscure below threshold)", list.Total)
+	}
+	groups := make([]conceptGroupRow, 0, len(list.Data))
+	for _, raw := range list.Data {
+		var g conceptGroupRow
+		if err := json.Unmarshal(raw, &g); err != nil {
+			t.Fatalf("decode group row: %v", err)
+		}
+		groups = append(groups, g)
+	}
+	if len(groups) != 1 || groups[0].CanonicalName != "Significant" {
+		t.Errorf("default list groups = %+v, want [Significant]", groups)
+	}
+
+	// show_small=true: both concepts are returned.
+	smallResp, smallRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?show_small=true", nil)
+	if smallResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /concepts?show_small=true: %d %s", smallResp.StatusCode, smallRaw)
+	}
+	var smallList pageEnvelope
+	if err := json.Unmarshal(smallRaw, &smallList); err != nil {
+		t.Fatalf("decode small list: %v", err)
+	}
+	if smallList.Total != 2 {
+		t.Errorf("show_small list total = %d, want 2 (Obscure + Significant)", smallList.Total)
+	}
+
+	// q!="" FTS path: searching for "obscure" returns nothing by
+	// default (the concept is below the threshold), but returns it
+	// with show_small=true.
+	qResp, qRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=obscure", nil)
+	if qResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /concepts?q=obscure: %d %s", qResp.StatusCode, qRaw)
+	}
+	var qList pageEnvelope
+	if err := json.Unmarshal(qRaw, &qList); err != nil {
+		t.Fatalf("decode q list: %v", err)
+	}
+	if qList.Total != 0 {
+		t.Errorf("q=obscure default total = %d, want 0 (Obscure below threshold)", qList.Total)
+	}
+
+	qSmallResp, qSmallRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?q=obscure&show_small=true", nil)
+	if qSmallResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /concepts?q=obscure&show_small=true: %d %s", qSmallResp.StatusCode, qSmallRaw)
+	}
+	var qSmallList pageEnvelope
+	if err := json.Unmarshal(qSmallRaw, &qSmallList); err != nil {
+		t.Fatalf("decode q small list: %v", err)
+	}
+	if qSmallList.Total != 1 {
+		t.Errorf("q=obscure show_small total = %d, want 1 (Obscure surfaces)", qSmallList.Total)
 	}
 }

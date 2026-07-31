@@ -771,6 +771,12 @@ func TestMCP_SearchConcepts(t *testing.T) {
 			"arguments": map[string]any{
 				"repository": repoID,
 				"query":      "dna",
+				// show_small because the seeded concepts are
+				// deliberately small (DNA=2, RNA=1, below the
+				// default min_concept_fact_count of 5); this
+				// test exercises MCP searchConcepts, not the
+				// small-concept filter.
+				"show_small": true,
 			},
 		},
 	})

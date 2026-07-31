@@ -566,7 +566,10 @@ func TestInvestigations_ConceptsScopedToSources(t *testing.T) {
 	}
 
 	// Sanity: the repo-level concepts endpoint still returns both.
-	repoResp, repoRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts", nil)
+	// show_small=true because each concept has only 1 fact (below
+	// the default min_concept_fact_count of 5); the test exercises
+	// cross-investigation isolation, not the small-concept filter.
+	repoResp, repoRaw := admin.do("GET", "/api/v1/repositories/"+slug+"/concepts?show_small=true", nil)
 	if repoResp.StatusCode != http.StatusOK {
 		t.Fatalf("repo /concepts: %d %s", repoResp.StatusCode, repoRaw)
 	}

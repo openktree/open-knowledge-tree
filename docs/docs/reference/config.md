@@ -257,18 +257,31 @@ providers:
         max_attempts: 3           # Including first attempt
         base_delay: 2s
         max_delay: 15s
+        retry_403_max_attempts: 2 # 403 retry cap (0 = 403 permanent)
     unpaywall:
       email: ""                   # https://unpaywall.org — email is the API key
     tls:
-      impersonate: ""             # e.g. "chrome_124" — empty disables
+      impersonate: ""             # e.g. "chrome_133" — empty disables
       timeout: 30s
     flaresolverr:
       url: ""                     # Single endpoint (env: FLARESOLVERR_URL)
       endpoints: []               # Multi-endpoint pool
       timeout: 60s
       max_concurrency: 0          # 0 = no cap; set to ~number of containers
-    host_overrides: {}            # Static host → provider-id map
+      retry:
+        max_attempts: 2           # 1 disables; sidecar transient-retry budget
+        base_delay: 5s
+        max_delay: 30s
+        retry_403_max_attempts: 1
+    host_overrides:               # Static host → provider-id map (defaults pin Reddit)
+      "reddit.com": "flaresolverr"
+      "www.reddit.com": "flaresolverr"
     chain: ""                     # Comma-separated provider order override
+    auto_skip:                    # Learned (host,provider) skip list
+      enabled: true
+      min_sample: 100             # Min total attempts before auto-skip
+      failure_threshold: 0.85     # Skip when failures/total >= threshold
+      cooldown: 24h               # How long a skip stays active
 ```
 
 ### `providers.decomposition`
