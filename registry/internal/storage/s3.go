@@ -149,12 +149,22 @@ func (s *S3Store) StoreStream(ctx context.Context, key string, body io.Reader, c
 	// Abort on any failure path so orphaned parts don't accrue
 	// storage charges in R2. The deferred flag is cleared on the
 	// happy path after CompleteMultipartUpload succeeds.
+	//
+	// The abort uses a fresh context.Background() with a short
+	// timeout, NOT the request ctx: a failure often coincides with
+	// the request being cancelled (client disconnect, deadline),
+	// and an abort against a cancelled ctx silently no-ops — leaving
+	// the incomplete multipart upload in the bucket. The cleanup
+	// endpoint would eventually reap it, but a deterministic abort
+	// here is cheaper and avoids surprise R2 charges.
 	aborted := false
 	defer func() {
 		if !aborted {
 			return
 		}
-		_, _ = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, _ = s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
 			Bucket:   aws.String(s.bucket),
 			Key:      aws.String(key),
 			UploadId: aws.String(uploadID),

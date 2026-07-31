@@ -127,6 +127,22 @@ func (h *UIHandler) render(w http.ResponseWriter, tmplName string, data pageData
 	}
 }
 
+// renderError re-renders the named template with a non-2xx status code.
+// Used by the upload form's error paths so the client-side progress-bar
+// JS (which keys off xhr.status) can distinguish a re-rendered error
+// form (4xx) from the 302 success redirect. Without the explicit status,
+// the implicit 200 made the JS treat every error as success — navigating
+// to /ui/graphs?uploaded=1 and hiding the real failure from the user.
+// Browsers render a 4xx HTML body identically to 200, so the no-JS
+// fallback still shows the error message.
+func (h *UIHandler) renderError(w http.ResponseWriter, status int, tmplName string, data pageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := h.tmpl.ExecuteTemplate(w, tmplName, data); err != nil {
+		log.Printf("template error: %v", err)
+	}
+}
+
 func (h *UIHandler) withUserData(r *http.Request) pageData {
 	return pageData{
 		UserID:  auth.RequestUser(r.Context()),
@@ -701,20 +717,22 @@ func (h *UIHandler) GraphUploadPage(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "too large") {
 			msg = "upload exceeds the configured size limit"
 		}
+		log.Printf("ui graph upload: parse multipart form: %v", err)
 		d.Error = msg
-		h.render(w, "graph_upload.html", d)
+		h.renderError(w, http.StatusUnprocessableEntity, "graph_upload.html", d)
 		return
 	}
 	fhs, ok := r.MultipartForm.File["bundle"]
 	if !ok || len(fhs) == 0 {
 		d.Error = "bundle file is required"
-		h.render(w, "graph_upload.html", d)
+		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
 		return
 	}
 	file, err := fhs[0].Open()
 	if err != nil {
+		log.Printf("ui graph upload: open bundle part: %v", err)
 		d.Error = "opening bundle file part: " + err.Error()
-		h.render(w, "graph_upload.html", d)
+		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
 		return
 	}
 	defer file.Close()
@@ -732,17 +750,19 @@ func (h *UIHandler) GraphUploadPage(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, service.ErrUploadTooLarge) {
 			d.Error = "upload exceeds the configured size limit"
 		} else {
+			log.Printf("ui graph upload: spool to temp file: %v", err)
 			d.Error = err.Error()
 		}
-		h.render(w, "graph_upload.html", d)
+		h.renderError(w, http.StatusUnprocessableEntity, "graph_upload.html", d)
 		return
 	}
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	bundleMeta, err := service.ExtractGraphMetaFromTempFile(r.Context(), tmpPath)
 	if err != nil {
+		log.Printf("ui graph upload: extract metadata: %v", err)
 		d.Error = "reading bundle metadata: " + err.Error()
-		h.render(w, "graph_upload.html", d)
+		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
 		return
 	}
 	applyOverrides(bundleMeta, overrides)
@@ -754,7 +774,7 @@ func (h *UIHandler) GraphUploadPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if bundleMeta.Name == "" {
 		d.Error = "name is required (set it in the bundle metadata or the name form field)"
-		h.render(w, "graph_upload.html", d)
+		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
 		return
 	}
 
@@ -762,7 +782,7 @@ func (h *UIHandler) GraphUploadPage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("ui graph upload: %v", err)
 		d.Error = "Failed to upload graph: " + err.Error()
-		h.render(w, "graph_upload.html", d)
+		h.renderError(w, http.StatusInternalServerError, "graph_upload.html", d)
 		return
 	}
 	_ = result // success → redirect to the graphs list
