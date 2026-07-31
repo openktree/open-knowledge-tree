@@ -6,6 +6,13 @@
 
 * **registry:** admin file-upload of graph bundles (UI + API), with streaming metadata extraction for 100s-of-GB bundles
 
+## [0.10.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.9.1...registry-v0.10.0) (2026-07-31)
+
+
+### Features
+
+* **registry:** stream graph uploads directly to storage, no full-disk spool ([5e62963](https://github.com/openktree/open-knowledge-tree/commit/5e62963c7e09955317b4a3d949e97fede8b048e2))
+
 ## [0.9.1](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.9.0...registry-v0.9.1) (2026-07-31)
 
 
