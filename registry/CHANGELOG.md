@@ -6,6 +6,18 @@
 
 * **registry:** admin file-upload of graph bundles (UI + API), with streaming metadata extraction for 100s-of-GB bundles
 
+## [0.8.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.7.0...registry-v0.8.0) (2026-07-31)
+
+
+### Features
+
+* **registry:** admin file-upload of graph bundles with streaming metadata extraction ([5454870](https://github.com/openktree/open-knowledge-tree/commit/5454870034591ceded7a2de680f141f77e2acaa3))
+
+
+### Bug Fixes
+
+* **registry:** classify SMTP rejections as 422, not 500 ([dd02fc0](https://github.com/openktree/open-knowledge-tree/commit/dd02fc0ef5a2bd66090572928892650d9c798c57))
+
 ## [0.7.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.4...registry-v0.7.0) (2026-07-29)
 
 
