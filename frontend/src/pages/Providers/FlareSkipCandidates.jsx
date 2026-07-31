@@ -17,12 +17,32 @@ import Card from "../../components/Card";
  * timeout on every fetch.
  */
 export default function FlareSkipCandidates(props) {
-  const candidates = () => props.candidates || [];
+  // candidates may be passed as a value (the array) or as an
+  // accessor function (() => array). Unwrap either form.
+  const candidates = () => {
+    const v = props.candidates;
+    if (typeof v === "function") return v() || [];
+    return v || [];
+  };
 
   const isStrong = (c) => c.flare_successes === 0 && c.flare_failures >= 3;
 
   return (
-    <Show when={candidates().length > 0}>
+    <Show
+      when={candidates().length > 0}
+      fallback={
+        <Card class="mb-6">
+          <div class="flex items-center gap-2 mb-1">
+            <h2 class="text-lg font-semibold dark:text-white">FlareSolverr skip-list candidates</h2>
+            <Badge variant="yellow">advisory</Badge>
+          </div>
+          <p class="text-sm text-gray-500 dark:text-gray-400">
+            No FlareSolverr failure data yet. This card lists hosts where FlareSolverr was tried,
+            with failure/success counts, once a repository has <code>fetch_attempts</code> data.
+          </p>
+        </Card>
+      }
+    >
       <Card class="mb-6">
         <div class="flex items-center gap-2 mb-1">
           <h2 class="text-lg font-semibold dark:text-white">FlareSolverr skip-list candidates</h2>

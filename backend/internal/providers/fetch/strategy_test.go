@@ -46,6 +46,11 @@ func (s *stubProvider) Describe() ProviderDescription {
 	return ProviderDescription{Name: s.id, Configured: true, Supports: []string{"url"}}
 }
 
+// ProviderID lets stubProvider declare its id so the strategy's
+// auto-skip / override logic can match it by id (the production
+// ProviderID type switch doesn't recognize test stubs).
+func (s *stubProvider) ProviderID() string { return s.id }
+
 // TestStrategyReturnsFirstSuccess exercises the happy path:
 // the first provider that returns a non-error result wins
 // and the audit trail records one success entry. The
@@ -69,8 +74,8 @@ func TestStrategyReturnsFirstSuccess(t *testing.T) {
 	if !res.Attempts[0].Success {
 		t.Error("expected first attempt to be successful")
 	}
-	if res.Attempts[0].Provider != "unknown" {
-		t.Errorf("expected provider id 'unknown' for stub, got %q", res.Attempts[0].Provider)
+	if res.Attempts[0].Provider != "p1" {
+		t.Errorf("expected provider id 'p1' for stub, got %q", res.Attempts[0].Provider)
 	}
 	if called["p2"] {
 		t.Error("second provider should not have been called")
@@ -199,7 +204,9 @@ func TestProviderID(t *testing.T) {
 		{&UnpaywallResolutionProvider{email: "x@example.com"}, "unpaywall"},
 		{&TLSImpersonationProvider{}, "tls"},
 		{&FlareSolverrProvider{}, "flaresolverr"},
-		{&stubProvider{id: "stub"}, "unknown"},
+		// stubProvider implements ProviderIdentifier so its id
+		// is its declared id, not "unknown".
+		{&stubProvider{id: "stub"}, "stub"},
 	}
 	for _, tc := range cases {
 		got := providerID(tc.p)
@@ -374,4 +381,117 @@ func (d *dnsFallthroughProvider) Supports(t SourceType) bool {
 
 func (d *dnsFallthroughProvider) Describe() ProviderDescription {
 	return d.stub.Describe()
+}
+// fakeSkipStore is a test HostSkipStore that records calls and
+// returns a canned active-skip list.
+type fakeSkipStore struct {
+	active   []HostSkipEntry
+	activeFor []string
+	records  []skipRecordCall
+}
+
+type skipRecordCall struct {
+	repoID, host, providerID string
+	success                   bool
+}
+
+func (f *fakeSkipStore) ActiveForRepo(_ context.Context, repoID string) ([]HostSkipEntry, error) {
+	f.activeFor = append(f.activeFor, repoID)
+	return f.active, nil
+}
+
+func (f *fakeSkipStore) RecordAndMaybeSkip(_ context.Context, repoID, host, providerID string, success bool, _ AutoSkipConfig) error {
+	f.records = append(f.records, skipRecordCall{repoID, host, providerID, success})
+	return nil
+}
+
+// TestStrategyAutoSkipJumpsSkippedTier asserts the strategy
+// jumps a (host, provider) tier the store reports as skipped,
+// records an audit-trail "skipped" entry, and falls through to
+// the next tier.
+func TestStrategyAutoSkipJumpsSkippedTier(t *testing.T) {
+	p1 := &stubProvider{id: "fetch", support: []SourceType{SourceURL}, err: errors.New("upstream returned status 403")}
+	p2 := &stubProvider{id: "flaresolverr", support: []SourceType{SourceURL}, result: ResolvedContent{StatusCode: 200, Body: []byte("ok")}}
+
+	store := &fakeSkipStore{active: []HostSkipEntry{{Host: "reddit.com", ProviderID: "fetch"}}}
+	strategy := NewFetchStrategyWithOverrides([]ResolutionProvider{p1, p2}, nil).
+		WithAutoSkip(store, AutoSkipConfig{Enabled: true, MinSample: 1, FailureThreshold: 0.5})
+
+	ctx := WithRepoID(context.Background(), "repo-1")
+	res, err := strategy.Resolve(ctx, Resource{Type: SourceURL, Value: "https://reddit.com/r/x"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("expected flaresolverr to win, got status %d", res.StatusCode)
+	}
+	// The audit trail must record fetch as skipped and
+	// flaresolverr as the successful tier.
+	var skipped, won bool
+	for _, a := range res.Attempts {
+		if a.Provider == "fetch" && !a.Success && strings.Contains(a.Error, "skipped") {
+			skipped = true
+		}
+		if a.Provider == "flaresolverr" && a.Success {
+			won = true
+		}
+	}
+	if !skipped {
+		t.Errorf("expected fetch tier skipped in audit trail, got %+v", res.Attempts)
+	}
+	if !won {
+		t.Errorf("expected flaresolverr tier to win, got %+v", res.Attempts)
+	}
+	// ActiveForRepo was called with the repo id from context.
+	if len(store.activeFor) == 0 || store.activeFor[0] != "repo-1" {
+		t.Errorf("expected ActiveForRepo called with repo-1, got %v", store.activeFor)
+	}
+}
+
+// TestStrategyAutoSkipDisabledWhenNoRepo asserts the strategy
+// does NOT consult the skip store when no repo id is in context
+// (so a non-repo fetch path is unaffected).
+func TestStrategyAutoSkipDisabledWhenNoRepo(t *testing.T) {
+	p1 := &stubProvider{id: "fetch", support: []SourceType{SourceURL}, result: ResolvedContent{StatusCode: 200, Body: []byte("ok")}}
+	store := &fakeSkipStore{active: []HostSkipEntry{{Host: "example.com", ProviderID: "fetch"}}}
+	strategy := NewFetchStrategy(p1).WithAutoSkip(store, AutoSkipConfig{Enabled: true, MinSample: 1, FailureThreshold: 0.5})
+
+	// No WithRepoID: the store's active list must be ignored.
+	res, err := strategy.Resolve(context.Background(), Resource{Type: SourceURL, Value: "https://example.com"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("expected fetch to win (no skip), got status %d", res.StatusCode)
+	}
+	if len(store.activeFor) != 0 {
+		t.Errorf("expected ActiveForRepo NOT called without repo, got %v", store.activeFor)
+	}
+}
+
+// TestStrategyAutoSkipRecordsOutcome asserts the strategy calls
+// RecordAndMaybeSkip after each provider attempt so the store
+// can recompute the failure rate and upsert/clear a skip.
+func TestStrategyAutoSkipRecordsOutcome(t *testing.T) {
+	p1 := &stubProvider{id: "fetch", support: []SourceType{SourceURL}, err: errors.New("upstream returned status 403")}
+	p2 := &stubProvider{id: "flaresolverr", support: []SourceType{SourceURL}, result: ResolvedContent{StatusCode: 200, Body: []byte("ok")}}
+	store := &fakeSkipStore{}
+	strategy := NewFetchStrategy(p1, p2).WithAutoSkip(store, AutoSkipConfig{Enabled: true, MinSample: 1, FailureThreshold: 0.5})
+
+	ctx := WithRepoID(context.Background(), "repo-1")
+	_, err := strategy.Resolve(ctx, Resource{Type: SourceURL, Value: "https://example.com"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	// Two records: one for the failed fetch, one for the
+	// successful flaresolverr.
+	if len(store.records) != 2 {
+		t.Fatalf("expected 2 RecordAndMaybeSkip calls, got %d", len(store.records))
+	}
+	if store.records[0].providerID != "fetch" || store.records[0].success != false {
+		t.Errorf("expected first record fetch/false, got %+v", store.records[0])
+	}
+	if store.records[1].providerID != "flaresolverr" || store.records[1].success != true {
+		t.Errorf("expected second record flaresolverr/true, got %+v", store.records[1])
+	}
 }

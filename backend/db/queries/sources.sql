@@ -439,6 +439,88 @@ HAVING COUNT(*) FILTER (
 ) > 0
 ORDER BY flare_failures DESC;
 
+-- name: ListHostFailureMatrix :many
+-- Pivots the fetch_attempts audit trail into one row per host
+-- with per-provider failure/success columns, used by the
+-- Providers page "Fetch Domains" tab to render a single merged
+-- table (instead of one card per provider). A row is included
+-- when at least one provider has a failure for the host. The
+-- provider ids are hardcoded because sqlc's analyzer cannot
+-- resolve a bind parameter inside jsonb_array_elements (same
+-- constraint as ListProviderHostCandidates). url_safety is
+-- omitted: it is the SSRF guard, not a fetch tier an operator
+-- would skip. Ordered by total_failures DESC so the worst
+-- hosts surface first.
+SELECT
+    substring(url FROM 'https?://([^/]+)')::text AS host,
+    COUNT(*) AS total_attempts,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'fetch'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS fetch_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'fetch'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS fetch_successes,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'tls'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS tls_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'tls'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS tls_successes,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'flaresolverr'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS flaresolverr_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'flaresolverr'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS flaresolverr_successes,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'unpaywall'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS unpaywall_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'unpaywall'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS unpaywall_successes
+FROM okt_repository.sources
+WHERE fetch_attempts IS NOT NULL
+GROUP BY 1
+HAVING (
+    COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'fetch' AND (a->>'success')::boolean = false))
+    + COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'tls' AND (a->>'success')::boolean = false))
+    + COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'flaresolverr' AND (a->>'success')::boolean = false))
+    + COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'unpaywall' AND (a->>'success')::boolean = false))
+) > 0
+ORDER BY total_attempts DESC;
+
 -- name: ListProviderHostCandidates :many
 -- Generalized per-provider host-candidate query. Returns per-host
 -- failure/success counts for ONE resolution provider, filtered by
@@ -496,3 +578,106 @@ HAVING COUNT(*) FILTER (
     )
 ) > 0
 ORDER BY failures DESC;
+
+-- name: GetHostProviderAttemptCounts :one
+-- Returns the failure and success counts for a single (host,
+-- provider) pair from the fetch_attempts JSONB audit trail. Used
+-- by the auto-skip store adapter to decide whether to upsert a
+-- skip row (rate >= threshold, sample >= min_sample) or clear an
+-- existing learned skip (rate dropped below threshold after a
+-- success). host is matched as a substring of the url column
+-- (https?://<host>/) so it catches the exact host. provider_id
+-- ($2) is matched against the fetch_attempts[].provider JSONB
+-- field.
+--
+-- Implementation note: sqlc's analyzer cannot resolve a bind
+-- parameter inside a jsonb_array_elements subquery (it reports
+-- "column 'a' does not exist"), so the COUNT expressions are
+-- gated by a CASE on $2 IN (known provider ids) — the same
+-- shape ListProviderHostCandidates uses. Each branch is a full
+-- literal query sqlc can analyze.
+SELECT
+    CASE WHEN sqlc.arg('provider_id') IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = sqlc.arg('provider_id')
+            )
+        )
+    ELSE 0 END AS total_attempts,
+    CASE WHEN sqlc.arg('provider_id') IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = sqlc.arg('provider_id')
+                  AND (a->>'success')::boolean = false
+            )
+        )
+    ELSE 0 END AS failures,
+    CASE WHEN sqlc.arg('provider_id') IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = sqlc.arg('provider_id')
+                  AND (a->>'success')::boolean = true
+            )
+        )
+    ELSE 0 END AS successes
+FROM okt_repository.sources
+WHERE fetch_attempts IS NOT NULL
+  AND substring(url FROM 'https?://([^/]+)')::text = sqlc.arg('host');
+
+-- name: DeleteLearnedHostSkipProvider :exec
+-- Clears a single learned (manual=false) skip row when the host's
+-- failure rate dropped below threshold after a success. Manual
+-- skips are never auto-cleared (an operator must un-skip them via
+-- the DELETE /sources/skip endpoint).
+DELETE FROM okt_repository.host_skip_providers
+WHERE repository_id = $1 AND host = $2 AND provider_id = $3 AND manual = false;
+
+-- name: UpsertHostSkipProvider :one
+-- Insert or refresh a learned/manual (host, provider) skip row.
+-- Called by the strategy when a tier's failure rate crosses the
+-- auto-skip threshold, and by the POST /sources/skip endpoint
+-- for manual skips (manual=true, expires_at far future). On
+-- conflict the failure_rate/sample_size/expires_at/manual flag
+-- are refreshed so a recompute or a manual toggle updates the
+-- existing row in place.
+INSERT INTO okt_repository.host_skip_providers
+    (repository_id, host, provider_id, failure_rate, sample_size, expires_at, manual)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (repository_id, host, provider_id) DO UPDATE SET
+    failure_rate = EXCLUDED.failure_rate,
+    sample_size  = EXCLUDED.sample_size,
+    expires_at  = EXCLUDED.expires_at,
+    manual       = EXCLUDED.manual,
+    skipped_at  = now()
+RETURNING *;
+
+-- name: ListActiveHostSkipProviders :many
+-- Active (unexpired) skip rows for a repository, read by the
+-- strategy at fetch time to jump tiers that are skipped for a
+-- given host. expires_at > now() filters out cooled-down rows
+-- so a host that recovered is retried after the cooldown.
+SELECT * FROM okt_repository.host_skip_providers
+WHERE repository_id = $1 AND expires_at > now();
+
+-- name: ListHostSkipProviders :many
+-- All skip rows for a repository (no expiry filter), used by
+-- the Providers page "Fetch Domains" tab to show the full skip
+-- list including cooled-down entries.
+SELECT * FROM okt_repository.host_skip_providers
+WHERE repository_id = $1
+ORDER BY skipped_at DESC;
+
+-- name: DeleteHostSkipProvider :exec
+-- Remove a single (host, provider) skip row. Used by the
+-- DELETE /sources/skip endpoint for manual un-skip.
+DELETE FROM okt_repository.host_skip_providers
+WHERE repository_id = $1 AND host = $2 AND provider_id = $3;
+
+-- name: ClearHostSkipProviders :exec
+-- Remove all skip rows for a repository. Used by the
+-- DELETE /sources/skip/all endpoint.
+DELETE FROM okt_repository.host_skip_providers
+WHERE repository_id = $1;

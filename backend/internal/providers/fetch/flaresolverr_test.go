@@ -19,10 +19,10 @@ import (
 // constructor has always had; the pool constructor must
 // preserve it.
 func TestFlareSolverrProviderPool_SelfDisable(t *testing.T) {
-	if p := NewFlareSolverrProviderPool(nil, 0, "", 0); p != nil {
+	if p := NewFlareSolverrProviderPool(nil, 0, "", 0, NoRetryConfig); p != nil {
 		t.Fatal("expected nil provider for empty endpoints")
 	}
-	if p := NewFlareSolverrProviderPool([]string{"", "  "}, 0, "", 0); p != nil {
+	if p := NewFlareSolverrProviderPool([]string{"", "  "}, 0, "", 0, NoRetryConfig); p != nil {
 		t.Fatal("expected nil provider for all-whitespace endpoints")
 	}
 }
@@ -32,7 +32,7 @@ func TestFlareSolverrProviderPool_SelfDisable(t *testing.T) {
 // it to the /v1 path, matching the legacy
 // NewFlareSolverrProvider behaviour.
 func TestFlareSolverrProviderPool_SingleEndpoint(t *testing.T) {
-	p := NewFlareSolverrProviderPool([]string{"http://flaresolverr:8191"}, 0, "", 0)
+	p := NewFlareSolverrProviderPool([]string{"http://flaresolverr:8191"}, 0, "", 0, NoRetryConfig)
 	if p == nil {
 		t.Fatal("expected non-nil provider for one endpoint")
 	}
@@ -55,7 +55,7 @@ func TestFlareSolverrProviderPool_SingleEndpoint(t *testing.T) {
 // containers.
 func TestFlareSolverrProviderPool_RoundRobin(t *testing.T) {
 	endpoints := []string{"http://e1:8191", "http://e2:8191", "http://e3:8191"}
-	p := NewFlareSolverrProviderPool(endpoints, 60*time.Second, "", 0)
+	p := NewFlareSolverrProviderPool(endpoints, 60*time.Second, "", 0, NoRetryConfig)
 	if p == nil {
 		t.Fatal("expected non-nil provider")
 	}
@@ -100,7 +100,7 @@ func TestFlareSolverrProviderPool_ConcurrencyCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewFlareSolverrProviderPool([]string{srv.URL}, 5*time.Second, "", 2,
+	p := NewFlareSolverrProviderPool([]string{srv.URL}, 5*time.Second, "", 2, NoRetryConfig,
 		content_parsing.NewTrafilaturaParser(),
 	)
 	if p == nil {
@@ -142,7 +142,7 @@ func TestFlareSolverrProviderPool_ConcurrencyCap(t *testing.T) {
 // the safety valve: a backed-up pool must not hold a
 // worker past its budget.
 func TestFlareSolverrProviderPool_ContextCancelOnSemaphoreWait(t *testing.T) {
-	p := NewFlareSolverrProviderPool([]string{"http://never-reached:8191"}, 5*time.Second, "", 1)
+	p := NewFlareSolverrProviderPool([]string{"http://never-reached:8191"}, 5*time.Second, "", 1, NoRetryConfig)
 	if p == nil {
 		t.Fatal("expected non-nil provider")
 	}

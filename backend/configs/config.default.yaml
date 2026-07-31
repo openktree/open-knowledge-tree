@@ -353,6 +353,13 @@ search:
 concepts:
   min_shared_fact_count: 3
   stable_shared_fact_count: 6
+  # min_concept_fact_count is the default floor for the concept
+  # list/search surfaces (REST GET /concepts and the MCP
+  # searchConcepts tool): concepts whose total_fact_count is below
+  # this threshold are hidden unless the client passes show_small=true.
+  # The intent is to surface only concepts with statistically
+  # meaningful fact coverage by default. Set to 0 to disable the filter.
+  min_concept_fact_count: 5
 
 providers:
   # promptset_default is the global default promptset hash a
@@ -383,7 +390,7 @@ providers:
   resolution:
     fetch:
       enabled: true
-      user_agent: "Mozilla/5.0 (compatible; OpenKT/1.0; +https://github.com/openktree/open-knowledge-tree)"
+      user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
       # Timeout is the per-request HTTP client timeout.
       # Increased from the historical 30s default to 60s so large
       # PDFs from slow academic hosts are less likely to time out.
@@ -398,6 +405,15 @@ providers:
         max_attempts: 3
         base_delay: 2s
         max_delay: 15s
+        # retry_403_max_attempts caps retries for HTTP 403
+        # responses specifically. Many WAFs (Reddit, Cloudflare)
+        # emit 403 under burst but 200/429 in quiet windows, so a
+        # short 403 retry catches transient blocks. A large cap
+        # would waste time on a truly-blocked host. 0 disables
+        # 403 retry (treat 403 as permanent, the historical
+        # behaviour). Other retryable errors (429/5xx/network)
+        # continue to use max_attempts.
+        retry_403_max_attempts: 2
     # Unpaywall (https://unpaywall.org) is an opt-in
     # resolution provider that, for DOI-classified sources,
     # looks up an open-access copy of the work and fetches
@@ -408,12 +424,51 @@ providers:
     # through to the plain fetch (the publisher landing
     # page). The email can also be supplied via the
     # UNPAYWALL_EMAIL env var.
+    #
+    # timeout and retry govern the OA-location fetch (the
+    # publisher/repo URL Unpaywall points us at after the
+    # API lookup), NOT the Unpaywall API call itself (which
+    # keeps its own inline 1-retry/1s loop for API 429s).
+    # The split exists because the failure modes differ:
+    # the Unpaywall API is fast and occasionally 429s,
+    # while OA hosts are slow and often sit behind
+    # publisher WAFs that 403 a plain HTTP client. The
+    # audit trail showed ~396 OA-host 403s and ~223
+    # OA-body timeouts against zero Unpaywall API 429s.
     unpaywall:
       email: ""
+      # Timeout for the OA-location fetch (the
+      # publisher/repo URL, not the Unpaywall API call).
+      # Defaults to 60s to match the strategy's
+      # perProviderTimeout; the previous hardcoded 30s
+      # gave up at the halfway mark of the tier's budget
+      # on slow-but-legitimate OA hosts (Europe PMC,
+      # arXiv, journals with heavy redirect chains).
+      timeout: 60s
+      # Retry budget for the OA-location fetch only. Many
+      # OA hosts (thelancet.com, cell.com, mdpi.com,
+      # link.aps.org, nejm.org) sit behind WAFs that 403
+      # a plain HTTP client under burst but recover in a
+      # quiet window; a short retry catches the transient
+      # 403s before the chain falls through to
+      # TLS/FlareSolverr. Timeouts on slow OA hosts are
+      # also retried. ErrInsufficientContent (a consent/
+      # JS page, not a transient error) is NOT retried.
+      # The budget mirrors the fetch/tls tiers
+      # (defaultRetryConfig: 3 attempts, 2-15s backoff)
+      # with 403 capped at retry_403_max_attempts since a
+      # publisher 403 is more likely permanent than a
+      # transient Cloudflare 403. max_attempts: 1
+      # disables retry entirely.
+      retry:
+        max_attempts: 3
+        base_delay: 2s
+        max_delay: 15s
+        retry_403_max_attempts: 2
     # TLS-impersonation resolution provider (Phase 3). When
     # impersonate is empty the provider self-disables and is
     # not registered. impersonate is the browser fingerprint
-    # target (e.g. "chrome_124"); the underlying tls-client
+    # target (e.g. "chrome_133"); the underlying tls-client
     # library accepts the same identifiers as
     # curl-impersonate. Can also be supplied via the
     # OKT_FETCH_IMPERSONATE env var.
@@ -447,13 +502,36 @@ providers:
       endpoints: []
       timeout: 60s
       max_concurrency: 0
+      # Retry governs retries on transient sidecar failures
+      # (network error, sidecar 5xx, decode error). A single
+      # sidecar hiccup (container restarting, transient 500,
+      # queue timeout) is otherwise terminal for the heaviest
+      # tier; a short retry budget catches it. 403 surfaced by
+      # the sidecar is retried up to retry_403_max_attempts.
+      # ErrInsufficientContent (genuine block, rendered no
+      # content) is NOT retried. max_attempts: 1 disables.
+      retry:
+        max_attempts: 2
+        base_delay: 5s
+        max_delay: 30s
+        retry_403_max_attempts: 1
     # Static host → provider-id overrides. The strategy
     # consults this map before learning, so an operator can
     # pin "www.cell.com" → "tls" without waiting for the
     # learned preference to converge. Exact host match
     # first, then suffix match (so "cell.com" matches
     # "www.cell.com"). Empty means no static overrides.
-    host_overrides: {}
+    # The defaults below pin known-adversarial hosts
+    # (Reddit) straight to FlareSolverr so the strategy
+    # skips the fetch/TLS tiers that consistently 403 on
+    # them. Override or extend via config.local.yaml /
+    # OKT_HOST_OVERRIES env. Only the bare domain is
+    # needed: suffix match means "reddit.com" covers
+    # www/old/new subdomains too. NOTE: viper's default
+    # key delimiter is ".", so host keys must NOT contain
+    # a dot (use the bare domain, not "www.reddit.com").
+    host_overrides:
+      "reddit.com": "flaresolverr"
     # Ordered, comma-separated list of provider ids the
     # strategy should try. When empty the strategy uses the
     # order providers were registered in (the production
@@ -462,6 +540,25 @@ providers:
     # configured). This is an operator escape hatch for
     # reordering without code changes.
     chain: ""
+    # auto_skip governs the learned (host,provider) skip list
+    # the strategy enforces in addition to the static
+    # host_overrides. When a (host, provider) tier has at
+    # least min_sample total attempts and a failure rate >=
+    # failure_threshold, the strategy skips that tier for
+    # that host until the skip row expires (cooldown). This
+    # avoids repeatedly burning the per-provider timeout on
+    # hosts that a tier can never retrieve (e.g. a host that
+    # always 403s the fetch tier). Skip decisions are stored
+    # in okt_repository.host_skip_providers per repository
+    # and surfaced on the Providers page "Fetch Domains" tab
+    # where an operator can manually add/remove skips too.
+    # Set enabled: false to disable auto-learning entirely
+    # (the strategy then relies only on host_overrides).
+    auto_skip:
+      enabled: true
+      min_sample: 100
+      failure_threshold: 0.85
+      cooldown: 24h
   decomposition:
     chunking:
       chunk_size: 2000

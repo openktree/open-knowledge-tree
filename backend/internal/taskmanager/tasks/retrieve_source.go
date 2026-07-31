@@ -350,6 +350,12 @@ func (w *RetrieveSourceWorker) Work(ctx context.Context, job *river.Job[Retrieve
 	// chance without starving the fallbacks.
 	fetchCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
+	// Scope the fetch to the active repository so the strategy's
+	// learned (host, provider) auto-skip reads/writes land in the
+	// right repo's host_skip_providers table. Empty RepositoryID
+	// (rare; only for legacy enqueue paths) disables auto-skip
+	// for this fetch.
+	fetchCtx = fetch.WithRepoID(fetchCtx, args.RepositoryID)
 
 	content, err := w.fetchStrategy.Resolve(fetchCtx, resource)
 	if err != nil {

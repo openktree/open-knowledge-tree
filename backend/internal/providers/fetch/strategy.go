@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"time"
@@ -14,6 +15,74 @@ import (
 // a slow tier cannot starve the fallbacks — the previous
 // implementation shared one 30s budget across the whole chain.
 const perProviderTimeout = 60 * time.Second
+
+// repoIDKey is the context key carrying the active repository's
+// UUID string so the strategy can scope HostSkipStore reads/writes
+// to the right repository. The wiring layer (middleware) sets it
+// for HTTP-driven resolves; the retrieve_source worker sets it
+// directly on the fetch context.
+type repoIDKey struct{}
+
+// WithRepoID returns a copy of ctx carrying the repository id so
+// the strategy's auto-skip logic can scope skip reads/writes.
+// Pass an empty repoID to clear (the strategy then skips the
+// auto-skip read/write path).
+func WithRepoID(ctx context.Context, repoID string) context.Context {
+	return context.WithValue(ctx, repoIDKey{}, repoID)
+}
+
+// RepoIDFromContext returns the repository id the caller scoped to
+// ctx, or "" when none is set.
+func RepoIDFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(repoIDKey{}).(string)
+	return v
+}
+
+// HostSkipEntry is one (host, provider) skip row the strategy
+// enforces. The store adapter returns these from
+// HostSkipStore.ActiveForRepo.
+type HostSkipEntry struct {
+	Host       string
+	ProviderID string
+}
+
+// HostSkipStore is the persistence boundary the strategy uses to
+// read the active (unexpired) skip list for a repository and to
+// recompute + upsert a skip row when a tier's failure rate
+// crosses the auto-skip threshold. The wiring layer provides a
+// concrete adapter backed by internal/store; tests pass nil to
+// disable auto-skip entirely.
+type HostSkipStore interface {
+	// ActiveForRepo returns the (host, provider_id) pairs the
+	// strategy should skip for the given repository. Called
+	// once per Resolve; cheap because the underlying query is
+	// indexed and scoped to one repo.
+	ActiveForRepo(ctx context.Context, repoID string) ([]HostSkipEntry, error)
+
+	// RecordAndMaybeSkip is called after every provider
+	// attempt. It recomputes the (host, provider) failure
+	// rate from the fetch_attempts audit trail and, when the
+	// rate crosses cfg.FailureThreshold with at least
+	// cfg.MinSample attempts, upserts a skip row expiring at
+	// now()+cfg.Cooldown. A success that drops the rate
+	// below threshold clears an existing learned (non-manual)
+	// skip row so a recovered host is retried. Best-effort:
+	// errors are logged by the adapter and never propagated
+	// (the fetch path must not fail because the skip store
+	// was unavailable).
+	RecordAndMaybeSkip(ctx context.Context, repoID, host, providerID string, success bool, cfg AutoSkipConfig) error
+}
+
+// AutoSkipConfig is the strategy-side mirror of
+// config.AutoSkipConfig. The wiring layer translates the config
+// into this plain struct so the fetch package doesn't import
+// internal/config.
+type AutoSkipConfig struct {
+	Enabled          bool
+	MinSample        int
+	FailureThreshold float64
+	Cooldown         time.Duration
+}
 
 // URLValidator is the injectable SSRF guard the strategy runs
 // before any provider. The default production wiring uses
@@ -46,14 +115,39 @@ func ProviderID(p ResolutionProvider) string {
 	case *FlareSolverrProvider:
 		return "flaresolverr"
 	default:
+		// Allow a provider to declare its own id via an optional
+		// ProviderIdentifier interface (used by test stubs; no
+		// production provider needs this since the type switch
+		// above covers them). Falls back to "unknown" when not
+		// implemented.
+		if id, ok := p.(ProviderIdentifier); ok {
+			return id.ProviderID()
+		}
 		return "unknown"
 	}
+}
+
+// ProviderIdentifier is an optional interface a
+// ResolutionProvider can implement to declare its own stable
+// id. Production providers are identified by the type switch in
+// ProviderID; this is an escape hatch for test stubs that need
+// a recognizable id without being a concrete provider type.
+type ProviderIdentifier interface {
+	ProviderID() string
 }
 
 type FetchStrategy struct {
 	providers     []ResolutionProvider
 	hostOverrides map[string]string
 	urlValidator  URLValidator
+	// skipStore, when non-nil, is consulted at the start of
+	// runChain to jump (host,provider) tiers the repository
+	// has learned to skip, and after each provider attempt
+	// to upsert a skip when the failure rate crosses the
+	// threshold. Nil disables auto-skip (the static
+	// host_overrides still apply).
+	skipStore HostSkipStore
+	autoSkip  AutoSkipConfig
 }
 
 // NewFetchStrategy builds a strategy with the given providers
@@ -88,6 +182,32 @@ func (s *FetchStrategy) WithURLValidator(v URLValidator) *FetchStrategy {
 	cp := *s
 	cp.urlValidator = v
 	return &cp
+}
+
+// WithAutoSkip returns a copy of the strategy with the given
+// learned-skip store and threshold config wired. When store is
+// nil or cfg.Enabled is false, auto-skip is disabled and the
+// strategy relies only on static host_overrides. The method is a
+// builder matching WithURLValidator so the wiring layer can
+// chain it without exploding the constructor signature.
+func (s *FetchStrategy) WithAutoSkip(store HostSkipStore, cfg AutoSkipConfig) *FetchStrategy {
+	cp := *s
+	cp.skipStore = store
+	cp.autoSkip = cfg
+	return &cp
+}
+
+// SetAutoSkip mutates the strategy in place to wire (or replace)
+// the learned-skip store and threshold config. Used by the
+// wiring layer after the per-repo pool resolver is available
+// (the strategy is constructed before the handler, so the
+// resolver can't be passed to the constructor). Pass a nil
+// store or cfg.Enabled=false to disable auto-skip at runtime.
+// Safe to call once during boot; concurrent calls with Resolve
+// are not synchronized.
+func (s *FetchStrategy) SetAutoSkip(store HostSkipStore, cfg AutoSkipConfig) {
+	s.skipStore = store
+	s.autoSkip = cfg
 }
 
 func (s *FetchStrategy) Providers() []ResolutionProvider {
@@ -352,6 +472,16 @@ func (s *FetchStrategy) Resolve(ctx context.Context, resource Resource) (Resolve
 func (s *FetchStrategy) runChain(ctx context.Context, resource Resource, _ string) (ResolvedContent, []FetchAttempt, string, string, error) {
 	ordered := s.orderedProviders(resource.Type, s.staticOverride(resource))
 
+	// Build the set of (host, provider) tiers the repository
+	// has learned to skip. This is the auto-skip enforcement:
+	// a tier that has crossed the failure-rate threshold for
+	// this host is jumped so we don't burn the per-provider
+	// timeout on a tier that can't retrieve it. The static
+	// host_overrides (preferred provider) still apply — the
+	// skip set only removes tiers from the chain, it doesn't
+	// change the order.
+	skip := s.activeSkips(ctx, resource)
+
 	var (
 		errs          []string
 		attempts      []FetchAttempt
@@ -361,6 +491,19 @@ func (s *FetchStrategy) runChain(ctx context.Context, resource Resource, _ strin
 
 	for _, p := range ordered {
 		pid := providerID(p)
+
+		// Skip tiers the repository has learned to skip for
+		// this host. We still record an audit-trail entry so
+		// the UI shows why the tier didn't run.
+		if skip.has(pid) {
+			attempts = append(attempts, FetchAttempt{
+				Provider: pid,
+				Success:  false,
+				Error:    "skipped: learned (host,provider) skip active",
+			})
+			errs = append(errs, fmt.Sprintf("%s: skipped (learned skip)", pid))
+			continue
+		}
 
 		pctx, cancel := context.WithTimeout(ctx, perProviderTimeout)
 		start := time.Now()
@@ -386,6 +529,11 @@ func (s *FetchStrategy) runChain(ctx context.Context, resource Resource, _ strin
 				oaRedirectURL = result.OARedirectURL
 			}
 			errs = append(errs, fmt.Sprintf("%s: %s", pid, err.Error()))
+			// Recompute this (host, provider)'s failure
+			// rate and upsert a skip when it crosses the
+			// threshold. Best-effort: a store error is
+			// logged but never blocks the fetch path.
+			s.maybeUpsertSkip(ctx, resource, pid, false)
 			continue
 		}
 
@@ -395,6 +543,10 @@ func (s *FetchStrategy) runChain(ctx context.Context, resource Resource, _ strin
 			ElapsedMs: elapsed,
 			OAStatus:  result.OAStatus,
 		})
+		// A success lowers the host's failure rate for this
+		// tier; recompute so a recovered host's skip can be
+		// cleared (its rate drops below threshold).
+		s.maybeUpsertSkip(ctx, resource, pid, true)
 		if oaStatus == "" && result.OAStatus != "" {
 			oaStatus = result.OAStatus
 		}
@@ -411,6 +563,79 @@ func (s *FetchStrategy) runChain(ctx context.Context, resource Resource, _ strin
 		Resource: string(resource.Type),
 		Errors:   errs,
 		Attempts: attempts,
+	}
+}
+
+// skipSet is the per-Resolve set of (provider) ids to jump for
+// the current host. Built once from HostSkipStore.ActiveForRepo
+// filtered to the resource's host.
+type skipSet struct {
+	providers map[string]struct{}
+}
+
+func (s skipSet) has(pid string) bool {
+	if s.providers == nil {
+		return false
+	}
+	_, ok := s.providers[pid]
+	return ok
+}
+
+// activeSkips returns the set of provider ids the repository has
+// learned to skip for the resource's host. Empty when auto-skip
+// is disabled, the store is nil, no repo is in context, or the
+// host has no active skips.
+func (s *FetchStrategy) activeSkips(ctx context.Context, resource Resource) skipSet {
+	if s.skipStore == nil || !s.autoSkip.Enabled {
+		return skipSet{}
+	}
+	if resource.Type != SourceURL {
+		return skipSet{}
+	}
+	repoID := RepoIDFromContext(ctx)
+	if repoID == "" {
+		return skipSet{}
+	}
+	host := hostOf(resource.Value)
+	if host == "" {
+		return skipSet{}
+	}
+	entries, err := s.skipStore.ActiveForRepo(ctx, repoID)
+	if err != nil {
+		log.Printf("fetch: auto-skip ActiveForRepo failed (repo=%s): %v", repoID, err)
+		return skipSet{}
+	}
+	m := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		if e.Host == host && e.ProviderID != "" {
+			m[e.ProviderID] = struct{}{}
+		}
+	}
+	return skipSet{providers: m}
+}
+
+// maybeUpsertSkip recomputes the (host, provider) failure rate
+// and upserts/clears a skip row via the store. Best-effort; the
+// fetch path never fails because the skip store was unavailable.
+// No-op when auto-skip is disabled or no repo is in context.
+func (s *FetchStrategy) maybeUpsertSkip(ctx context.Context, resource Resource, pid string, success bool) {
+	if s.skipStore == nil || !s.autoSkip.Enabled {
+		return
+	}
+	if resource.Type != SourceURL {
+		return
+	}
+	repoID := RepoIDFromContext(ctx)
+	if repoID == "" {
+		return
+	}
+	host := hostOf(resource.Value)
+	if host == "" {
+		return
+	}
+	if err := s.skipStore.RecordAndMaybeSkip(ctx, repoID, host, pid, success, s.autoSkip); err != nil {
+		log.Printf("fetch: auto-skip RecordAndMaybeSkip failed (repo=%s host=%s provider=%s): %v",
+			repoID, host, pid, err)
 	}
 }
 

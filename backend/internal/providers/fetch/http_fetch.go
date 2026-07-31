@@ -11,7 +11,19 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
 )
 
-const defaultUserAgent = "Mozilla/5.0 (compatible; OpenKT/1.0; +https://github.com/openktree/open-knowledge-tree)"
+const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+// defaultSecChUA is the Sec-CH-UA client-hints brand string matching
+// Chrome 133 (the newest TLS profile the pinned bogdanfinn/tls-client
+// exposes). Reddit/Cloudflare WAFs inspect the Sec-CH-UA brand list:
+// a browser Sec-Fetch-* header suite without Sec-CH-UA is a strong bot
+// signal. These three headers are sent alongside the real-Chrome UA so
+// the request shape is coherent with the TLS fingerprint.
+const (
+	defaultSecChUA         = `"Chromium";v="133", "Not(A:Brand";v="24", "Google Chrome";v="133"`
+	defaultSecChUAMobile   = "?0"
+	defaultSecChUAPlatform = `"Windows"`
+)
 
 // ErrNon2xxStatus is returned by Resolve when the upstream
 // returns a non-2xx HTTP status. It wraps the status code so
@@ -293,6 +305,9 @@ func (p *FetchResolutionProvider) setBrowserHeaders(req *http.Request) {
 	req.Header.Set("Sec-Fetch-Site", "none")
 	req.Header.Set("Sec-Fetch-User", "?1")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-CH-UA", defaultSecChUA)
+	req.Header.Set("Sec-CH-UA-Mobile", defaultSecChUAMobile)
+	req.Header.Set("Sec-CH-UA-Platform", defaultSecChUAPlatform)
 }
 
 // pickParser returns the first parser that Supports the

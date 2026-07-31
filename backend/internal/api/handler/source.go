@@ -586,11 +586,87 @@ func (s *Source) ListProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"search":     searchProviders,
-		"resolution": resolutionProviders,
-		"flare_skip_candidates":         s.flareSkipCandidates(r),
-		"host_failures_by_provider":     s.hostFailuresByProvider(r),
+		"search":                    searchProviders,
+		"resolution":                resolutionProviders,
+		"flare_skip_candidates":     s.flareSkipCandidates(r),
+		"host_failures_by_provider": s.hostFailuresByProvider(r),
+		"host_failure_matrix":       s.hostFailureMatrix(r),
+		"host_skip_providers":       s.hostSkipProviders(r),
 	})
+}
+
+// hostFailureMatrix pivots the fetch_attempts audit trail into
+// one row per host with per-provider failure/success columns,
+// used by the Providers page "Fetch Domains" tab to render a
+// single merged, paginated table instead of one card per
+// provider. Nil (omitted) when no repo is in context — same
+// scoping rule as the other diagnostics.
+func (s *Source) hostFailureMatrix(r *http.Request) []map[string]interface{} {
+	pool, ok := s.repoPoolForRequest(r)
+	if !ok {
+		return nil
+	}
+	rows, err := store.New(pool).ListHostFailureMatrix(r.Context())
+	if err != nil {
+		log.Printf("source: host_failure_matrix query: %v", err)
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]interface{}{
+			"host":                 row.Host,
+			"total_attempts":       row.TotalAttempts,
+			"fetch_failures":       row.FetchFailures,
+			"fetch_successes":      row.FetchSuccesses,
+			"tls_failures":         row.TlsFailures,
+			"tls_successes":        row.TlsSuccesses,
+			"flaresolverr_failures":   row.FlaresolverrFailures,
+			"flaresolverr_successes":  row.FlaresolverrSuccesses,
+			"unpaywall_failures":   row.UnpaywallFailures,
+			"unpaywall_successes":  row.UnpaywallSuccesses,
+		})
+	}
+	return out
+}
+
+// hostSkipProviders returns the active learned + manual
+// (host, provider) skip list for the active repository, surfaced
+// on the Providers page "Fetch Domains" tab so an operator can
+// review which tiers are being auto-skipped for which hosts and
+// manually add/remove skips. Nil (omitted from the response)
+// when no repo is in context — same scoping rule as
+// flareSkipCandidates / hostFailuresByProvider.
+func (s *Source) hostSkipProviders(r *http.Request) []map[string]interface{} {
+	pool, repoUUID, ok := s.repoPoolAndUUIDForRequest(r)
+	if !ok {
+		return nil
+	}
+	rows, err := store.New(pool).ListHostSkipProviders(r.Context(), repoUUID)
+	if err != nil {
+		log.Printf("source: host_skip_providers query: %v", err)
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		expires := ""
+		if row.ExpiresAt.Valid {
+			expires = row.ExpiresAt.Time.Format(time.RFC3339)
+		}
+		skipped := ""
+		if row.SkippedAt.Valid {
+			skipped = row.SkippedAt.Time.Format(time.RFC3339)
+		}
+		out = append(out, map[string]interface{}{
+			"host":          row.Host,
+			"provider_id":   row.ProviderID,
+			"failure_rate":  row.FailureRate,
+			"sample_size":   row.SampleSize,
+			"skipped_at":    skipped,
+			"expires_at":     expires,
+			"manual":         row.Manual,
+		})
+	}
+	return out
 }
 
 // flareSkipCandidates returns the per-host FlareSolverr
@@ -717,21 +793,40 @@ func (s *Source) hostFailuresByProvider(r *http.Request) map[string]interface{} 
 // the pool can't be resolved. Errors are logged by the caller's
 // caller (the diagnostic methods that use this helper).
 func (s *Source) repoPoolForRequest(r *http.Request) (*pgxpool.Pool, bool) {
+	pool, _, ok := s.repoPoolAndUUIDForRequest(r)
+	return pool, ok
+}
+
+// repoPoolAndUUIDForRequest is the pool+uuid variant. The skip
+// endpoints need the parsed UUID to upsert/delete rows.
+func (s *Source) repoPoolAndUUIDForRequest(r *http.Request) (*pgxpool.Pool, pgtype.UUID, bool) {
 	if s.repoPoolResolver == nil {
-		return nil, false
+		return nil, pgtype.UUID{}, false
 	}
 	repoID := r.Header.Get("X-Repository-ID")
 	if repoID == "" {
-		return nil, false
+		return nil, pgtype.UUID{}, false
 	}
-	pool, _, err := s.repoPoolResolver(r.Context(), repoID)
+	pool, repoUUID, err := s.repoPoolResolver(r.Context(), repoID)
 	if err != nil || pool == nil {
 		if err != nil {
 			log.Printf("source: repo pool resolve for %s: %v", repoID, err)
 		}
-		return nil, false
+		return nil, pgtype.UUID{}, false
 	}
-	return pool, true
+	return pool, repoUUID, true
+}
+
+// repoUUIDFromRequest returns the parsed repository UUID from
+// the X-Repository-ID header. The zero (invalid) UUID is
+// returned when the resolver is unavailable or the header is
+// missing; callers must guard pool resolution first.
+func (s *Source) repoUUIDFromRequest(r *http.Request) pgtype.UUID {
+	_, repoUUID, ok := s.repoPoolAndUUIDForRequest(r)
+	if !ok {
+		return pgtype.UUID{}
+	}
+	return repoUUID
 }
 
 // ListDecompositionProviders handles GET /decomposition/providers.
@@ -1043,6 +1138,187 @@ func (s *Source) ClassifyResource(w http.ResponseWriter, r *http.Request) {
 		"type":     resource.Type,
 		"value":    resource.Value,
 		"strategy": providersForType,
+	})
+}
+
+// AddHostSkip handles POST /sources/skip.
+//
+// Manually pins a (host, provider) tier as skipped for the
+// active repository. A manual skip never expires (expires_at is
+// set far in the future) and is not auto-cleared by the
+// strategy's threshold recompute — an operator must remove it
+// via DELETE /sources/skip. Used by the "Fetch Domains" tab to
+// let an operator pin out a tier the auto-skip hasn't caught
+// yet. Requires the source_provider.manage permission (wired in
+// wiring.go).
+func (s *Source) AddHostSkip(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Host       string `json:"host"`
+		ProviderID string `json:"provider_id"`
+	}
+	if err := httputil.DecodeBody(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Host == "" || body.ProviderID == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "host and provider_id are required")
+		return
+	}
+	pool, repoUUID, ok := s.repoPoolAndUUIDForRequest(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "X-Repository-ID is required to manage skips")
+		return
+	}
+	// Manual skips expire in ~100 years (effectively never; kept
+	// under the int64 nanosecond overflow boundary).
+	farFuture := pgtype.Timestamptz{Time: time.Now().Add(100 * 365 * 24 * time.Hour), Valid: true}
+	row, err := store.New(pool).UpsertHostSkipProvider(r.Context(), store.UpsertHostSkipProviderParams{
+		RepositoryID: repoUUID,
+		Host:         body.Host,
+		ProviderID:   body.ProviderID,
+		FailureRate:  1.0,
+		SampleSize:   0,
+		ExpiresAt:    farFuture,
+		Manual:       true,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("upsert skip: %v", err))
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"host":        row.Host,
+		"provider_id": row.ProviderID,
+		"manual":      row.Manual,
+		"expires_at":  row.ExpiresAt.Time.Format(time.RFC3339),
+	})
+}
+
+// RemoveHostSkip handles DELETE /sources/skip.
+//
+// Removes a single (host, provider) skip row (manual or
+// learned) for the active repository. Used by the "Fetch
+// Domains" tab to un-skip a tier an operator previously pinned
+// out, or to force-retry a tier the auto-skip learned to skip.
+// Requires the source_provider.manage permission.
+func (s *Source) RemoveHostSkip(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Host       string `json:"host"`
+		ProviderID string `json:"provider_id"`
+	}
+	if err := httputil.DecodeBody(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Host == "" || body.ProviderID == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "host and provider_id are required")
+		return
+	}
+	pool, repoUUID, ok := s.repoPoolAndUUIDForRequest(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "X-Repository-ID is required to manage skips")
+		return
+	}
+	if err := store.New(pool).DeleteHostSkipProvider(r.Context(), store.DeleteHostSkipProviderParams{
+		RepositoryID: repoUUID,
+		Host:         body.Host,
+		ProviderID:   body.ProviderID,
+	}); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("delete skip: %v", err))
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"host":        body.Host,
+		"provider_id": body.ProviderID,
+		"removed":     true,
+	})
+}
+
+// ClearHostSkips handles DELETE /sources/skip/all.
+//
+// Removes every skip row (manual + learned) for the active
+// repository. A "reset" so the strategy re-learns from scratch.
+// Requires the source_provider.manage permission.
+func (s *Source) ClearHostSkips(w http.ResponseWriter, r *http.Request) {
+	pool, repoUUID, ok := s.repoPoolAndUUIDForRequest(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "X-Repository-ID is required to manage skips")
+		return
+	}
+	if err := store.New(pool).ClearHostSkipProviders(r.Context(), repoUUID); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("clear skips: %v", err))
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"cleared": true,
+	})
+}
+
+// SetHostSkip handles PUT /sources/skip.
+//
+// Sets the full skip configuration for a single host in one
+// call. The body carries the host and a list of provider ids to
+// skip (manual, never-expires). The strategy jumps those tiers
+// for the host. This is the endpoint the "Fetch Domains" tab
+// uses for the per-row "skip these tiers" dropdown and the "do
+// not pull" (ban all configured providers) option.
+//
+// A "chain entry point" choice (e.g. start at flaresolverr)
+// is expressed as skipping every provider weaker than the
+// chosen one. A "do not pull" choice skips every fetch tier
+// (unpaywall, tls, fetch, flaresolverr) so the strategy never
+// retrieves the host. Requires source_provider:manage.
+func (s *Source) SetHostSkip(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Host        string   `json:"host"`
+		ProviderIDs []string `json:"provider_ids"`
+	}
+	if err := httputil.DecodeBody(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Host == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "host is required")
+		return
+	}
+	pool, repoUUID, ok := s.repoPoolAndUUIDForRequest(r)
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "X-Repository-ID is required to manage skips")
+		return
+	}
+	queries := store.New(pool)
+	// First clear any existing manual skip rows for this host so
+	// the PUT is a full replace (idempotent). Learned skips are
+	// not touched — an operator setting a manual skip takes
+	// precedence, and the learned rows expire on their own.
+	if err := queries.ClearHostSkipProviders(r.Context(), repoUUID); err != nil {
+		// Continue: best-effort. The upserts below re-establish
+		// the desired state even if the clear failed.
+		log.Printf("source: SetHostSkip clear for %s: %v", body.Host, err)
+	}
+	farFuture := pgtype.Timestamptz{Time: time.Now().Add(100 * 365 * 24 * time.Hour), Valid: true}
+	skipped := make([]string, 0, len(body.ProviderIDs))
+	for _, pid := range body.ProviderIDs {
+		if pid == "" {
+			continue
+		}
+		if _, err := queries.UpsertHostSkipProvider(r.Context(), store.UpsertHostSkipProviderParams{
+			RepositoryID: repoUUID,
+			Host:         body.Host,
+			ProviderID:   pid,
+			FailureRate:  1.0,
+			SampleSize:   0,
+			ExpiresAt:    farFuture,
+			Manual:       true,
+		}); err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("upsert skip %s: %v", pid, err))
+			return
+		}
+		skipped = append(skipped, pid)
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"host":         body.Host,
+		"provider_ids": skipped,
+		"set":          true,
 	})
 }
 

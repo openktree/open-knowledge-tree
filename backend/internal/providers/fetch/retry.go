@@ -32,15 +32,27 @@ type RetryConfig struct {
 	// MaxDelay caps the per-attempt backoff so retries don't
 	// accumulate unbounded delay.
 	MaxDelay time.Duration
+
+	// Retry403MaxAttempts caps the number of retries for HTTP 403
+	// responses specifically. Many WAFs (Reddit, Cloudflare) emit
+	// 403 under burst but return 200/429 in quiet windows, so a
+	// transient 403 is worth a short retry. A large retry budget
+	// on 403 would waste time on a truly-blocked host, so this is
+	// capped separately from MaxAttempts. 0 disables 403 retry
+	// (403 is treated as permanent, the historical behaviour).
+	// The cap counts 403 attempts; other retryable errors
+	// (429/5xx/network) continue to use MaxAttempts.
+	Retry403MaxAttempts int
 }
 
 // defaultRetryConfig is used when the caller passes a zero-value
 // config with MaxAttempts <= 0. It gives three total attempts
 // (initial + 2 retries) with exponential backoff from 2s to 15s.
 var defaultRetryConfig = RetryConfig{
-	MaxAttempts: 3,
-	BaseDelay:   2 * time.Second,
-	MaxDelay:    15 * time.Second,
+	MaxAttempts:         3,
+	BaseDelay:           2 * time.Second,
+	MaxDelay:            15 * time.Second,
+	Retry403MaxAttempts: 2,
 }
 
 // NoRetryConfig disables retry entirely. Used by the simple
@@ -52,7 +64,9 @@ var NoRetryConfig = RetryConfig{
 
 // retryableFetchError inspects an error returned by an HTTP fetch
 // or TLS-impersonation attempt and reports whether it is worth
-// retrying. It returns the classification reason for logging.
+// retrying. It returns the classification reason for logging. The
+// reason for an HTTP 403 is prefixed "403" so retryWithBackoff can
+// apply the separate Retry403MaxAttempts cap.
 func retryableFetchError(err error) (retryable bool, reason string) {
 	if err == nil {
 		return false, ""
@@ -93,6 +107,9 @@ func retryableFetchError(err error) (retryable bool, reason string) {
 		if strings.Contains(msg, "status 429") {
 			return true, "429 rate limited"
 		}
+		if strings.Contains(msg, "status 403") {
+			return true, "403 forbidden"
+		}
 		if is5xxStatusMessage(msg) {
 			return true, "5xx server error"
 		}
@@ -101,6 +118,9 @@ func retryableFetchError(err error) (retryable bool, reason string) {
 	msg := err.Error()
 	if strings.Contains(msg, "status 429") {
 		return true, "429 rate limited"
+	}
+	if strings.Contains(msg, "status 403") {
+		return true, "403 forbidden"
 	}
 	if is5xxStatusMessage(msg) {
 		return true, "5xx server error"
@@ -120,13 +140,16 @@ func retryableFetchError(err error) (retryable bool, reason string) {
 		return false, "insufficient content"
 	}
 
-	// ErrNon2xxStatus for 4xx (except 429 which is caught above)
-	// is permanent (the server refused the request; retrying
-	// won't change that).
+	// ErrNon2xxStatus: 429/5xx are fully retryable (subject to
+	// MaxAttempts); 403 is retryable subject to the separate
+	// Retry403MaxAttempts cap; other 4xx are permanent.
 	var non2xx *ErrNon2xxStatus
 	if errors.As(err, &non2xx) {
 		if non2xx.Code == 429 || (non2xx.Code >= 500 && non2xx.Code <= 599) {
 			return true, fmt.Sprintf("status %d", non2xx.Code)
+		}
+		if non2xx.Code == 403 {
+			return true, "403 forbidden"
 		}
 		return false, fmt.Sprintf("non-retryable status %d", non2xx.Code)
 	}
@@ -174,6 +197,13 @@ func retryWithBackoff[T any](
 	}
 
 	var lastErr error
+	// count403 tracks how many attempts have returned a 403-classified
+	// error so we can apply the separate Retry403MaxAttempts cap.
+	// cap403 <= 0 means 403 retry is disabled: 403 is treated as
+	// permanent (the historical behaviour). cap403 > 0 means a 403
+	// is retried up to that many total attempts.
+	count403 := 0
+	cap403 := cfg.Retry403MaxAttempts
 	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return zero, err
@@ -186,8 +216,15 @@ func retryWithBackoff[T any](
 		lastErr = err
 
 		retryable, reason := retryableFetchError(err)
-		if !retryable || attempt == cfg.MaxAttempts {
-			if !retryable {
+		is403 := reason == "403 forbidden"
+		if is403 {
+			count403++
+		}
+		// 403 retry disabled (cap403 <= 0): a 403 is permanent.
+		// 403 retry enabled: stop once count403 reaches the cap.
+		over403Cap := is403 && (cap403 <= 0 || count403 >= cap403)
+		if !retryable || over403Cap || attempt == cfg.MaxAttempts {
+			if !retryable || over403Cap {
 				log.Printf("%s: attempt %d/%d failed (%s, permanent): %v",
 					label, attempt, cfg.MaxAttempts, reason, err)
 			} else {

@@ -90,9 +90,9 @@ func TestRetryableFetchError(t *testing.T) {
 			wantRetryable: true,
 		},
 		{
-			name:          "403 status is NOT retryable",
+			name:          "403 status is retryable (subject to Retry403MaxAttempts cap in retryWithBackoff)",
 			err:           &ErrNon2xxStatus{Code: 403},
-			wantRetryable: false,
+			wantRetryable: true,
 		},
 		{
 			name:          "404 status is NOT retryable",

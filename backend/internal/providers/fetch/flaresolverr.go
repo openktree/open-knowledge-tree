@@ -58,6 +58,7 @@ type FlareSolverrProvider struct {
 	userAgent string
 	parsers   []content_parsing.Parser
 	client    *http.Client
+	retryCfg  RetryConfig
 	// robin is the round-robin cursor across endpoints. We
 	// use atomic so concurrent Resolve calls pick distinct
 	// endpoints without a mutex on the hot path.
@@ -79,7 +80,7 @@ type FlareSolverrProvider struct {
 // used to parse the HTML the sidecar returns and to apply
 // the same insufficient-content guard as the other tiers.
 func NewFlareSolverrProvider(endpoint string, timeout time.Duration, userAgent string, parsers ...content_parsing.Parser) *FlareSolverrProvider {
-	return NewFlareSolverrProviderPool([]string{endpoint}, timeout, userAgent, 0, parsers...)
+	return NewFlareSolverrProviderPool([]string{endpoint}, timeout, userAgent, 0, NoRetryConfig, parsers...)
 }
 
 // NewFlareSolverrProviderPool builds a multi-endpoint
@@ -91,8 +92,12 @@ func NewFlareSolverrProvider(endpoint string, timeout time.Duration, userAgent s
 // whole pool; 0 means no application-level cap. A typical
 // production setting is maxConcurrency = len(endpoints)
 // (one in-flight call per container) for challenge-heavy
-// workloads, or 2*len(endpoints) for lighter pages.
-func NewFlareSolverrProviderPool(endpoints []string, timeout time.Duration, userAgent string, maxConcurrency int, parsers ...content_parsing.Parser) *FlareSolverrProvider {
+// workloads, or 2*len(endpoints) for lighter pages. retryCfg
+// governs retries on transient sidecar failures (network
+// error, sidecar 5xx, decode error); ErrInsufficientContent
+// (a genuine block that rendered no content) is NOT retried.
+// Pass NoRetryConfig to disable retry.
+func NewFlareSolverrProviderPool(endpoints []string, timeout time.Duration, userAgent string, maxConcurrency int, retryCfg RetryConfig, parsers ...content_parsing.Parser) *FlareSolverrProvider {
 	cleaned := make([]string, 0, len(endpoints))
 	for _, ep := range endpoints {
 		ep = strings.TrimSpace(ep)
@@ -137,6 +142,7 @@ func NewFlareSolverrProviderPool(endpoints []string, timeout time.Duration, user
 		client: &http.Client{
 			Timeout: timeout,
 		},
+		retryCfg: retryCfg,
 	}
 	if maxConcurrency > 0 {
 		p.sem = make(chan struct{}, maxConcurrency)
@@ -227,7 +233,21 @@ func (p *FlareSolverrProvider) Resolve(ctx context.Context, resource Resource) (
 	if err != nil {
 		return ResolvedContent{}, err
 	}
+	if p.retryCfg.MaxAttempts > 1 {
+		return retryWithBackoff(ctx, p.retryCfg, "flaresolverr",
+			func(retryCtx context.Context) (ResolvedContent, error) {
+				return p.doResolve(retryCtx, fetchURL)
+			})
+	}
+	return p.doResolve(ctx, fetchURL)
+}
 
+// doResolve performs a single FlareSolverr sidecar request.
+// Separated from Resolve so the retry wrapper can call it
+// multiple times. The semaphore (acquireSem/release) is held
+// for the whole Resolve including retries so a retry does not
+// slip past the concurrency cap.
+func (p *FlareSolverrProvider) doResolve(ctx context.Context, fetchURL string) (ResolvedContent, error) {
 	// Acquire a pool-wide concurrency slot before building
 	// the request. When the pool is saturated this blocks
 	// (respecting ctx) instead of firing a request that

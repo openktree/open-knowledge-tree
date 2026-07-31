@@ -122,7 +122,7 @@ func NewTLSImpersonationProvider(impersonate, userAgent string, parsers ...conte
 }
 
 // resolveTLSProfile maps a human-friendly identifier (e.g.
-// "chrome_124") to a tls-client profile. The mapping is
+// "chrome_133") to a tls-client profile. The mapping is
 // intentionally narrow: we only expose the latest Chrome
 // profiles, which is what the reference's curl_cffi tier
 // defaults to. An operator who needs a different browser
@@ -253,6 +253,9 @@ func (p *TLSImpersonationProvider) setBrowserHeaders(req *fhttp.Request) {
 	req.Header.Set("Sec-Fetch-Site", "none")
 	req.Header.Set("Sec-Fetch-User", "?1")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-CH-UA", defaultSecChUA)
+	req.Header.Set("Sec-CH-UA-Mobile", defaultSecChUAMobile)
+	req.Header.Set("Sec-CH-UA-Platform", defaultSecChUAPlatform)
 }
 
 func resolveTLSURL(resource Resource) (string, error) {

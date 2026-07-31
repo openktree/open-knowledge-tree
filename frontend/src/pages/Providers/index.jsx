@@ -7,6 +7,7 @@ import AIProvidersTab from "./AIProvidersTab";
 import { DEFAULT_TAB, PROVIDER_TABS } from "./constants";
 import DecompositionProvidersTab from "./DecompositionProvidersTab";
 import EmbeddingProvidersTab from "./EmbeddingProvidersTab";
+import FetchDomainsTab from "./FetchDomainsTab";
 import FetchProvidersTab from "./FetchProvidersTab";
 import ProvidersGate from "./ProvidersGate";
 import SearchProvidersTab from "./SearchProvidersTab";
@@ -18,7 +19,7 @@ export default function Providers() {
   const canViewAI = createMemo(() => rbac.hasPermission("ai_provider", "read"));
   const canViewDecomposition = createMemo(() => rbac.hasPermission("decomposition", "read"));
 
-  const [providers] = createResource(canViewProviders, (can) =>
+  const [providers, { refetch: refetchProviders }] = createResource(canViewProviders, (can) =>
     can ? api.listProviders().catch(() => ({ search: [], resolution: [] })) : null,
   );
 
@@ -49,6 +50,11 @@ export default function Providers() {
       <Show when={tab() === "fetch"}>
         <ProvidersGate can={canViewProviders} loaded={providers}>
           <FetchProvidersTab providers={providers} />
+        </ProvidersGate>
+      </Show>
+      <Show when={tab() === "fetch-domains"}>
+        <ProvidersGate can={canViewProviders} loaded={providers}>
+          <FetchDomainsTab providers={providers} refetch={refetchProviders} />
         </ProvidersGate>
       </Show>
       <Show when={tab() === "ai"}>

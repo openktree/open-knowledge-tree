@@ -21,8 +21,16 @@ import Card from "../../components/Card";
  *     { [providerId]: [{host, total_attempts, failures, successes}] }
  */
 export default function ProviderHostFailures(props) {
+  // byProvider may be passed as a value (the map) or as an
+  // accessor function (() => map). Unwrap either form so the
+  // card works regardless of the caller's convention.
+  const byProvider = () => {
+    const v = props.byProvider;
+    if (typeof v === "function") return v() || {};
+    return v || {};
+  };
   const entries = () => {
-    const map = props.byProvider || {};
+    const map = byProvider();
     return Object.entries(map).map(([pid, hosts]) => ({
       providerId: pid,
       hosts: hosts || [],
@@ -32,7 +40,22 @@ export default function ProviderHostFailures(props) {
   const isStrong = (h) => h.successes === 0 && h.failures >= 3;
 
   return (
-    <Show when={entries().length > 0}>
+    <Show
+      when={entries().length > 0}
+      fallback={
+        <Card class="mb-6">
+          <div class="flex items-center gap-2 mb-1">
+            <h2 class="text-lg font-semibold dark:text-white">Host failures by provider</h2>
+            <Badge variant="yellow">advisory</Badge>
+          </div>
+          <p class="text-sm text-gray-500 dark:text-gray-400">
+            No fetch failures recorded yet. This card lists hosts where each provider tier was
+            tried, with failure/success counts, once a repository has <code>fetch_attempts</code>
+            data. Select a repository to see per-host diagnostics.
+          </p>
+        </Card>
+      }
+    >
       <For each={entries()}>
         {(entry) => (
           <Card class="mb-6">

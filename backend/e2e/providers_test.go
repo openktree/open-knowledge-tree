@@ -34,10 +34,38 @@ type fetchProvider struct {
 }
 
 type providersResponse struct {
-	Search               []map[string]interface{} `json:"search"`
-	Resolution           []fetchProvider           `json:"resolution"`
-	FlareSkipCandidates  []flareSkipCandidate      `json:"flare_skip_candidates"`
-	HostFailuresByProvider map[string][]hostCandidate `json:"host_failures_by_provider"`
+	Search                 []map[string]interface{}    `json:"search"`
+	Resolution            []fetchProvider              `json:"resolution"`
+	FlareSkipCandidates   []flareSkipCandidate         `json:"flare_skip_candidates"`
+	HostFailuresByProvider map[string][]hostCandidate  `json:"host_failures_by_provider"`
+	HostFailureMatrix     []hostMatrixRow              `json:"host_failure_matrix"`
+	HostSkipProviders     []hostSkipEntry              `json:"host_skip_providers"`
+}
+
+// hostMatrixRow mirrors one row of the host_failure_matrix
+// array surfaced by /sources/providers.
+type hostMatrixRow struct {
+	Host                 string `json:"host"`
+	TotalAttempts        int32  `json:"total_attempts"`
+	FetchFailures        int32  `json:"fetch_failures"`
+	FetchSuccesses       int32  `json:"fetch_successes"`
+	TlsFailures          int32  `json:"tls_failures"`
+	TlsSuccesses         int32  `json:"tls_successes"`
+	FlaresolverrFailures  int32 `json:"flaresolverr_failures"`
+	FlaresolverrSuccesses int32 `json:"flaresolverr_successes"`
+	UnpaywallFailures    int32  `json:"unpaywall_failures"`
+	UnpaywallSuccesses   int32  `json:"unpaywall_successes"`
+}
+
+// hostSkipEntry mirrors one row of the host_skip_providers list
+// surfaced by /sources/providers. Used by the skip-endpoint e2e.
+type hostSkipEntry struct {
+	Host        string  `json:"host"`
+	ProviderID  string  `json:"provider_id"`
+	FailureRate float64 `json:"failure_rate"`
+	SampleSize  int32   `json:"sample_size"`
+	Manual      bool    `json:"manual"`
+	ExpiresAt   string  `json:"expires_at"`
 }
 
 // hostCandidate is the per-host entry in
@@ -408,5 +436,271 @@ func seedFlareSource(t *testing.T, queries *store.Queries, repoID pgtype.UUID, u
 		FetchAttempts: []byte(attemptsJSON),
 	}); err != nil {
 		t.Fatalf("mark fetch attempts: %v", err)
+	}
+}
+
+// TestHostSkipEndpoints covers the manual skip management
+// endpoints (POST/DELETE /sources/skip, DELETE /sources/skip/all)
+// and the host_skip_providers field on /sources/providers.
+//
+// The test creates a repo, adds a manual skip via POST, asserts it
+// appears on GET /sources/providers, removes it via DELETE, asserts
+// it's gone, then clears all. It also covers the permission gate
+// (a viewer without source_provider:manage gets 403) and the
+// repo-scoping (no X-Repository-ID → 400).
+func TestHostSkipEndpoints(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	client := newAuthClient(env.BaseURL)
+	client = registerTestUser(t, env, "skip@example.com", "password123", "Skip User")
+	_, meBody := client.do("GET", "/api/v1/users/me", nil)
+	var me struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(meBody, &me)
+	grantSourceProviderExecute(t, env, me.ID)
+	client.token = loginUser(client, "skip@example.com", "password123")
+
+	_, _, repoID := createRepository(t, client, "SkipRepo", "skip-repo", "desc")
+	if repoID == "" {
+		t.Fatal("expected repository id")
+	}
+	headers := map[string]string{"X-Repository-ID": repoID}
+
+	// A viewer (grouped into the 'viewer' role, which only has
+	// source_provider:read, not manage) must be 403'd on POST
+	// /sources/skip. registerTestUser grants sysadmin to every
+	// user, so we register a plain viewer manually to get a
+	// non-admin session.
+	viewer := newAuthClient(env.BaseURL)
+	vResp, _ := viewer.register("skipviewer@example.com", "password123", "Skip Viewer")
+	if vResp.StatusCode != http.StatusCreated {
+		t.Fatalf("register viewer: status %d", vResp.StatusCode)
+	}
+	viewer.token = loginUser(viewer, "skipviewer@example.com", "password123")
+	_, vme := viewer.do("GET", "/api/v1/users/me", nil)
+	var vmeBody struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(vme, &vmeBody)
+	// Group the viewer into the 'viewer' role (seed grants only
+	// source_provider:read, not manage). No sysadmin grant.
+	if _, err := env.DB.Exec(context.Background(),
+		`INSERT INTO casbin_rule (p_type, v0, v1, v2) VALUES ('g', $1, 'viewer', '*')`, vmeBody.ID,
+	); err != nil {
+		t.Fatalf("seed viewer grouping: %v", err)
+	}
+	viewer.token = loginUser(viewer, "skipviewer@example.com", "password123")
+	vResp, _ = viewer.doWithHeaders("POST", "/api/v1/sources/skip",
+		[]byte(`{"host":"example.com","provider_id":"fetch"}`),
+		map[string]string{"X-Repository-ID": repoID, "Content-Type": "application/json"})
+	if vResp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for viewer POST /sources/skip, got %d", vResp.StatusCode)
+	}
+
+	// The main user was granted sysadmin via
+	// grantSourceProviderExecute above, so it has
+	// source_provider:manage (migration 0064 backfills the
+	// policy on fresh test DBs). Proceed with mutations.
+
+	// POST /sources/skip without X-Repository-ID → 400.
+	badResp, _ := client.do("POST", "/api/v1/sources/skip",
+		[]byte(`{"host":"example.com","provider_id":"fetch"}`))
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 POST /sources/skip without repo, got %d", badResp.StatusCode)
+	}
+
+	// Add a manual skip for example.com → fetch.
+	resp, raw := client.doWithHeaders("POST", "/api/v1/sources/skip",
+		[]byte(`{"host":"example.com","provider_id":"fetch"}`),
+		map[string]string{"X-Repository-ID": repoID, "Content-Type": "application/json"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 POST /sources/skip, got %d: %s", resp.StatusCode, raw)
+	}
+
+	// GET /sources/providers must list the skip under
+	// host_skip_providers.
+	resp, raw = client.doWithHeaders("GET", "/api/v1/sources/providers", nil, headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 GET /sources/providers, got %d: %s", resp.StatusCode, raw)
+	}
+	var out providersResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	found := false
+	for _, s := range out.HostSkipProviders {
+		if s.Host == "example.com" && s.ProviderID == "fetch" {
+			found = true
+			if !s.Manual {
+				t.Errorf("expected manual=true, got false")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected example.com/fetch in host_skip_providers, got %+v", out.HostSkipProviders)
+	}
+
+	// DELETE /sources/skip removes the skip.
+	resp, raw = client.doWithHeaders("DELETE", "/api/v1/sources/skip",
+		[]byte(`{"host":"example.com","provider_id":"fetch"}`),
+		map[string]string{"X-Repository-ID": repoID, "Content-Type": "application/json"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 DELETE /sources/skip, got %d: %s", resp.StatusCode, raw)
+	}
+	resp, raw = client.doWithHeaders("GET", "/api/v1/sources/providers", nil, headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after delete, got %d: %s", resp.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal after delete: %v", err)
+	}
+	for _, s := range out.HostSkipProviders {
+		if s.Host == "example.com" && s.ProviderID == "fetch" {
+			t.Errorf("expected example.com/fetch removed, got %+v", out.HostSkipProviders)
+		}
+	}
+
+	// Add two skips, then DELETE /sources/skip/all clears them.
+	client.doWithHeaders("POST", "/api/v1/sources/skip",
+		[]byte(`{"host":"a.example.com","provider_id":"fetch"}`),
+		map[string]string{"X-Repository-ID": repoID, "Content-Type": "application/json"})
+	client.doWithHeaders("POST", "/api/v1/sources/skip",
+		[]byte(`{"host":"b.example.com","provider_id":"tls"}`),
+		map[string]string{"X-Repository-ID": repoID, "Content-Type": "application/json"})
+	resp, raw = client.doWithHeaders("DELETE", "/api/v1/sources/skip/all", nil, headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 DELETE /sources/skip/all, got %d: %s", resp.StatusCode, raw)
+	}
+	resp, raw = client.doWithHeaders("GET", "/api/v1/sources/providers", nil, headers)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal after clear: %v", err)
+	}
+	if len(out.HostSkipProviders) != 0 {
+		t.Errorf("expected empty host_skip_providers after clear, got %+v", out.HostSkipProviders)
+	}
+}
+
+// TestHostSkipSetAndMatrix covers PUT /sources/skip (the full-
+// replace endpoint the "Fetch Domains" tab dropdown uses) and
+// the host_failure_matrix field on /sources/providers. It sets
+// a chain entry point (start at flaresolverr → skip unpaywall,
+// tls, fetch), asserts the matrix returns rows for a seeded
+// host, asserts the skip rows appear, then sets "do not pull"
+// (ban all four) and asserts all four are skipped, then clears.
+func TestHostSkipSetAndMatrix(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	client := newAuthClient(env.BaseURL)
+	client = registerTestUser(t, env, "skipset@example.com", "password123", "Skip Set")
+	_, _, repoID := createRepository(t, client, "SkipSet", "skip-set", "desc")
+	if repoID == "" {
+		t.Fatal("expected repository id")
+	}
+	headers := map[string]string{"X-Repository-ID": repoID, "Content-Type": "application/json"}
+
+	// Seed a source with fetch_attempts so the matrix has a row.
+	queries := store.New(env.DB)
+	repoUUID := pgtype.UUID{}
+	if err := repoUUID.Scan(repoID); err != nil {
+		t.Fatalf("scan repo id: %v", err)
+	}
+	seedFlareSource(t, queries, repoUUID, "https://matrix.example.com/page-1",
+		`[{"provider":"fetch","success":false,"error":"upstream returned status 403","elapsed_ms":12000},
+		  {"provider":"tls","success":false,"error":"upstream returned status 403","elapsed_ms":11000},
+		  {"provider":"flaresolverr","success":true,"elapsed_ms":5000}]`)
+
+	// GET /sources/providers must surface host_failure_matrix
+	// with a row for matrix.example.com.
+	resp, raw := client.doWithHeaders("GET", "/api/v1/sources/providers", nil, map[string]string{"X-Repository-ID": repoID})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+	var out providersResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	foundMatrix := false
+	for _, m := range out.HostFailureMatrix {
+		if m.Host == "matrix.example.com" {
+			foundMatrix = true
+			if m.FetchFailures != 1 {
+				t.Errorf("expected fetch_failures=1, got %d", m.FetchFailures)
+			}
+			if m.TlsFailures != 1 {
+				t.Errorf("expected tls_failures=1, got %d", m.TlsFailures)
+			}
+			if m.FlaresolverrSuccesses != 1 {
+				t.Errorf("expected flaresolverr_successes=1, got %d", m.FlaresolverrSuccesses)
+			}
+		}
+	}
+	if !foundMatrix {
+		t.Errorf("expected matrix.example.com in host_failure_matrix, got %+v", out.HostFailureMatrix)
+	}
+
+	// PUT /sources/skip with choice=flaresolverr → skip
+	// unpaywall, tls, fetch (the weaker tiers).
+	resp, raw = client.doWithHeaders("PUT", "/api/v1/sources/skip",
+		[]byte(`{"host":"matrix.example.com","provider_ids":["unpaywall","tls","fetch"]}`),
+		headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 PUT /sources/skip, got %d: %s", resp.StatusCode, raw)
+	}
+	resp, raw = client.doWithHeaders("GET", "/api/v1/sources/providers", nil, map[string]string{"X-Repository-ID": repoID})
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal after put: %v", err)
+	}
+	skippedIDs := map[string]bool{}
+	for _, s := range out.HostSkipProviders {
+		if s.Host == "matrix.example.com" {
+			skippedIDs[s.ProviderID] = s.Manual
+		}
+	}
+	for _, pid := range []string{"unpaywall", "tls", "fetch"} {
+		if !skippedIDs[pid] {
+			t.Errorf("expected manual skip for %s on matrix.example.com, got %+v", pid, out.HostSkipProviders)
+		}
+	}
+	if skippedIDs["flaresolverr"] {
+		t.Errorf("did not expect flaresolverr skipped for start-at-flaresolverr choice, got %+v", out.HostSkipProviders)
+	}
+
+	// PUT /sources/skip with choice=ban → skip all four tiers.
+	resp, raw = client.doWithHeaders("PUT", "/api/v1/sources/skip",
+		[]byte(`{"host":"matrix.example.com","provider_ids":["unpaywall","tls","fetch","flaresolverr"]}`),
+		headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 PUT ban, got %d: %s", resp.StatusCode, raw)
+	}
+	resp, raw = client.doWithHeaders("GET", "/api/v1/sources/providers", nil, map[string]string{"X-Repository-ID": repoID})
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal after ban: %v", err)
+	}
+	skippedIDs = map[string]bool{}
+	for _, s := range out.HostSkipProviders {
+		if s.Host == "matrix.example.com" {
+			skippedIDs[s.ProviderID] = true
+		}
+	}
+	for _, pid := range []string{"unpaywall", "tls", "fetch", "flaresolverr"} {
+		if !skippedIDs[pid] {
+			t.Errorf("expected manual skip for %s on ban, got %+v", pid, out.HostSkipProviders)
+		}
+	}
+
+	// PUT with empty provider_ids clears the host's skips.
+	resp, raw = client.doWithHeaders("PUT", "/api/v1/sources/skip",
+		[]byte(`{"host":"matrix.example.com","provider_ids":[]}`),
+		headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 PUT clear, got %d: %s", resp.StatusCode, raw)
+	}
+	resp, raw = client.doWithHeaders("GET", "/api/v1/sources/providers", nil, map[string]string{"X-Repository-ID": repoID})
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal after clear: %v", err)
+	}
+	for _, s := range out.HostSkipProviders {
+		if s.Host == "matrix.example.com" {
+			t.Errorf("expected no skips for matrix.example.com after clear, got %+v", out.HostSkipProviders)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 export const PROVIDER_TABS = [
   { label: "Search", value: "search" },
   { label: "Fetch", value: "fetch" },
+  { label: "Fetch Domains", value: "fetch-domains" },
   { label: "AI", value: "ai" },
   { label: "Embedding", value: "embedding" },
   { label: "Decomposition", value: "decomposition" },

@@ -132,6 +132,39 @@ export const api = {
     return request("/sources/providers");
   },
 
+  // Manually pin a (host, provider) tier as skipped for the
+  // active repository. Requires source_provider:manage.
+  addHostSkip(host, providerId) {
+    return request("/sources/skip", {
+      method: "POST",
+      body: JSON.stringify({ host, provider_id: providerId }),
+    });
+  },
+
+  // Set the full skip set for a host in one call (full replace).
+  // provider_ids is the list of tiers to skip. An empty list
+  // clears the host's skips. Used by the "Fetch Domains" tab
+  // per-row dropdown (chain entry point / do-not-pull).
+  setHostSkip(host, providerIds) {
+    return request("/sources/skip", {
+      method: "PUT",
+      body: JSON.stringify({ host, provider_ids: providerIds }),
+    });
+  },
+
+  // Remove a single (host, provider) skip (manual or learned).
+  removeHostSkip(host, providerId) {
+    return request("/sources/skip", {
+      method: "DELETE",
+      body: JSON.stringify({ host, provider_id: providerId }),
+    });
+  },
+
+  // Remove every skip row (manual + learned) for the active repo.
+  clearHostSkips() {
+    return request("/sources/skip/all", { method: "DELETE" });
+  },
+
   listAIProviders() {
     return request("/ai/providers");
   },

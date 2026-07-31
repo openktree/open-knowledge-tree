@@ -25,6 +25,7 @@ import (
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/promptset"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ai"
+	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/ontology"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/registry"
 	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
@@ -263,6 +264,24 @@ func (h *Handler) SetSource(s *handler.Source) {
 	h.source = s
 	if s != nil && h.deps.Registry != nil && h.repoDBCache != nil {
 		s.SetRepoPoolResolver(h.resolveRepoPool)
+	}
+	// Wire the learned (host, provider) auto-skip store onto the
+	// fetch strategy. The strategy is constructed in cmd/app/api.go
+	// before the per-repo pool resolver exists, so the store is
+	// wired here (after the resolver is available). The store
+	// adapter resolves the per-repo pool via the same resolver; a
+	// nil resolver disables auto-skip. Config thresholds come from
+	// providers.resolution.auto_skip.
+	if s != nil && s.FetchStrategy != nil && h.deps.Registry != nil && h.repoDBCache != nil && h.deps.Config != nil {
+		cfg := h.deps.Config.Providers.Resolution.AutoSkip
+		if cfg.Enabled {
+			s.FetchStrategy.SetAutoSkip(handler.NewHostSkipStore(h.resolveRepoPool), fetch.AutoSkipConfig{
+				Enabled:          cfg.Enabled,
+				MinSample:        cfg.MinSample,
+				FailureThreshold: cfg.FailureThreshold,
+				Cooldown:          cfg.Cooldown,
+			})
+		}
 	}
 	// Wire the admin handler's repo pool resolver too (same
 	// resolver) so the concept-reextract and source-reprocess
@@ -1092,6 +1111,16 @@ func (h *Handler) sourceRoutes(r chi.Router) {
 	// which keeps read-only tabs usable for any role that
 	// can already see sources.
 	r.Get("/decomposition/providers", h.perm("decomposition", "read", h.source.ListDecompositionProviders))
+	// Learned + manual (host, provider) skip management for the
+	// fetch strategy. The GET surfaces the skip list on the
+	// Providers page "Fetch Domains" tab (already part of
+	// /sources/providers); the POST/DELETE let an operator
+	// manually pin out / un-skip a tier. Gated on
+	// source_provider:manage (repoadmin/sysadmin).
+	r.Post("/skip", h.perm("source_provider", "manage", h.source.AddHostSkip))
+	r.Put("/skip", h.perm("source_provider", "manage", h.source.SetHostSkip))
+	r.Delete("/skip", h.perm("source_provider", "manage", h.source.RemoveHostSkip))
+	r.Delete("/skip/all", h.perm("source_provider", "manage", h.source.ClearHostSkips))
 }
 
 // authed wraps next with the AuthRequired middleware.

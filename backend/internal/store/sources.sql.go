@@ -70,6 +70,18 @@ func (q *Queries) AddSourceImage(ctx context.Context, arg AddSourceImageParams) 
 	return i, err
 }
 
+const clearHostSkipProviders = `-- name: ClearHostSkipProviders :exec
+DELETE FROM okt_repository.host_skip_providers
+WHERE repository_id = $1
+`
+
+// Remove all skip rows for a repository. Used by the
+// DELETE /sources/skip/all endpoint.
+func (q *Queries) ClearHostSkipProviders(ctx context.Context, repositoryID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearHostSkipProviders, repositoryID)
+	return err
+}
+
 const clearSourceChunkFailures = `-- name: ClearSourceChunkFailures :one
 UPDATE okt_repository.sources
 SET chunk_failures        = 0,
@@ -337,6 +349,44 @@ func (q *Queries) DecrementSourceConceptSkipCountByFactID(ctx context.Context, f
 	return result.RowsAffected(), nil
 }
 
+const deleteHostSkipProvider = `-- name: DeleteHostSkipProvider :exec
+DELETE FROM okt_repository.host_skip_providers
+WHERE repository_id = $1 AND host = $2 AND provider_id = $3
+`
+
+type DeleteHostSkipProviderParams struct {
+	RepositoryID pgtype.UUID `json:"repository_id"`
+	Host         string      `json:"host"`
+	ProviderID   string      `json:"provider_id"`
+}
+
+// Remove a single (host, provider) skip row. Used by the
+// DELETE /sources/skip endpoint for manual un-skip.
+func (q *Queries) DeleteHostSkipProvider(ctx context.Context, arg DeleteHostSkipProviderParams) error {
+	_, err := q.db.Exec(ctx, deleteHostSkipProvider, arg.RepositoryID, arg.Host, arg.ProviderID)
+	return err
+}
+
+const deleteLearnedHostSkipProvider = `-- name: DeleteLearnedHostSkipProvider :exec
+DELETE FROM okt_repository.host_skip_providers
+WHERE repository_id = $1 AND host = $2 AND provider_id = $3 AND manual = false
+`
+
+type DeleteLearnedHostSkipProviderParams struct {
+	RepositoryID pgtype.UUID `json:"repository_id"`
+	Host         string      `json:"host"`
+	ProviderID   string      `json:"provider_id"`
+}
+
+// Clears a single learned (manual=false) skip row when the host's
+// failure rate dropped below threshold after a success. Manual
+// skips are never auto-cleared (an operator must un-skip them via
+// the DELETE /sources/skip endpoint).
+func (q *Queries) DeleteLearnedHostSkipProvider(ctx context.Context, arg DeleteLearnedHostSkipProviderParams) error {
+	_, err := q.db.Exec(ctx, deleteLearnedHostSkipProvider, arg.RepositoryID, arg.Host, arg.ProviderID)
+	return err
+}
+
 const deleteSource = `-- name: DeleteSource :exec
 DELETE FROM okt_repository.sources WHERE id = $1
 `
@@ -394,6 +444,73 @@ func (q *Queries) GetExistingSourceURLsAndDOIsByRepo(ctx context.Context, arg Ge
 		return nil, err
 	}
 	return items, nil
+}
+
+const getHostProviderAttemptCounts = `-- name: GetHostProviderAttemptCounts :one
+SELECT
+    CASE WHEN $1 IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = $1
+            )
+        )
+    ELSE 0 END AS total_attempts,
+    CASE WHEN $1 IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = $1
+                  AND (a->>'success')::boolean = false
+            )
+        )
+    ELSE 0 END AS failures,
+    CASE WHEN $1 IN ('fetch','tls','unpaywall','flaresolverr','url_safety') THEN
+        COUNT(*) FILTER (
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+                WHERE a->>'provider' = $1
+                  AND (a->>'success')::boolean = true
+            )
+        )
+    ELSE 0 END AS successes
+FROM okt_repository.sources
+WHERE fetch_attempts IS NOT NULL
+  AND substring(url FROM 'https?://([^/]+)')::text = $2
+`
+
+type GetHostProviderAttemptCountsParams struct {
+	ProviderID interface{} `json:"provider_id"`
+	Host       string      `json:"host"`
+}
+
+type GetHostProviderAttemptCountsRow struct {
+	TotalAttempts int32 `json:"total_attempts"`
+	Failures      int32 `json:"failures"`
+	Successes     int32 `json:"successes"`
+}
+
+// Returns the failure and success counts for a single (host,
+// provider) pair from the fetch_attempts JSONB audit trail. Used
+// by the auto-skip store adapter to decide whether to upsert a
+// skip row (rate >= threshold, sample >= min_sample) or clear an
+// existing learned skip (rate dropped below threshold after a
+// success). host is matched as a substring of the url column
+// (https?://<host>/) so it catches the exact host. provider_id
+// ($2) is matched against the fetch_attempts[].provider JSONB
+// field.
+//
+// Implementation note: sqlc's analyzer cannot resolve a bind
+// parameter inside a jsonb_array_elements subquery (it reports
+// "column 'a' does not exist"), so the COUNT expressions are
+// gated by a CASE on $2 IN (known provider ids) — the same
+// shape ListProviderHostCandidates uses. Each branch is a full
+// literal query sqlc can analyze.
+func (q *Queries) GetHostProviderAttemptCounts(ctx context.Context, arg GetHostProviderAttemptCountsParams) (GetHostProviderAttemptCountsRow, error) {
+	row := q.db.QueryRow(ctx, getHostProviderAttemptCounts, arg.ProviderID, arg.Host)
+	var i GetHostProviderAttemptCountsRow
+	err := row.Scan(&i.TotalAttempts, &i.Failures, &i.Successes)
+	return i, err
 }
 
 const getSourceByID = `-- name: GetSourceByID :one
@@ -550,6 +667,44 @@ func (q *Queries) IncrementSourceConceptSkipCount(ctx context.Context, id pgtype
 	return err
 }
 
+const listActiveHostSkipProviders = `-- name: ListActiveHostSkipProviders :many
+SELECT repository_id, host, provider_id, failure_rate, sample_size, skipped_at, expires_at, manual FROM okt_repository.host_skip_providers
+WHERE repository_id = $1 AND expires_at > now()
+`
+
+// Active (unexpired) skip rows for a repository, read by the
+// strategy at fetch time to jump tiers that are skipped for a
+// given host. expires_at > now() filters out cooled-down rows
+// so a host that recovered is retried after the cooldown.
+func (q *Queries) ListActiveHostSkipProviders(ctx context.Context, repositoryID pgtype.UUID) ([]OktRepositoryHostSkipProvider, error) {
+	rows, err := q.db.Query(ctx, listActiveHostSkipProviders, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OktRepositoryHostSkipProvider
+	for rows.Next() {
+		var i OktRepositoryHostSkipProvider
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.Host,
+			&i.ProviderID,
+			&i.FailureRate,
+			&i.SampleSize,
+			&i.SkippedAt,
+			&i.ExpiresAt,
+			&i.Manual,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFlareSolverrHostCandidates = `-- name: ListFlareSolverrHostCandidates :many
 SELECT
     substring(url FROM 'https?://([^/]+)')::text AS host,
@@ -626,6 +781,171 @@ func (q *Queries) ListFlareSolverrHostCandidates(ctx context.Context) ([]ListFla
 			&i.TotalAttempts,
 			&i.FlareFailures,
 			&i.FlareSuccesses,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHostFailureMatrix = `-- name: ListHostFailureMatrix :many
+SELECT
+    substring(url FROM 'https?://([^/]+)')::text AS host,
+    COUNT(*) AS total_attempts,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'fetch'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS fetch_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'fetch'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS fetch_successes,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'tls'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS tls_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'tls'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS tls_successes,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'flaresolverr'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS flaresolverr_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'flaresolverr'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS flaresolverr_successes,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'unpaywall'
+              AND (a->>'success')::boolean = false
+        )
+    ) AS unpaywall_failures,
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a
+            WHERE a->>'provider' = 'unpaywall'
+              AND (a->>'success')::boolean = true
+        )
+    ) AS unpaywall_successes
+FROM okt_repository.sources
+WHERE fetch_attempts IS NOT NULL
+GROUP BY 1
+HAVING (
+    COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'fetch' AND (a->>'success')::boolean = false))
+    + COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'tls' AND (a->>'success')::boolean = false))
+    + COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'flaresolverr' AND (a->>'success')::boolean = false))
+    + COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fetch_attempts) AS a WHERE a->>'provider' = 'unpaywall' AND (a->>'success')::boolean = false))
+) > 0
+ORDER BY total_attempts DESC
+`
+
+type ListHostFailureMatrixRow struct {
+	Host                  string `json:"host"`
+	TotalAttempts         int64  `json:"total_attempts"`
+	FetchFailures         int64  `json:"fetch_failures"`
+	FetchSuccesses        int64  `json:"fetch_successes"`
+	TlsFailures           int64  `json:"tls_failures"`
+	TlsSuccesses          int64  `json:"tls_successes"`
+	FlaresolverrFailures  int64  `json:"flaresolverr_failures"`
+	FlaresolverrSuccesses int64  `json:"flaresolverr_successes"`
+	UnpaywallFailures     int64  `json:"unpaywall_failures"`
+	UnpaywallSuccesses    int64  `json:"unpaywall_successes"`
+}
+
+// Pivots the fetch_attempts audit trail into one row per host
+// with per-provider failure/success columns, used by the
+// Providers page "Fetch Domains" tab to render a single merged
+// table (instead of one card per provider). A row is included
+// when at least one provider has a failure for the host. The
+// provider ids are hardcoded because sqlc's analyzer cannot
+// resolve a bind parameter inside jsonb_array_elements (same
+// constraint as ListProviderHostCandidates). url_safety is
+// omitted: it is the SSRF guard, not a fetch tier an operator
+// would skip. Ordered by total_failures DESC so the worst
+// hosts surface first.
+func (q *Queries) ListHostFailureMatrix(ctx context.Context) ([]ListHostFailureMatrixRow, error) {
+	rows, err := q.db.Query(ctx, listHostFailureMatrix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListHostFailureMatrixRow
+	for rows.Next() {
+		var i ListHostFailureMatrixRow
+		if err := rows.Scan(
+			&i.Host,
+			&i.TotalAttempts,
+			&i.FetchFailures,
+			&i.FetchSuccesses,
+			&i.TlsFailures,
+			&i.TlsSuccesses,
+			&i.FlaresolverrFailures,
+			&i.FlaresolverrSuccesses,
+			&i.UnpaywallFailures,
+			&i.UnpaywallSuccesses,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHostSkipProviders = `-- name: ListHostSkipProviders :many
+SELECT repository_id, host, provider_id, failure_rate, sample_size, skipped_at, expires_at, manual FROM okt_repository.host_skip_providers
+WHERE repository_id = $1
+ORDER BY skipped_at DESC
+`
+
+// All skip rows for a repository (no expiry filter), used by
+// the Providers page "Fetch Domains" tab to show the full skip
+// list including cooled-down entries.
+func (q *Queries) ListHostSkipProviders(ctx context.Context, repositoryID pgtype.UUID) ([]OktRepositoryHostSkipProvider, error) {
+	rows, err := q.db.Query(ctx, listHostSkipProviders, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OktRepositoryHostSkipProvider
+	for rows.Next() {
+		var i OktRepositoryHostSkipProvider
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.Host,
+			&i.ProviderID,
+			&i.FailureRate,
+			&i.SampleSize,
+			&i.SkippedAt,
+			&i.ExpiresAt,
+			&i.Manual,
 		); err != nil {
 			return nil, err
 		}
@@ -1688,6 +2008,60 @@ func (q *Queries) UpdateSourceStatus(ctx context.Context, arg UpdateSourceStatus
 		&i.ChunkErrors,
 		&i.LastChunkFailureAt,
 		&i.ConceptSkipCount,
+	)
+	return i, err
+}
+
+const upsertHostSkipProvider = `-- name: UpsertHostSkipProvider :one
+INSERT INTO okt_repository.host_skip_providers
+    (repository_id, host, provider_id, failure_rate, sample_size, expires_at, manual)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (repository_id, host, provider_id) DO UPDATE SET
+    failure_rate = EXCLUDED.failure_rate,
+    sample_size  = EXCLUDED.sample_size,
+    expires_at  = EXCLUDED.expires_at,
+    manual       = EXCLUDED.manual,
+    skipped_at  = now()
+RETURNING repository_id, host, provider_id, failure_rate, sample_size, skipped_at, expires_at, manual
+`
+
+type UpsertHostSkipProviderParams struct {
+	RepositoryID pgtype.UUID        `json:"repository_id"`
+	Host         string             `json:"host"`
+	ProviderID   string             `json:"provider_id"`
+	FailureRate  float64            `json:"failure_rate"`
+	SampleSize   int32              `json:"sample_size"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	Manual       bool               `json:"manual"`
+}
+
+// Insert or refresh a learned/manual (host, provider) skip row.
+// Called by the strategy when a tier's failure rate crosses the
+// auto-skip threshold, and by the POST /sources/skip endpoint
+// for manual skips (manual=true, expires_at far future). On
+// conflict the failure_rate/sample_size/expires_at/manual flag
+// are refreshed so a recompute or a manual toggle updates the
+// existing row in place.
+func (q *Queries) UpsertHostSkipProvider(ctx context.Context, arg UpsertHostSkipProviderParams) (OktRepositoryHostSkipProvider, error) {
+	row := q.db.QueryRow(ctx, upsertHostSkipProvider,
+		arg.RepositoryID,
+		arg.Host,
+		arg.ProviderID,
+		arg.FailureRate,
+		arg.SampleSize,
+		arg.ExpiresAt,
+		arg.Manual,
+	)
+	var i OktRepositoryHostSkipProvider
+	err := row.Scan(
+		&i.RepositoryID,
+		&i.Host,
+		&i.ProviderID,
+		&i.FailureRate,
+		&i.SampleSize,
+		&i.SkippedAt,
+		&i.ExpiresAt,
+		&i.Manual,
 	)
 	return i, err
 }
