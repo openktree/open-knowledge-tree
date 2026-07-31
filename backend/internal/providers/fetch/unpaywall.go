@@ -80,6 +80,18 @@ type UnpaywallResolutionProvider struct {
 	userAgent  string
 	httpClient *http.Client
 	parsers    []content_parsing.Parser
+	// retryCfg governs the OA-location fetch only (the
+	// publisher/repo URL the provider follows after the
+	// Unpaywall API lookup). The API lookup itself keeps
+	// its own inline 1-retry/1s loop (unpaywallRetry*
+	// below); the two paths have different failure modes
+	// (API 429 vs OA-host 403/timeout) and different
+	// budgets. Zero-value = no retry (NoRetryConfig); the
+	// production wiring passes defaultRetryConfig so the
+	// OA fetch gets the same 3-attempt/2-15s-backoff
+	// budget with retry_403_max_attempts=2 as the fetch
+	// and tls tiers.
+	retryCfg RetryConfig
 }
 
 // NewUnpaywallResolutionProvider builds the provider. When
@@ -102,7 +114,33 @@ func NewUnpaywallResolutionProvider(email string) *UnpaywallResolutionProvider {
 // Supports the detected source type, mirroring the
 // FetchResolutionProvider pipeline. Nil parsers are
 // skipped; an empty list falls back to Trafilatura.
+//
+// This constructor keeps the historical behaviour: 60s
+// OA-fetch timeout (was 30s; raised to match the
+// strategy's perProviderTimeout — see git history for the
+// audit-trail evidence) and no retry on the OA fetch. Use
+// NewUnpaywallResolutionProviderWithFullConfig for the
+// production wiring that enables the 403/timeout retry.
 func NewUnpaywallResolutionProviderWithParsers(email string, parsers ...content_parsing.Parser) *UnpaywallResolutionProvider {
+	return NewUnpaywallResolutionProviderWithFullConfig(email, 60*time.Second, NoRetryConfig, parsers...)
+}
+
+// NewUnpaywallResolutionProviderWithFullConfig is the
+// fully-configurable constructor, mirroring
+// NewFetchResolutionProviderWithFullConfig. It accepts an
+// explicit OA-fetch timeout and retry config (pass
+// NoRetryConfig to disable retry) plus the parser set. A
+// nil parser, empty email, or zero timeout falls back to
+// the defaults (Trafilatura, disabled, 60s). Pass
+// defaultRetryConfig (the zero-value normalisation in
+// retryWithBackoff applies it) to give the OA fetch the
+// same 3-attempt budget as the fetch/tls tiers.
+func NewUnpaywallResolutionProviderWithFullConfig(
+	email string,
+	timeout time.Duration,
+	retCfg RetryConfig,
+	parsers ...content_parsing.Parser,
+) *UnpaywallResolutionProvider {
 	if strings.TrimSpace(email) == "" {
 		return nil
 	}
@@ -115,30 +153,94 @@ func NewUnpaywallResolutionProviderWithParsers(email string, parsers ...content_
 	if len(cleaned) == 0 {
 		cleaned = append(cleaned, content_parsing.NewTrafilaturaParser())
 	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	// Normalise the retry config the same way the fetch
+	// provider does: a completely zero RetryConfig means
+	// "use defaults" (defaultRetryConfig); a partially-set
+	// one with MaxAttempts <= 0 means no retry.
+	if retCfg.MaxAttempts <= 0 {
+		if retCfg.BaseDelay == 0 && retCfg.MaxDelay == 0 && retCfg.Retry403MaxAttempts == 0 {
+			// Caller passed a literal zero-value: treat as
+			// "no retry" for the historical constructors
+			// (NewUnpaywallResolutionProvider /
+			// ...WithParsers pass NoRetryConfig which has
+			// MaxAttempts=1, hitting the branch below).
+			// The production wiring passes a populated
+			// defaultRetryConfig so this branch is not
+			// taken.
+			retCfg = NoRetryConfig
+		} else {
+			retCfg.MaxAttempts = 1
+		}
+	}
 	return &UnpaywallResolutionProvider{
 		email:     strings.TrimSpace(email),
 		userAgent: defaultUserAgent,
 		httpClient: &http.Client{
-			// Unpaywall itself responds quickly, but the
-			// OA-location URL we follow afterwards is
-			// whatever the publisher chose. A generous
-			// 30s timeout matches the plain
-			// FetchResolutionProvider.
-			Timeout: 30 * time.Second,
+			// Timeout applies to the OA-location fetch
+			// (the publisher/repo URL), not the Unpaywall
+			// API call (which is fast and rarely hits the
+			// ceiling). 60s matches the strategy's
+			// perProviderTimeout so a slow-but-legitimate
+			// OA host (Europe PMC, arXiv, a publisher with
+			// a heavy redirect chain) gets the full tier
+			// budget rather than dying at the halfway
+			// mark.
+			Timeout: timeout,
 		},
-		parsers: cleaned,
+		parsers:  cleaned,
+		retryCfg: retCfg,
 	}
 }
 
 // NewUnpaywallResolutionProviderFromConfig is the
-// config-driven constructor. The cfg.Email is intentionally
-// the only knob: the Unpaywall v2 API is stable on a single
-// endpoint and the per-request email is the only piece of
-// per-tenant state. A future migration to a paid plan with
-// an API key would extend the config struct and thread the
-// key as a header, but the function shape stays the same.
+// config-driven constructor. Email gates the provider on
+// (nil-return when empty). Timeout and Retry are threaded
+// from config so the OA-location fetch gets the
+// configurable 60s budget and the 403/timeout retry
+// budget; both default sensibly when zero (60s,
+// NoRetryConfig) and the wiring layer (cmd/app/api.go)
+// passes the populated defaults from
+// configs/config.default.yaml. The Unpaywall API lookup
+// keeps its own inline 1-retry/1s loop regardless of this
+// config (it's a different failure mode).
 func NewUnpaywallResolutionProviderFromConfig(cfg config.UnpaywallProviderConfig) *UnpaywallResolutionProvider {
-	return NewUnpaywallResolutionProvider(cfg.Email)
+	retCfg := RetryConfig{
+		MaxAttempts:         cfg.Retry.MaxAttempts,
+		BaseDelay:           cfg.Retry.BaseDelay,
+		MaxDelay:            cfg.Retry.MaxDelay,
+		Retry403MaxAttempts: cfg.Retry.Retry403MaxAttempts,
+	}
+	return NewUnpaywallResolutionProviderWithFullConfig(cfg.Email, cfg.Timeout, retCfg)
+}
+
+// HTTPClientTimeout returns the OA-fetch client timeout.
+// Exported for the e2e wiring test
+// (TestUnpaywallResolutionProvider_RetryBudgetFromConfig)
+// so it can assert the production wiring threads the
+// configured 60s rather than the old hardcoded 30s without
+// reaching into the unexported httpClient field.
+func (p *UnpaywallResolutionProvider) HTTPClientTimeout() time.Duration {
+	if p == nil || p.httpClient == nil {
+		return 0
+	}
+	return p.httpClient.Timeout
+}
+
+// RetryConfig returns a copy of the OA-fetch retry budget.
+// Exported for the e2e wiring test so it can assert the
+// production wiring threads max_attempts /
+// retry_403_max_attempts rather than silently dropping
+// them (which would leave the OA fetch with no retry and
+// reintroduce the ~396 OA-host 403s the audit trail
+// surfaced).
+func (p *UnpaywallResolutionProvider) RetryConfig() RetryConfig {
+	if p == nil {
+		return RetryConfig{}
+	}
+	return p.retryCfg
 }
 
 // unpaywallResponse is the subset of the v2 response we
@@ -194,12 +296,12 @@ func (p *UnpaywallResolutionProvider) Supports(sourceType SourceType) bool {
 func (p *UnpaywallResolutionProvider) Describe() ProviderDescription {
 	return ProviderDescription{
 		Name:        "Unpaywall (OA lookup for DOIs)",
-		Description: "Looks up a DOI in the Unpaywall v2 API and, when the work has an open-access copy, follows the OA location's URL to fetch the body. Prefers url_for_pdf over the landing-page url so a real PDF is fetched when available; the body is parsed with the wired content parsers (Trafilatura + MuPDF) the same way the plain HTTP fetch parses. Retries once on 429/5xx. The email query parameter is required by Unpaywall's terms of service; the same address is used to throttle abusive callers.",
+		Description: "Looks up a DOI in the Unpaywall v2 API and, when the work has an open-access copy, follows the OA location's URL to fetch the body. Prefers url_for_pdf over the landing-page url so a real PDF is fetched when available; the body is parsed with the wired content parsers (Trafilatura + MuPDF) the same way the plain HTTP fetch parses. The Unpaywall API call retries once on 429/5xx (its own tight loop); the OA-location fetch retries up to max_attempts (default 3) with retry_403_max_attempts (default 2) so a transient publisher-WAF 403 or slow-host timeout gets a bounded retry before the chain falls through to TLS/FlareSolverr. The email query parameter is required by Unpaywall's terms of service; the same address is used to throttle abusive callers.",
 		Requires:    "UNPAYWALL_EMAIL",
 		Configured:  p.email != "",
 		Supports:    []string{"doi"},
 		Timeout:     p.httpClient.Timeout.String(),
-		Notes:       "Returns ErrUnpaywallNotOpenAccess when the work has no OA location; the strategy treats that as a fall-through to the next provider (HTTP Fetch on the publisher landing page). Returns ErrInsufficientContent when the OA body parses to less than the minimum length so heavier tiers can run.",
+		Notes:       "Returns ErrUnpaywallNotOpenAccess when the work has no OA location; the strategy treats that as a fall-through to the next provider (HTTP Fetch on the publisher landing page). Returns ErrInsufficientContent when the OA body parses to less than the minimum length so heavier tiers can run. OARedirectURL is carried on every OA-fetch error so the strategy's second pass can retry the direct OA URL with the URL-capable tiers.",
 	}
 }
 
@@ -339,9 +441,88 @@ func (p *UnpaywallResolutionProvider) Resolve(ctx context.Context, resource Reso
 	// the content. The body is what the worker persists
 	// to okt_repository.sources; the FinalURL is what
 	// gets displayed in the UI as the canonical link.
+	//
+	// The OA fetch is wrapped in retryWithBackoff when
+	// retryCfg.MaxAttempts > 1 so a transient OA-host 403
+	// (publisher WAF under burst) or a slow-host timeout
+	// gets a bounded retry before the chain falls through
+	// to TLS/FlareSolverr. This mirrors the fetch/tls
+	// tiers. When retry is disabled (the historical
+	// constructors / tests) we call doOAFetch directly to
+	// keep the path simple and avoid log noise. The
+	// per-provider context (set by the strategy) caps the
+	// whole loop at perProviderTimeout regardless.
+	//
+	// retryWithBackoff returns the zero-value ResolvedContent
+	// on exhaustion (it only preserves lastErr). We capture
+	// the last non-zero result via a closure so the
+	// OARedirectURL / OAStatus doOAFetch sets on every error
+	// path survive the retry-exhaustion return — without
+	// this, the strategy's second pass (the "OA URL pass")
+	// would lose the direct OA URL it needs to retry with
+	// the remaining URL-capable tiers.
+	if p.retryCfg.MaxAttempts > 1 {
+		var lastResult ResolvedContent
+		result, err := retryWithBackoff(ctx, p.retryCfg, "unpaywall_oa",
+			func(retryCtx context.Context) (ResolvedContent, error) {
+				res, e := p.doOAFetch(retryCtx, target, isPDFURL, lookup.OAStatus)
+				if e != nil {
+					// Preserve the most recent error-result so
+					// it can be returned on exhaustion.
+					lastResult = res
+				}
+				return res, e
+			})
+		if err != nil {
+			// On exhaustion retryWithBackoff returns a zero
+			// ResolvedContent; substitute the last non-zero
+			// error result doOAFetch produced so the strategy
+			// still gets OARedirectURL + OAStatus.
+			if result.OARedirectURL == "" && result.OAStatus == "" && lastResult.OARedirectURL != "" {
+				result = lastResult
+			}
+			return result, err
+		}
+		return result, nil
+	}
+	return p.doOAFetch(ctx, target, isPDFURL, lookup.OAStatus)
+}
+
+// doOAFetch performs a single HTTP GET against the OA
+// location URL, applies the body-size cap, and parses the
+// body with the wired parsers. It is separated from Resolve
+// so retryWithBackoff can call it multiple times without
+// duplicating the SSRF-validation or OA-location-selection
+// steps (which are not retryable — a different OA URL would
+// require a fresh Unpaywall API lookup, which is outside
+// this loop's scope).
+//
+// oaStatus is threaded onto every returned ResolvedContent
+// (success and error) so the strategy can persist it on the
+// source row regardless of which tier eventually wins.
+// OARedirectURL is set on every error path so the strategy's
+// second pass (strategy.go Resolve, the "OA URL pass") can
+// retry the direct OA URL with the remaining URL-capable
+// tiers (TLS, fetch, FlareSolverr) when this tier exhausts
+// its retry budget — a different TLS fingerprint might get
+// through where this plain HTTP client got 403.
+//
+// Non-2xx responses are wrapped in ErrNon2xxStatus so
+// retryableFetchError (retry.go) classifies them: 403 is
+// retryable up to retry_403_max_attempts, 429/5xx are
+// retryable up to max_attempts, other 4xx are permanent.
+// Network and timeout errors are classified by retryableFetchError's
+// net.Error / heuristic paths. ErrInsufficientContent and
+// ErrBodyTooLarge are non-retryable sentinels (retry.go).
+func (p *UnpaywallResolutionProvider) doOAFetch(
+	ctx context.Context,
+	target string,
+	isPDFURL bool,
+	oaStatus string,
+) (ResolvedContent, error) {
 	contentReq, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return ResolvedContent{OAStatus: lookup.OAStatus, OARedirectURL: target}, fmt.Errorf("unpaywall: creating content request: %w", err)
+		return ResolvedContent{OAStatus: oaStatus, OARedirectURL: target}, fmt.Errorf("unpaywall: creating content request: %w", err)
 	}
 	// Browser-like headers on the OA-location fetch too.
 	// Some OA hosts (PMC, arXiv) are fine without a UA,
@@ -358,36 +539,42 @@ func (p *UnpaywallResolutionProvider) Resolve(ctx context.Context, resource Reso
 
 	contentResp, err := p.httpClient.Do(contentReq)
 	if err != nil {
-		return ResolvedContent{OAStatus: lookup.OAStatus, OARedirectURL: target}, fmt.Errorf("unpaywall: fetching OA location failed: %w", err)
+		return ResolvedContent{OAStatus: oaStatus, OARedirectURL: target}, fmt.Errorf("unpaywall: fetching OA location failed: %w", err)
 	}
 	defer contentResp.Body.Close()
 
-	// Non-2xx on the OA location is a hard error (not the
-	// sentinel): the OA location Unpaywall pointed us at
-	// is broken, and the strategy should fall through to
-	// the next provider (plain fetch on the publisher
-	// landing page) rather than pretend the broken OA
-	// copy is the content.
+	// Non-2xx on the OA location is an error (not the
+	// sentinel ErrUnpaywallNotOpenAccess): the OA location
+	// Unpaywall pointed us at is broken or blocked, and the
+	// strategy should fall through to the next provider
+	// (plain fetch on the publisher landing page) rather
+	// than pretend the broken OA copy is the content.
+	//
+	// Wrapped in ErrNon2xxStatus so retryableFetchError
+	// classifies 403/429/5xx as retryable. The audit trail
+	// error message keeps the original "OA location
+	// returned status N" phrasing via the wrapped message.
 	if contentResp.StatusCode < 200 || contentResp.StatusCode >= 300 {
 		return ResolvedContent{
-			StatusCode:     contentResp.StatusCode,
-			FinalURL:       contentResp.Request.URL.String(),
-			ContentType:    contentResp.Header.Get("Content-Type"),
-			OAStatus:       lookup.OAStatus,
-			OARedirectURL:  target,
-		}, fmt.Errorf("unpaywall: OA location returned status %d", contentResp.StatusCode)
+				StatusCode:    contentResp.StatusCode,
+				FinalURL:      contentResp.Request.URL.String(),
+				ContentType:   contentResp.Header.Get("Content-Type"),
+				OAStatus:      oaStatus,
+				OARedirectURL: target,
+			}, fmt.Errorf("unpaywall: OA location returned status %d: %w",
+				contentResp.StatusCode, &ErrNon2xxStatus{Code: contentResp.StatusCode})
 	}
 
 	// Cap the body read the same way the plain fetch does.
 	if contentResp.ContentLength > MaxBodyBytes {
-		return ResolvedContent{StatusCode: contentResp.StatusCode, FinalURL: contentResp.Request.URL.String(), OAStatus: lookup.OAStatus, OARedirectURL: target}, ErrBodyTooLarge
+		return ResolvedContent{StatusCode: contentResp.StatusCode, FinalURL: contentResp.Request.URL.String(), OAStatus: oaStatus, OARedirectURL: target}, ErrBodyTooLarge
 	}
 	body, err := io.ReadAll(io.LimitReader(contentResp.Body, MaxBodyBytes+1))
 	if err != nil {
-		return ResolvedContent{OAStatus: lookup.OAStatus, OARedirectURL: target}, fmt.Errorf("unpaywall: reading OA body: %w", err)
+		return ResolvedContent{OAStatus: oaStatus, OARedirectURL: target}, fmt.Errorf("unpaywall: reading OA body: %w", err)
 	}
 	if int64(len(body)) > MaxBodyBytes {
-		return ResolvedContent{StatusCode: contentResp.StatusCode, FinalURL: contentResp.Request.URL.String(), OAStatus: lookup.OAStatus, OARedirectURL: target}, ErrBodyTooLarge
+		return ResolvedContent{StatusCode: contentResp.StatusCode, FinalURL: contentResp.Request.URL.String(), OAStatus: oaStatus, OARedirectURL: target}, ErrBodyTooLarge
 	}
 
 	contentType := contentResp.Header.Get("Content-Type")
@@ -397,7 +584,7 @@ func (p *UnpaywallResolutionProvider) Resolve(ctx context.Context, resource Reso
 		ContentType: contentType,
 		StatusCode:  contentResp.StatusCode,
 		FinalURL:    finalURL,
-		OAStatus:    lookup.OAStatus,
+		OAStatus:    oaStatus,
 	}
 
 	// When the OA URL was a direct PDF link but the response

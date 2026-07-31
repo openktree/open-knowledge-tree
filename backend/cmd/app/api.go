@@ -121,9 +121,10 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 		fetchTimeout = 60 * time.Second
 	}
 	fetchRetryCfg := fetch.RetryConfig{
-		MaxAttempts: cfg.Providers.Resolution.Fetch.Retry.MaxAttempts,
-		BaseDelay:   cfg.Providers.Resolution.Fetch.Retry.BaseDelay,
-		MaxDelay:    cfg.Providers.Resolution.Fetch.Retry.MaxDelay,
+		MaxAttempts:         cfg.Providers.Resolution.Fetch.Retry.MaxAttempts,
+		BaseDelay:           cfg.Providers.Resolution.Fetch.Retry.BaseDelay,
+		MaxDelay:            cfg.Providers.Resolution.Fetch.Retry.MaxDelay,
+		Retry403MaxAttempts: cfg.Providers.Resolution.Fetch.Retry.Retry403MaxAttempts,
 	}
 	// The config package uses the same zero-value-normalisation
 	// convention: when all three retry fields are zero the config
@@ -152,12 +153,36 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 	// NewUnpaywallResolutionProvider returns nil when
 	// no email is configured, so the conditional is a
 	// nil-safe filter rather than a guard.
+	//
+	// The OA-fetch timeout and retry budget are threaded
+	// from cfg.Providers.Resolution.Unpaywall (timeout +
+	// retry). The defaults in config.default.yaml are
+	// 60s timeout (matching the strategy's
+	// perProviderTimeout) and the same retry budget as
+	// the fetch/tls tiers (max_attempts=3,
+	// retry_403_max_attempts=2). The Unpaywall API lookup
+	// keeps its own inline 1-retry/1s loop regardless; the
+	// retry budget here governs only the OA-location fetch
+	// (the publisher/repo URL), which is where the audit
+	// trail showed ~396 OA-host 403s and ~223 OA-body
+	// timeouts against zero Unpaywall API 429s.
 	var resolutionProviders []fetch.ResolutionProvider
 	unpaywallEmail := cfg.Providers.Resolution.Unpaywall.Email
 	if unpaywallEmail == "" {
 		unpaywallEmail = os.Getenv("UNPAYWALL_EMAIL")
 	}
-	if unpaywall := fetch.NewUnpaywallResolutionProviderWithParsers(unpaywallEmail, parsers...); unpaywall != nil {
+	unpaywallRetryCfg := fetch.RetryConfig{
+		MaxAttempts:         cfg.Providers.Resolution.Unpaywall.Retry.MaxAttempts,
+		BaseDelay:           cfg.Providers.Resolution.Unpaywall.Retry.BaseDelay,
+		MaxDelay:            cfg.Providers.Resolution.Unpaywall.Retry.MaxDelay,
+		Retry403MaxAttempts: cfg.Providers.Resolution.Unpaywall.Retry.Retry403MaxAttempts,
+	}
+	if unpaywall := fetch.NewUnpaywallResolutionProviderWithFullConfig(
+		unpaywallEmail,
+		cfg.Providers.Resolution.Unpaywall.Timeout,
+		unpaywallRetryCfg,
+		parsers...,
+	); unpaywall != nil {
 		resolutionProviders = append(resolutionProviders, unpaywall)
 	}
 
@@ -233,7 +258,13 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 			flareMaxConcurrency = n
 		}
 	}
-	if flareProvider := fetch.NewFlareSolverrProviderPool(flareEndpoints, flareTimeout, cfg.Providers.Resolution.Fetch.UserAgent, flareMaxConcurrency, parsers...); flareProvider != nil {
+	flareRetryCfg := fetch.RetryConfig{
+		MaxAttempts:         flareCfg.Retry.MaxAttempts,
+		BaseDelay:           flareCfg.Retry.BaseDelay,
+		MaxDelay:            flareCfg.Retry.MaxDelay,
+		Retry403MaxAttempts: flareCfg.Retry.Retry403MaxAttempts,
+	}
+	if flareProvider := fetch.NewFlareSolverrProviderPool(flareEndpoints, flareTimeout, cfg.Providers.Resolution.Fetch.UserAgent, flareMaxConcurrency, flareRetryCfg, parsers...); flareProvider != nil {
 		resolutionProviders = append(resolutionProviders, flareProvider)
 	}
 
@@ -249,6 +280,12 @@ func runAPI(ctx context.Context, cfg *config.Config, queries *store.Queries, reg
 		resolutionProviders,
 		cfg.Providers.Resolution.HostOverrides,
 	).WithURLValidator(fetch.ValidateFetchURL)
+
+	// Learned (host, provider) auto-skip is wired onto the
+	// strategy in api.Handler.SetSource (internal/api/wiring.go),
+	// after the per-repo pool resolver is available. The store
+	// adapter resolves the per-repo pool via the same resolver;
+	// thresholds come from cfg.Providers.Resolution.AutoSkip.
 
 	// File storage backend. The default is the local filesystem
 	// under `var/source_assets` (see configs/config.default.yaml);

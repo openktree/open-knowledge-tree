@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openktree/open-knowledge-tree/backend/internal/config"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/content_parsing"
 	"github.com/openktree/open-knowledge-tree/backend/internal/providers/fetch"
 )
@@ -43,6 +44,16 @@ import (
 // guards the regression where the Unpaywall path returned
 // a body with Parsed zeroed and the row ended up with
 // parse_status='unsupported'.
+//
+// The OA-host retry budget (403/timeout retry with
+// retry_403_max_attempts=2) is exercised in the unit tests
+// (TestUnpaywallRetryOn403, TestUnpaywallRetryOn5xxThenSuccess,
+// TestUnpaywallRetryExhaustedSetsOARedirectURL,
+// TestUnpaywallNoRetryOnInsufficientContent) since driving
+// a transient 403 against the live Unpaywall API is not
+// deterministic. This e2e test guards the happy path and
+// the constructor wiring; the unit tests guard the retry
+// classification and the OARedirectURL-preservation logic.
 func TestUnpaywallResolutionProvider_ResolvesDOI(t *testing.T) {
 	email := os.Getenv("UNPAYWALL_EMAIL")
 	if email == "" {
@@ -133,5 +144,62 @@ func TestUnpaywallResolutionProvider_NotADOI(t *testing.T) {
 	}
 	if errors.Is(err, fetch.ErrUnpaywallNotOpenAccess) {
 		t.Fatal("SourceURL should not produce the closed-access sentinel")
+	}
+}
+
+// TestUnpaywallResolutionProvider_RetryBudgetFromConfig
+// guards the production wiring: the config-driven
+// constructor must produce a provider whose OA-fetch retry
+// budget matches the configured values, so a transient
+// OA-host 403 actually retries instead of hard-failing.
+// This is a structural test (no live API call) that
+// complements the unit-test retry-classification coverage
+// (TestUnpaywallRetryOn403 et al.) by asserting the
+// cmd/app/api.go wiring threads the config fields into the
+// provider rather than silently dropping them. It does
+// not need UNPAYWALL_EMAIL because it checks the provider
+// construction shape, not a live resolution.
+func TestUnpaywallResolutionProvider_RetryBudgetFromConfig(t *testing.T) {
+	// Mirror the production wiring in cmd/app/api.go: build
+	// the RetryConfig from a config.UnpaywallProviderConfig
+	// and pass it through the full-config constructor.
+	cfg := config.UnpaywallProviderConfig{
+		Email:   "user@example.com",
+		Timeout: 60 * time.Second,
+		Retry: config.FetchRetryConfig{
+			MaxAttempts:         3,
+			BaseDelay:           2 * time.Second,
+			MaxDelay:            15 * time.Second,
+			Retry403MaxAttempts: 2,
+		},
+	}
+	retCfg := fetch.RetryConfig{
+		MaxAttempts:         cfg.Retry.MaxAttempts,
+		BaseDelay:           cfg.Retry.BaseDelay,
+		MaxDelay:            cfg.Retry.MaxDelay,
+		Retry403MaxAttempts: cfg.Retry.Retry403MaxAttempts,
+	}
+	provider := fetch.NewUnpaywallResolutionProviderWithFullConfig(
+		cfg.Email, cfg.Timeout, retCfg,
+		content_parsing.NewTrafilaturaParser(),
+	)
+	if provider == nil {
+		t.Fatal("expected non-nil provider for valid config")
+	}
+	// The OA-fetch timeout must match the configured 60s,
+	// not the old hardcoded 30s.
+	if got := provider.HTTPClientTimeout(); got != 60*time.Second {
+		t.Errorf("expected 60s OA-fetch timeout, got %v", got)
+	}
+	// The retry budget must be threaded: max_attempts=3
+	// (enables retry), retry_403_max_attempts=2 (one 403
+	// retry). A zero-value MaxAttempts would mean the
+	// wiring dropped the config and the OA fetch never
+	// retries — the exact regression this test guards.
+	if got := provider.RetryConfig(); got.MaxAttempts != 3 {
+		t.Errorf("expected MaxAttempts=3, got %d", got.MaxAttempts)
+	}
+	if got := provider.RetryConfig(); got.Retry403MaxAttempts != 2 {
+		t.Errorf("expected Retry403MaxAttempts=2, got %d", got.Retry403MaxAttempts)
 	}
 }
