@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -281,6 +282,76 @@ func MarshalGraphBundleJSON(data []byte, out interface{}) error {
 		return fmt.Errorf("unmarshaling graph bundle: %w", err)
 	}
 	return nil
+}
+
+// PushGraphFromFile indexes a graph bundle uploaded as a file (the
+// admin file-upload path, POST /api/v1/admin/graphs/upload + the
+// /ui/graphs/upload form). It mirrors PushGraphStream's contract —
+// resolve the graph id (dedup by (name, sha256) when the caller omits
+// one), stream the body to storage, index the metadata row — with
+// one difference: the bundle is a self-describing .json.gz file (its
+// `metadata` section carries the indexing fields), so the caller
+// passes overrides-only. Non-empty fields in meta override the
+// bundle-extracted metadata; empty fields fall back to the bundle.
+//
+// tmpPath is the spooled temp file (from SpoolUploadToTempFile). The
+// caller owns the temp file (close + os.Remove); this method streams
+// from it but does not remove it.
+//
+// Memory is bounded: the parse (done by the caller via
+// ExtractGraphMetaFromTempFile) reads only the small metadata section;
+// this method streams the raw temp file to storage via StoreStream
+// (S3 multipart, 64 MB parts; or filesystem io.Copy). Peak memory is
+// one multipart part regardless of bundle size.
+func (r *Registry) PushGraphFromFile(ctx context.Context, meta *model.GraphMeta, tmpPath string) (*model.GraphPushResult, error) {
+	if err := acquire(ctx, r.pushSem); err != nil {
+		return nil, fmt.Errorf("waiting for push concurrency slot: %w", err)
+	}
+	defer release(r.pushSem)
+
+	graphID := meta.ID
+	if graphID == "" {
+		existing, err := r.findExistingGraph(ctx, meta.Name, meta.SHA256)
+		if err != nil {
+			return nil, fmt.Errorf("searching for existing graph: %w", err)
+		}
+		if existing != nil {
+			graphID = existing.ID
+		} else {
+			graphID = uuid.New().String()
+		}
+	}
+	meta.ID = graphID
+	if meta.SchemaVersion == 0 {
+		meta.SchemaVersion = graphSchemaVersion
+	}
+
+	s3Key := GraphKey(graphID)
+	meta.S3Key = s3Key
+
+	// Stream the temp file straight to storage. Re-open (the parse
+	// path closed its reader) and let StoreStream drive the read —
+	// multipart for S3 (one 64 MB part in memory at a time),
+	// io.Copy for filesystem. A failure returns an error to the
+	// caller (no stale metadata row gets indexed).
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening upload temp file for storage: %w", err)
+	}
+	defer f.Close()
+	if _, err := r.storage.StoreStream(ctx, s3Key, f, "application/gzip"); err != nil {
+		return nil, fmt.Errorf("storing graph bundle: %w", err)
+	}
+
+	now := time.Now().UTC()
+	meta.CreatedAt = now
+	meta.UpdatedAt = now
+	if err := r.store.IndexGraph(ctx, meta); err != nil {
+		return nil, fmt.Errorf("indexing graph: %w", err)
+	}
+
+	created := meta.ID == graphID && graphID != ""
+	return &model.GraphPushResult{GraphID: graphID, New: created}, nil
 }
 
 // CleanupMultipartUploads lists and aborts orphaned multipart uploads

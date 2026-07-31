@@ -27,6 +27,7 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 	healthH := handler.NewHealthHandler(svc)
 	ctxH := handler.NewContextHandler(svc)
 	graphH := handler.NewGraphHandler(svc)
+	graphH.SetUploadConfig(&cfg.GraphUpload)
 
 	authMW := auth.NewMiddleware(&cfg.Auth)
 	authMW.SetStore(mstore)
@@ -35,6 +36,7 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 	tokenH := handler.NewTokenHandler(mstore, &cfg.Auth)
 	adminH := handler.NewAdminHandler(mstore)
 	uiH := handler.NewUIHandler(mstore, svc, &cfg.Auth, &cfg.EmailValidation, m)
+	uiH.SetUploadConfig(&cfg.GraphUpload)
 
 	// Exempted from auth
 	r.Get("/health", healthH.Health)
@@ -63,6 +65,8 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 			r.Get("/sources/{id}", uiH.SourceDetailPage)
 			r.Post("/sources/{id}/delete", uiH.SourceDetailPage)
 			r.Get("/graphs", uiH.GraphsPage)
+			r.Get("/graphs/upload", uiH.GraphUploadPage)
+			r.Post("/graphs/upload", uiH.GraphUploadPage)
 			r.Get("/graphs/{id}", uiH.GraphDetailPage)
 			r.Post("/graphs/{id}/delete", uiH.GraphDetailPage)
 			r.Get("/users", uiH.UsersPage)
@@ -112,6 +116,15 @@ func NewRouter(svc *service.Registry, mstore store.MetadataStore, cfg *config.Co
 			r.Get("/admin/users", adminH.ListUsers)
 			r.Put("/admin/users/{id}/role", adminH.UpdateRole)
 			r.Post("/admin/cleanup-uploads", graphH.CleanupUploads)
+			// Graph file upload (admin-only). Mirrors the export
+			// task's POST /api/v1/graphs push path but takes a
+			// multipart .json.gz file from the UI/curl instead of
+			// a raw body + X-Graph-* headers. The handler spools
+			// to a temp file, extracts the bundle's metadata
+			// section without buffering the whole file, and
+			// streams the temp file to storage. Memory is
+			// bounded for 100s-of-GB bundles.
+			r.Post("/admin/graphs/upload", graphH.UploadFromFile)
 		})
 
 		// Source endpoints (auth mode gating)

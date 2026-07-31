@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Upload Graph — Knowledge Registry</title>
+    <style>{{template "styles" .}}</style>
+</head>
+<body>
+{{template "navbar" .}}
+<div class="container">
+    <h1>Upload Graph</h1>
+    <p class="text-sm"><a href="{{.BackURL}}">← {{.BackLabel}}</a></p>
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+    <div class="card">
+        <p class="text-sm">
+            Upload a graph bundle (<code>.json.gz</code>) produced by an OKT export
+            (either the <em>Export to registry</em> task or the <em>Download</em>
+            button on a repo's graph page). The registry reads the bundle's
+            <code>metadata</code> section to fill in the name, description, tags,
+            and source/fact/concept counts automatically; the fields below override
+            the bundle's metadata when filled in.
+        </p>
+        <form method="POST" action="/ui/graphs/upload" enctype="multipart/form-data">
+            <label for="bundle">Bundle file (.json.gz)</label>
+            <input type="file" name="bundle" id="bundle" accept=".json.gz,application/gzip" required>
+            <label for="name">Name <span class="text-sm">(optional — overrides the bundle's name)</span></label>
+            <input type="text" name="name" id="name" placeholder="left blank → use the bundle's metadata.name">
+            <label for="description">Description <span class="text-sm">(optional)</span></label>
+            <input type="text" name="description" id="description" placeholder="left blank → use the bundle's description">
+            <label for="tags">Tags <span class="text-sm">(optional JSON array, e.g. ["alpha","beta"])</span></label>
+            <input type="text" name="tags" id="tags" placeholder='left blank → use the bundle tags'>
+            <button type="submit">Upload</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <p class="text-sm">
+            The upload streams the bundle to a temp file, then streams it to
+            storage — memory use stays bounded even for 100s-of-GB bundles. A
+            re-upload of the same bundle (matching name + sha256) refreshes the
+            existing graph's metadata instead of creating a duplicate.
+        </p>
+    </div>
+</div>
+</body>
+</html>

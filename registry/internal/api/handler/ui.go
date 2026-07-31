@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -26,12 +27,13 @@ import (
 var templateFS embed.FS
 
 type UIHandler struct {
-	store    store.MetadataStore
-	svc      *service.Registry
-	authCfg  *config.AuthConfig
-	emailCfg *config.EmailValidationConfig
-	mailer   mailer.Mailer
-	tmpl     *template.Template
+	store     store.MetadataStore
+	svc       *service.Registry
+	authCfg   *config.AuthConfig
+	emailCfg  *config.EmailValidationConfig
+	mailer    mailer.Mailer
+	tmpl      *template.Template
+	uploadCfg *config.GraphUploadConfig
 }
 
 func NewUIHandler(store store.MetadataStore, svc *service.Registry, cfg *config.AuthConfig, emailCfg *config.EmailValidationConfig, m mailer.Mailer) *UIHandler {
@@ -51,6 +53,12 @@ func NewUIHandler(store store.MetadataStore, svc *service.Registry, cfg *config.
 	}).ParseFS(sub, "*.html"))
 	return &UIHandler{store: store, svc: svc, authCfg: cfg, emailCfg: emailCfg, mailer: m, tmpl: tmpl}
 }
+
+// SetUploadConfig wires the graph-upload config so the /ui/graphs/upload
+// page can spool to the configured temp dir + cap the upload size.
+// Called by the router builder. When nil, the upload page returns 503
+// (matching the API handler's behavior).
+func (h *UIHandler) SetUploadConfig(cfg *config.GraphUploadConfig) { h.uploadCfg = cfg }
 
 type pageData struct {
 	UserID  string
@@ -242,8 +250,19 @@ func (h *UIHandler) RegisterPage(w http.ResponseWriter, r *http.Request) {
 		// with the verification prompt.
 		if h.emailCfg != nil && h.emailCfg.EnableValidation {
 			if err := issueEmailVerification(r.Context(), h.store, h.mailer, h.emailCfg, user); err != nil {
-				log.Printf("register(ui): issueVerification for %s: %v", user.Email, err)
-				h.render(w, "register.html", pageData{Error: "Account created but failed to send verification email. Use the resend link on the login page."})
+				// Distinguish a permanent SMTP 5xx rejection (bad
+				// recipient — the user's email is the problem) from
+				// a server-side failure, so the error message points
+				// the user at the right fix.
+				msg := "Account created but failed to send verification email. Use the resend link on the login page."
+				var rej *mailRejectedError
+				if errors.As(classifyVerificationError(err), &rej) {
+					log.Printf("register(ui): issueVerification for %s: mail rejected (code=%d): %v", user.Email, rej.smtpErr.Code, err)
+					msg = "Account created, but the verification email was rejected by the mail server (the email address may be invalid). Use the resend link on the login page with a valid address."
+				} else {
+					log.Printf("register(ui): issueVerification for %s: %v", user.Email, err)
+				}
+				h.render(w, "register.html", pageData{Error: msg})
 				return
 			}
 			http.Redirect(w, r, "/ui/login?registered=1&verify=1", http.StatusFound)
@@ -582,6 +601,13 @@ func (h *UIHandler) GraphsPage(w http.ResponseWriter, r *http.Request) {
 	d.ActiveTab = "graphs"
 	d.Query = strings.TrimSpace(r.URL.Query().Get("q"))
 
+	// Success flash from the upload page (POST /ui/graphs/upload
+	// redirects here with ?uploaded=1 on success). Rendered once,
+	// then cleared by the redirect-after-POST pattern.
+	if r.URL.Query().Get("uploaded") == "1" {
+		d.Success = "Graph uploaded successfully."
+	}
+
 	limit, offset := parsePagination(r)
 	d.Limit = limit
 	d.Offset = offset
@@ -625,6 +651,115 @@ func (h *UIHandler) graphsData(r *http.Request, d pageData) pageData {
 		d.Page, d.HasPrev, d.HasNext = paginationState(limit, offset, result.Total)
 	}
 	return d
+}
+
+// GraphUploadPage renders /ui/graphs/upload (GET: the form) and
+// handles the POST (the actual upload). Admin-only. The upload spools
+// the multipart bundle file to a temp file on the configured volume,
+// extracts the bundle's metadata section without buffering the whole
+// file in memory, streams the temp file to storage, and indexes the
+// metadata row. On success it redirects to /ui/graphs with a success
+// flash; on failure it re-renders the form with an error.
+//
+// Mirrors GraphHandler.UploadFromFile (the API path) but renders HTML
+// instead of JSON. Both share the service-layer PushGraphFromFile.
+func (h *UIHandler) GraphUploadPage(w http.ResponseWriter, r *http.Request) {
+	d := h.withUserData(r)
+	d.ActiveTab = "graphs"
+	d.BackURL = "/ui/graphs"
+	d.BackLabel = "Back to Graphs"
+
+	if !d.IsAdmin {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if h.uploadCfg == nil {
+		http.Error(w, "graph upload not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+
+	// POST: the actual upload.
+	maxBytes := h.uploadCfg.MaxSizeBytes
+	tempDir := h.uploadCfg.TempDir
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	}
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		msg := "parsing multipart form: " + err.Error()
+		if strings.Contains(err.Error(), "too large") {
+			msg = "upload exceeds the configured size limit"
+		}
+		d.Error = msg
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+	fhs, ok := r.MultipartForm.File["bundle"]
+	if !ok || len(fhs) == 0 {
+		d.Error = "bundle file is required"
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+	file, err := fhs[0].Open()
+	if err != nil {
+		d.Error = "opening bundle file part: " + err.Error()
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+	defer file.Close()
+	defer func() { _ = r.MultipartForm.RemoveAll() }()
+
+	overrides := uploadOverrides{
+		Name:        strings.TrimSpace(formValue(r.MultipartForm.Value, "name")),
+		Description: strings.TrimSpace(formValue(r.MultipartForm.Value, "description")),
+		Owner:       strings.TrimSpace(formValue(r.MultipartForm.Value, "owner")),
+		TagsJSON:    strings.TrimSpace(formValue(r.MultipartForm.Value, "tags")),
+	}
+
+	tmpPath, err := service.SpoolUploadToTempFile(file, tempDir, maxBytes)
+	if err != nil {
+		if errors.Is(err, service.ErrUploadTooLarge) {
+			d.Error = "upload exceeds the configured size limit"
+		} else {
+			d.Error = err.Error()
+		}
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	bundleMeta, err := service.ExtractGraphMetaFromTempFile(r.Context(), tmpPath)
+	if err != nil {
+		d.Error = "reading bundle metadata: " + err.Error()
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+	applyOverrides(bundleMeta, overrides)
+	if email := auth.RequestUserEmail(r.Context()); email != "" {
+		bundleMeta.Owner = email
+	}
+	if bundleMeta.Owner == "" {
+		bundleMeta.Owner = "anonymous"
+	}
+	if bundleMeta.Name == "" {
+		d.Error = "name is required (set it in the bundle metadata or the name form field)"
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+
+	result, err := h.svc.PushGraphFromFile(r.Context(), bundleMeta, tmpPath)
+	if err != nil {
+		log.Printf("ui graph upload: %v", err)
+		d.Error = "Failed to upload graph: " + err.Error()
+		h.render(w, "graph_upload.html", d)
+		return
+	}
+	_ = result // success → redirect to the graphs list
+	http.Redirect(w, r, "/ui/graphs?uploaded=1", http.StatusFound)
 }
 
 // GraphDetailPage renders /ui/graphs/{id}: the metadata for a

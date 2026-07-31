@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **registry:** admin file-upload of graph bundles (UI + API), with streaming metadata extraction for 100s-of-GB bundles
+
 ## [0.7.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.6.4...registry-v0.7.0) (2026-07-29)
 
 

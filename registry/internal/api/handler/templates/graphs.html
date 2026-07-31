@@ -18,6 +18,7 @@
             <input type="text" name="q" value="{{.Query}}" placeholder="Filter by name, description, or tag" style="flex:1">
             <button type="submit" class="btn-sm">Search</button>
             {{if .Query}}<a href="/ui/graphs" class="btn-sm" style="text-decoration:none;background:#666;color:#fff;padding:.25rem .5rem;border-radius:4px">Clear</a>{{end}}
+            {{if .IsAdmin}}<a href="/ui/graphs/upload" class="btn-sm" style="text-decoration:none;background:#2a7;padding:.25rem .5rem;border-radius:4px;color:#fff">Upload graph</a>{{end}}
         </form>
     </div>
 

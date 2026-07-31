@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/openktree/knowledge-registry/internal/auth"
+	"github.com/openktree/knowledge-registry/internal/config"
 	"github.com/openktree/knowledge-registry/internal/model"
 	"github.com/openktree/knowledge-registry/internal/service"
 )
@@ -29,7 +30,8 @@ import (
 // require authentication. The owner field on a pushed graph is
 // populated from the authenticated user's email when available.
 type GraphHandler struct {
-	svc *service.Registry
+	svc       *service.Registry
+	uploadCfg *config.GraphUploadConfig
 }
 
 func NewGraphHandler(svc *service.Registry) *GraphHandler {
