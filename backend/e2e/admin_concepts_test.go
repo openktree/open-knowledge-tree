@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/e2e/testutil"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -184,8 +185,8 @@ func TestAdminReprocessSource(t *testing.T) {
 	var out struct {
 		RepositoryID    string `json:"repository_id"`
 		SourceID        string `json:"source_id"`
-		EnqueuedJobID  string `json:"enqueued_job_id"`
-		RetryChunkCount int   `json:"retry_chunk_count"`
+		EnqueuedJobID   string `json:"enqueued_job_id"`
+		RetryChunkCount int    `json:"retry_chunk_count"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -325,4 +326,77 @@ type recomputeResponse struct {
 	RepositoryID  string `json:"repository_id"`
 	EnqueuedJobID string `json:"enqueued_job_id"`
 	Enqueued      bool   `json:"enqueued"`
+}
+
+// TestRecomputeAllConceptGroupsPopulatesSummary is the regression test
+// for the sqlc multi-statement bug: RecomputeAllConceptGroupsForRepo
+// was a single :exec query containing a DELETE + INSERT, but sqlc only
+// generated the DELETE — so the recompute job wiped concept_groups and
+// never repopulated it, making concepts disappear from the LIST
+// endpoint (which paginates over concept_groups). The fix split the
+// query into DeleteAllConceptGroupsForRepo + InsertAllConceptGroupsForRepo,
+// invoked inside one pgx.Tx. This test calls both in a tx and asserts
+// the summary is populated.
+func TestRecomputeAllConceptGroupsPopulatesSummary(t *testing.T) {
+	env := testutil.NewTestEnv(t)
+	defer env.Server.Close()
+
+	admin := bootstrapSysAdmin(t, env, "recompute-summary@example.com")
+	const slug = "recompute-summary-repo"
+	_, _, repoID := createRepositoryWithDB(t, admin, "Recompute Summary Repo", slug, "desc", "")
+	pgRepo := pgRepoID(t, repoID)
+	queries := store.New(env.DB)
+	ctx := context.Background()
+
+	// Insert three concepts directly (two share a canonical name in
+	// different contexts → one group with context_count=2; the third
+	// is its own group). Direct store writes bypass the incremental
+	// recompute, so concept_groups starts empty — the scenario the
+	// recompute repairs.
+	for _, c := range []struct{ name, context string }{
+		{"Alpha", "CtxA"},
+		{"Alpha", "CtxB"},
+		{"Beta", "CtxC"},
+	} {
+		if _, err := queries.CreateConcept(ctx, store.CreateConceptParams{
+			RepositoryID: pgRepo, CanonicalName: c.name, Context: c.context,
+		}); err != nil {
+			t.Fatalf("create concept %s/%s: %v", c.name, c.context, err)
+		}
+	}
+
+	// Sanity: no groups yet (direct inserts don't recompute).
+	if n, err := queries.CountConceptGroupsByRepo(ctx, store.CountConceptGroupsByRepoParams{
+		RepositoryID: pgRepo, MinFactCount: 0,
+	}); err != nil {
+		t.Fatalf("count groups before: %v", err)
+	} else if n != 0 {
+		t.Fatalf("concept_groups before recompute = %d, want 0", n)
+	}
+
+	// Run the recompute: DELETE + INSERT in one tx, mirroring the worker.
+	tx, err := env.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	txQueries := queries.WithTx(tx)
+	if err := txQueries.DeleteAllConceptGroupsForRepo(ctx, pgRepo); err != nil {
+		t.Fatalf("DeleteAllConceptGroupsForRepo: %v", err)
+	}
+	if err := txQueries.InsertAllConceptGroupsForRepo(ctx, pgRepo); err != nil {
+		t.Fatalf("InsertAllConceptGroupsForRepo: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	// Assert: 2 groups (Alpha merges CtxA+CtxB; Beta is its own).
+	if n, err := queries.CountConceptGroupsByRepo(ctx, store.CountConceptGroupsByRepoParams{
+		RepositoryID: pgRepo, MinFactCount: 0,
+	}); err != nil {
+		t.Fatalf("count groups after: %v", err)
+	} else if n != 2 {
+		t.Errorf("concept_groups after recompute = %d, want 2 (Alpha merged, Beta separate)", n)
+	}
 }

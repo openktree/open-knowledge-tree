@@ -559,6 +559,23 @@ func (q *Queries) CreateConcept(ctx context.Context, arg CreateConceptParams) (O
 	return i, err
 }
 
+const deleteAllConceptGroupsForRepo = `-- name: DeleteAllConceptGroupsForRepo :exec
+DELETE FROM okt_repository.concept_groups WHERE repository_id = $1
+`
+
+// Full-repo DELETE: removes every group row for the repo. Paired
+// with InsertAllConceptGroupsForRepo in a single caller-side tx
+// (the recompute_concept_groups worker). sqlc does not generate
+// code for the 2nd+ statement in a multi-statement :exec query, so
+// the delete + reinsert must be two separate queries invoked inside
+// one transaction by the caller. Bounded by the repo's concept
+// count; the tx keeps the table never-half-empty to a concurrent
+// reader (the DELETE + INSERT are atomic per repo).
+func (q *Queries) DeleteAllConceptGroupsForRepo(ctx context.Context, repositoryID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAllConceptGroupsForRepo, repositoryID)
+	return err
+}
+
 const deleteCandidate = `-- name: DeleteCandidate :exec
 DELETE FROM okt_repository.concept_candidates
 WHERE id = $1
@@ -1055,6 +1072,30 @@ func (q *Queries) GetFactConceptSkip(ctx context.Context, factID pgtype.UUID) (O
 		&i.LastAttemptAt,
 	)
 	return i, err
+}
+
+const insertAllConceptGroupsForRepo = `-- name: InsertAllConceptGroupsForRepo :exec
+INSERT INTO okt_repository.concept_groups
+    (repository_id, name_key, canonical_name, context_count, total_fact_count, any_embedded, updated_at)
+SELECT c.repository_id,
+       lower(c.canonical_name),
+       min(c.canonical_name),
+       count(*)::int,
+       COALESCE(COUNT(fc.fact_id), 0)::bigint,
+       bool_or(c.embedded_at IS NOT NULL),
+       now()
+FROM okt_repository.concepts c
+LEFT JOIN okt_repository.fact_concepts fc ON fc.concept_id = c.id
+WHERE c.repository_id = $1
+GROUP BY c.repository_id, lower(c.canonical_name)
+`
+
+// Full-repo INSERT: rebuilds the summary from live concepts +
+// fact_concepts. Run right after DeleteAllConceptGroupsForRepo in
+// the same tx. Bounded by the repo's concept count.
+func (q *Queries) InsertAllConceptGroupsForRepo(ctx context.Context, repositoryID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, insertAllConceptGroupsForRepo, repositoryID)
+	return err
 }
 
 const listConceptAliasesByConcept = `-- name: ListConceptAliasesByConcept :many
@@ -2734,20 +2775,6 @@ type ReassignFactConceptsToConceptParams struct {
 // philosophy tag.
 func (q *Queries) ReassignFactConceptsToConcept(ctx context.Context, arg ReassignFactConceptsToConceptParams) error {
 	_, err := q.db.Exec(ctx, reassignFactConceptsToConcept, arg.NewConceptID, arg.OldConceptID)
-	return err
-}
-
-const recomputeAllConceptGroupsForRepo = `-- name: RecomputeAllConceptGroupsForRepo :exec
-DELETE FROM okt_repository.concept_groups WHERE repository_id = $1
-`
-
-// Full-repo recompute: delete every group row for the repo then
-// reinsert from live concepts + fact_concepts. The repair path used
-// by the recompute_concept_groups River job. Bounded by the repo's
-// concept count; runs in one tx so the table is never half-empty to
-// a concurrent reader (the DELETE + INSERT are atomic per repo).
-func (q *Queries) RecomputeAllConceptGroupsForRepo(ctx context.Context, repositoryID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, recomputeAllConceptGroupsForRepo, repositoryID)
 	return err
 }
 

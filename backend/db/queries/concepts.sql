@@ -1132,13 +1132,21 @@ WHERE g.repository_id = sqlc.arg('repository_id')
         AND lower(c.canonical_name) = g.name_key
   );
 
--- name: RecomputeAllConceptGroupsForRepo :exec
--- Full-repo recompute: delete every group row for the repo then
--- reinsert from live concepts + fact_concepts. The repair path used
--- by the recompute_concept_groups River job. Bounded by the repo's
--- concept count; runs in one tx so the table is never half-empty to
--- a concurrent reader (the DELETE + INSERT are atomic per repo).
+-- name: DeleteAllConceptGroupsForRepo :exec
+-- Full-repo DELETE: removes every group row for the repo. Paired
+-- with InsertAllConceptGroupsForRepo in a single caller-side tx
+-- (the recompute_concept_groups worker). sqlc does not generate
+-- code for the 2nd+ statement in a multi-statement :exec query, so
+-- the delete + reinsert must be two separate queries invoked inside
+-- one transaction by the caller. Bounded by the repo's concept
+-- count; the tx keeps the table never-half-empty to a concurrent
+-- reader (the DELETE + INSERT are atomic per repo).
 DELETE FROM okt_repository.concept_groups WHERE repository_id = sqlc.arg('repository_id');
+
+-- name: InsertAllConceptGroupsForRepo :exec
+-- Full-repo INSERT: rebuilds the summary from live concepts +
+-- fact_concepts. Run right after DeleteAllConceptGroupsForRepo in
+-- the same tx. Bounded by the repo's concept count.
 INSERT INTO okt_repository.concept_groups
     (repository_id, name_key, canonical_name, context_count, total_fact_count, any_embedded, updated_at)
 SELECT c.repository_id,

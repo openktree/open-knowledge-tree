@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/openktree/open-knowledge-tree/backend/internal/dbpool"
 	"github.com/openktree/open-knowledge-tree/backend/internal/store"
@@ -28,19 +29,21 @@ const QueueRecomputeConceptGroups = "recompute_concept_groups"
 // always-live, and a periodic tick would only duplicate that work.
 //
 // RecomputeAllConceptGroupsForRepo runs a full-repo DELETE + INSERT
-// in one tx, bounded by the repo's concept count (200k now, millions
-// in production — a few seconds at 200k, proportionally longer at
-// scale). The job's wall-clock is observed by River's JobTimeout.
+// in one tx (DeleteAllConceptGroupsForRepo +
+// InsertAllConceptGroupsForRepo via Queries.WithTx), bounded by the
+// repo's concept count (200k now, millions in production — a few
+// seconds at 200k, proportionally longer at scale). The job's
+// wall-clock is observed by River's JobTimeout.
 //
 // DatabaseName is the river unique key (`river:"unique"`): at most one
 // recompute_concept_groups job per database may be queued or running
 // at a time. Per-database (not per-repo) dedup is used because
-// RecomputeAllConceptGroupsForRepo issues a DELETE+INSERT on the
-// per-database concept_groups table; two repos in the same database
-// would otherwise race on the same table, and per-repo dedup would
-// pile up redundant recomputes that serialize on the table's lock.
-// Two repos in the same database share one recompute; the per-repo
-// tasks list metadata filter still surfaces the originating repo.
+// the recompute issues a DELETE+INSERT on the per-database
+// concept_groups table; two repos in the same database would
+// otherwise race on the same table, and per-repo dedup would pile up
+// redundant recomputes that serialize on the table's lock. Two repos
+// in the same database share one recompute; the per-repo tasks list
+// metadata filter still surfaces the originating repo.
 //
 // The unique ByState set EXCLUDES `completed` and `discarded`
 // (mirroring refresh_concept_relations): River's default unique
@@ -68,7 +71,7 @@ func (RecomputeConceptGroupsArgs) InsertOpts() river.InsertOpts {
 		// button click re-enqueues, so 3 attempts is enough.
 		MaxAttempts: 3,
 		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
+			ByArgs:  true,
 			ByQueue: true,
 			// Exclude `completed` and `discarded` from the unique
 			// state set. With River's default (which includes
@@ -106,11 +109,12 @@ func NewRecomputeConceptGroupsWorker(registry *dbpool.Registry) *RecomputeConcep
 }
 
 // Work resolves the database name to a pool, resolves the repo UUID,
-// and runs RecomputeAllConceptGroupsForRepo (a full-repo DELETE +
-// INSERT in one tx). A missing database name or an unregistered
-// database is a deployment error, not a retryable condition: the
-// worker logs and returns nil (River doesn't retry) so a misconfigured
-// enqueue doesn't spin forever; the next button click re-enqueues.
+// and runs DeleteAllConceptGroupsForRepo + InsertAllConceptGroupsForRepo
+// inside a single pgx.Tx (a full-repo DELETE + INSERT). A missing
+// database name or an unregistered database is a deployment error,
+// not a retryable condition: the worker logs and returns nil (River
+// doesn't retry) so a misconfigured enqueue doesn't spin forever;
+// the next button click re-enqueues.
 func (w *RecomputeConceptGroupsWorker) Work(ctx context.Context, job *river.Job[RecomputeConceptGroupsArgs]) error {
 	args := job.Args
 	if args.DatabaseName == "" {
@@ -152,8 +156,26 @@ func (w *RecomputeConceptGroupsWorker) Work(ctx context.Context, job *river.Job[
 	// safe; River's JobTimeout still bounds the wall-clock.
 	recomputeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if err := store.New(pool.Pool).RecomputeAllConceptGroupsForRepo(recomputeCtx, repoID); err != nil {
-		return fmt.Errorf("recompute_concept_groups: recomputing for database %s repo %s: %w", args.DatabaseName, args.RepositoryID, err)
+	// Run the DELETE + INSERT in one tx so the table is never
+	// half-empty to a concurrent reader. sqlc does not support
+	// multi-statement :exec queries (only the first statement is
+	// generated), so the two steps are separate sqlc queries invoked
+	// inside a single pgx.Tx via Queries.WithTx.
+	queries := store.New(pool.Pool)
+	tx, err := pool.Pool.BeginTx(recomputeCtx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("recompute_concept_groups: beginning tx for database %s repo %s: %w", args.DatabaseName, args.RepositoryID, err)
+	}
+	defer tx.Rollback(recomputeCtx)
+	txQueries := queries.WithTx(tx)
+	if err := txQueries.DeleteAllConceptGroupsForRepo(recomputeCtx, repoID); err != nil {
+		return fmt.Errorf("recompute_concept_groups: deleting groups for database %s repo %s: %w", args.DatabaseName, args.RepositoryID, err)
+	}
+	if err := txQueries.InsertAllConceptGroupsForRepo(recomputeCtx, repoID); err != nil {
+		return fmt.Errorf("recompute_concept_groups: inserting groups for database %s repo %s: %w", args.DatabaseName, args.RepositoryID, err)
+	}
+	if err := tx.Commit(recomputeCtx); err != nil {
+		return fmt.Errorf("recompute_concept_groups: committing for database %s repo %s: %w", args.DatabaseName, args.RepositoryID, err)
 	}
 	duration := time.Since(start)
 	log.Printf("recompute_concept_groups: recomputed for database %s repo %s in %s",
