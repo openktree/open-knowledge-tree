@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.5.1...frontend-v0.6.0) (2026-07-31)
+
+
+### Features
+
+* **fetch:** learned (host,provider) auto-skip + 403 retry for WAF-blocked hosts ([46754bb](https://github.com/openktree/open-knowledge-tree/commit/46754bb8e6f535fa6e3e0124a58a05889d4184a2))
+
+
+### Bug Fixes
+
+* **frontend:** minor page adjustments ([cf143a2](https://github.com/openktree/open-knowledge-tree/commit/cf143a22824dc33d6f65a6918f48bd2b3d06f9b8))
+
 ## [0.5.1](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.5.0...frontend-v0.5.1) (2026-07-28)
 
 
