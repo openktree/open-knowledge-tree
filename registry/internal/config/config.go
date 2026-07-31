@@ -39,6 +39,33 @@ type Config struct {
 	// default so existing registries keep the legacy auto-login
 	// behavior. Mirrors the Promptset opt-in toggle shape.
 	EmailValidation EmailValidationConfig `mapstructure:"email_validation"`
+	// GraphUpload configures the admin file-upload path for graph
+	// bundles (POST /api/v1/admin/graphs/upload + the /ui/graphs/upload
+	// form). The upload spools the multipart file to a temp file on
+	// TempDir before streaming to S3, so TempDir must be on a volume
+	// large enough to hold the largest expected bundle (the Fly
+	// registry_data mount at /data is the natural target). MaxSizeBytes
+	// is a backstop against runaway uploads; 0 = unlimited (the temp
+	// file + disk space are the real bounds).
+	GraphUpload GraphUploadConfig `mapstructure:"graph_upload"`
+}
+
+// GraphUploadConfig configures the admin file-upload path. Bundles can
+// be 100s of GB (large repos with embedded PDFs/images), so the upload
+// path is built around a temp-file spool + streaming S3 multipart —
+// peak memory is one multipart part (64 MB) regardless of bundle size.
+type GraphUploadConfig struct {
+	// MaxSizeBytes rejects uploads larger than this many bytes. 0 =
+	// unlimited (default). The HTTP layer enforces it via
+	// http.MaxBytesReader (early reject for clients that announce
+	// Content-Length) and the service re-checks after the temp-file
+	// spool (the real guard for chunked uploads).
+	MaxSizeBytes int64 `mapstructure:"max_size_bytes"`
+	// TempDir is where the upload spools the incoming bundle before
+	// streaming to S3. Empty = OS default (typically /tmp). On Fly,
+	// operators point this at the mounted volume (/data/tmp) so a
+	// multi-GB upload doesn't fill the container's writable layer.
+	TempDir string `mapstructure:"temp_dir"`
 }
 
 // EmailValidationConfig configures account email validation. KISS:
@@ -174,6 +201,14 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("email_validation.smtp.username", "")
 	v.SetDefault("email_validation.smtp.password", "")
 	v.SetDefault("email_validation.smtp.tls", false)
+
+	// Graph upload defaults: unlimited size (the temp file + disk
+	// space are the real bounds), OS-default temp dir. Operators
+	// with large bundles set REGISTRY_GRAPH_UPLOAD_TEMP_DIR to the
+	// mounted volume (e.g. /data/tmp on Fly) and optionally
+	// REGISTRY_GRAPH_UPLOAD_MAX_SIZE_BYTES as a backstop.
+	v.SetDefault("graph_upload.max_size_bytes", 0)
+	v.SetDefault("graph_upload.temp_dir", "")
 
 	v.SetEnvPrefix("REGISTRY")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

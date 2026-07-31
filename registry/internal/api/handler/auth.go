@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -15,6 +17,44 @@ import (
 	"github.com/openktree/knowledge-registry/internal/model"
 	"github.com/openktree/knowledge-registry/internal/store"
 )
+
+// mailRejectedError is returned by classifyVerificationError when the
+// upstream mail server rejected the recipient with a permanent SMTP
+// 5xx reply (e.g. Resend's 550 for example.com test domains, a
+// non-existent mailbox, or a policy refusal). These are client/input
+// problems — the recipient address is bad — not a server fault, so
+// the Register handler surfaces them as 422 instead of 500. The
+// embedded *textproto.Error is preserved so callers/tests can inspect
+// the exact SMTP code and message.
+type mailRejectedError struct {
+	smtpErr *textproto.Error
+}
+
+func (e *mailRejectedError) Error() string {
+	if e.smtpErr != nil {
+		return e.smtpErr.Error()
+	}
+	return "mail rejected by upstream server"
+}
+
+// classifyVerificationError inspects an error returned by
+// issueVerification / issueEmailVerification. net/smtp.SendMail
+// surfaces server replies as *textproto.Error (Code + Msg); a Code
+// in the 5xx range is a permanent rejection (bad recipient, policy
+// refusal) and is wrapped as a *mailRejectedError so the handler can
+// map it to 422. Transient 4xx SMTP replies and non-SMTP failures
+// (token generation, DB write) are returned unchanged so they stay
+// 500. Returns nil when err == nil.
+func classifyVerificationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var smtpErr *textproto.Error
+	if errors.As(err, &smtpErr) && smtpErr.Code >= 500 && smtpErr.Code < 600 {
+		return &mailRejectedError{smtpErr: smtpErr}
+	}
+	return err
+}
 
 type AuthHandler struct {
 	store     store.MetadataStore
@@ -155,8 +195,19 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		if err := h.issueVerification(r.Context(), user); err != nil {
 			// The user row is already created; failing to send the
 			// verification email is recoverable via the resend
-			// endpoint, so we don't roll back. Log + 500 so the
-			// client knows to retry the resend.
+			// endpoint, so we don't roll back. A permanent SMTP 5xx
+			// (bad recipient, policy refusal — e.g. Resend rejecting
+			// example.com test domains) is a client/input problem →
+			// 422; other failures (token gen, DB write, transient
+			// network) stay 500 so the client knows to retry the
+			// resend.
+			classified := classifyVerificationError(err)
+			var rej *mailRejectedError
+			if errors.As(classified, &rej) {
+				log.Printf("register: issueVerification for %s: mail rejected (code=%d): %v", user.Email, rej.smtpErr.Code, err)
+				writeError(w, http.StatusUnprocessableEntity, "account created but verification email was rejected by the mail server; use /api/v1/auth/resend-verification")
+				return
+			}
 			log.Printf("register: issueVerification for %s: %v", user.Email, err)
 			writeError(w, http.StatusInternalServerError, "account created but failed to send verification email; use /api/v1/auth/resend-verification")
 			return
@@ -308,8 +359,12 @@ func (h *AuthHandler) verifyEmail(w http.ResponseWriter, r *http.Request, tokenS
 //   - otherwise                 → mint a new token, store, email
 //
 // The mailer is the NoopMailer in dev (logs the URL) and the
-// smtpMailer in production; a send failure logs + returns 500 so
-// the client can retry. The 500 is the only non-200 outcome.
+// smtpMailer in production; a send failure is logged and the
+// handler still returns 200 to preserve enumeration-safety (a
+// non-200 would leak that the email is registered + unverified).
+// Callers cannot act on a per-recipient rejection here anyway,
+// since resend is driven by the user's own email — the 200-always
+// contract is the correct KISS choice.
 func (h *AuthHandler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	if h.emailCfg == nil || !h.emailCfg.EnableValidation {
 		writeError(w, http.StatusNotFound, "email verification is not enabled")
@@ -345,8 +400,19 @@ func (h *AuthHandler) ResendVerification(w http.ResponseWriter, r *http.Request)
 	// limit at the mailer or IP layer without changing this
 	// handler's 200-always contract.
 	if err := h.issueVerification(r.Context(), user); err != nil {
-		log.Printf("resend: issueVerification for %s: %v", user.Email, err)
-		writeError(w, http.StatusInternalServerError, "failed to send verification email")
+		// Keep the 200-always enumeration-safe contract: a non-200
+		// would reveal that the email is registered + unverified.
+		// A permanent SMTP 5xx (bad recipient) is logged at info
+		// level since it's an input problem, not a server fault;
+		// other failures are logged at error level for visibility.
+		classified := classifyVerificationError(err)
+		var rej *mailRejectedError
+		if errors.As(classified, &rej) {
+			log.Printf("resend: issueVerification for %s: mail rejected (code=%d): %v", user.Email, rej.smtpErr.Code, err)
+		} else {
+			log.Printf("resend: issueVerification for %s: %v", user.Email, err)
+		}
+		writeJSON(w, http.StatusOK, resendResponse{Status: "ok"})
 		return
 	}
 	writeJSON(w, http.StatusOK, resendResponse{Status: "ok"})

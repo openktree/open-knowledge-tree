@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 	"time"
@@ -461,5 +464,142 @@ func TestResendVerification_BadBody(t *testing.T) {
 	env.authH.ResendVerification(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty email, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// failingMailer is a stub mailer.Mailer whose Send always returns a
+// fixed error. Tests use it to exercise the SMTP-error mapping in
+// Register/ResendVerification without a real SMTP server. When
+// smtpErr is non-nil it returns that *textproto.Error (mirroring what
+// net/smtp.SendMail surfaces for a server 5xx reply); otherwise it
+// returns the generic err, letting tests assert the 500 path for
+// non-SMTP failures (token gen, DB write) is unchanged.
+type failingMailer struct {
+	smtpErr *textproto.Error
+	err     error
+	sent    int
+}
+
+func (m *failingMailer) Send(to, subject, body string) error {
+	m.sent++
+	if m.smtpErr != nil {
+		return m.smtpErr
+	}
+	return m.err
+}
+
+// newAuthTestEnvWithMailer is newAuthTestEnv but lets the caller plug
+// in a custom mailer (e.g. failingMailer) instead of the NoopMailer.
+func newAuthTestEnvWithMailer(t *testing.T, enableValidation bool, m mailer.Mailer) *authTestEnv {
+	t.Helper()
+	s, err := store.NewSQLiteStore("file::memory:?cache=shared&_pragma=busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("creating sqlite: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	authCfg := &config.AuthConfig{
+		JWTSecret: "test-secret",
+		TokenTTL:  time.Hour,
+	}
+	emailCfg := &config.EmailValidationConfig{
+		EnableValidation: enableValidation,
+		FromAddress:      "no-reply@test.local",
+		PublicBaseURL:    "https://registry.test",
+		TokenTTL:         time.Hour,
+	}
+	authH := NewAuthHandler(s, authCfg, emailCfg, m)
+	return &authTestEnv{t: t, store: s, authH: authH}
+}
+
+// TestRegister_SmtpRejected_Returns422 is the core regression for
+// the prod 500: when the upstream mail server rejects the recipient
+// with a permanent SMTP 5xx (Resend returns 550 for example.com test
+// domains), Register must surface 422 — not 500 — because the
+// recipient address is a client/input problem, not a server fault.
+// The user row is still created (recoverable via resend).
+func TestRegister_SmtpRejected_Returns422(t *testing.T) {
+	m := &failingMailer{smtpErr: &textproto.Error{Code: 550, Msg: "Invalid `to` field. Please use our testing email address instead of domains like `example.com`."}}
+	env := newAuthTestEnvWithMailer(t, true, m)
+	rec := env.register(`{"email":"deploy-test-prod@example.com","password":"hunter2"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for SMTP 550, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The account row should still exist (we don't roll back on a
+	// send failure — resend is the recovery path).
+	user, err := env.store.GetUserByEmail(context.Background(), "deploy-test-prod@example.com")
+	if err != nil {
+		t.Fatalf("looking up user after rejected send: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected the user row to exist despite the mail rejection")
+	}
+	if user.EmailVerified {
+		t.Fatal("expected the user to remain unverified")
+	}
+	if m.sent != 1 {
+		t.Fatalf("expected the mailer to be called exactly once, got %d", m.sent)
+	}
+}
+
+// TestRegister_NonSmtpFailure_Returns500 asserts the 500 path is
+// preserved for non-SMTP failures (token generation, DB write,
+// transient network) — classifyVerificationError must NOT promote
+// those to 422. Uses a generic error that is not a *textproto.Error.
+func TestRegister_NonSmtpFailure_Returns500(t *testing.T) {
+	m := &failingMailer{err: fmt.Errorf("token generation failed")}
+	env := newAuthTestEnvWithMailer(t, true, m)
+	rec := env.register(`{"email":"reg500@example.com","password":"hunter2"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for a non-SMTP failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestResendVerification_SmtpRejected_Still200 asserts the
+// enumeration-safe 200-always contract holds even when the mailer
+// rejects the recipient: a non-200 would leak that the email is
+// registered + unverified. The failure is logged, not surfaced.
+func TestResendVerification_SmtpRejected_Still200(t *testing.T) {
+	m := &failingMailer{smtpErr: &textproto.Error{Code: 550, Msg: "Invalid `to` field."}}
+	env := newAuthTestEnvWithMailer(t, true, m)
+	// First, create an unverified account. Register itself will 422
+	// (rejected send), but the row exists — that's the precondition
+	// for resend.
+	if rec := env.register(`{"email":"resend200@example.com","password":"hunter2"}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("register precondition: expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec := env.resend("resend200@example.com")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resend on SMTP rejection must stay 200 (enumeration-safe), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestClassifyVerificationError is a unit test for the classifier
+// itself: 5xx → *mailRejectedError, 4xx and non-SMTP errors pass
+// through unchanged, nil → nil.
+func TestClassifyVerificationError(t *testing.T) {
+	if got := classifyVerificationError(nil); got != nil {
+		t.Fatalf("classify(nil) = %v, want nil", got)
+	}
+	// 5xx is wrapped.
+	smtp5xx := &textproto.Error{Code: 550, Msg: "nope"}
+	got := classifyVerificationError(smtp5xx)
+	var rej *mailRejectedError
+	if !errors.As(got, &rej) {
+		t.Fatalf("classify(550) = %v, want *mailRejectedError", got)
+	}
+	if rej.smtpErr.Code != 550 {
+		t.Fatalf("wrapped code = %d, want 550", rej.smtpErr.Code)
+	}
+	// 4xx passes through unchanged (transient — stay 500).
+	smtp4xx := &textproto.Error{Code: 450, Msg: "mailbox busy"}
+	got = classifyVerificationError(smtp4xx)
+	if got != smtp4xx {
+		t.Fatalf("classify(450) = %v, want the original error unchanged", got)
+	}
+	// Non-SMTP error passes through unchanged.
+	other := fmt.Errorf("db write failed")
+	got = classifyVerificationError(other)
+	if got != other {
+		t.Fatalf("classify(non-smtp) = %v, want the original error unchanged", got)
 	}
 }
