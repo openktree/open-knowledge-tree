@@ -3,6 +3,7 @@ import { api } from "../services/api";
 import Badge from "./Badge";
 
 const POLL_INTERVAL = 10000;
+const POLL_INTERVAL_TRANSFER = 3000; // faster poll during pushing/downloading for live MB counter
 
 const EXPORT_PHASES = [
   { key: "building", label: "Building Bundle", icon: "B" },
@@ -30,6 +31,37 @@ function formatCount(n) {
   return n.toLocaleString();
 }
 
+// Render a byte-progress line: "12.3 MB of 45.6 MB (27%)" when
+// total is known, or "12.3 MB written" when total is unknown.
+function ByteProgressLine(props) {
+  const transferred = () => props.progress?.bytes_transferred || 0;
+  const total = () => props.progress?.total_bytes || 0;
+  const pct = () => (total() > 0 ? Math.min(100, Math.round((transferred() / total()) * 100)) : 0);
+
+  return (
+    <Show when={transferred() > 0}>
+      <div class="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+        <span>
+          {formatBytes(transferred())}
+          <Show when={total() > 0}>
+            {" "}
+            of <strong class="text-gray-700 dark:text-gray-200">{formatBytes(total())}</strong>{" "}
+            <span class="text-blue-500 dark:text-blue-400 font-mono">({pct()}%)</span>
+          </Show>
+        </span>
+        <Show when={total() > 0}>
+          <div class="flex-1 max-w-xs bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+            <div
+              class="bg-blue-500 h-full rounded-full transition-all duration-300"
+              style={{ width: `${pct()}%` }}
+            />
+          </div>
+        </Show>
+      </div>
+    </Show>
+  );
+}
+
 export default function ExportProgress(props) {
   const jobKind = props.jobKind || "export_graph";
   const phases = jobKind === "import_graph" ? IMPORT_PHASES : EXPORT_PHASES;
@@ -39,10 +71,35 @@ export default function ExportProgress(props) {
   let pollTimer = null;
   let stopped = false;
 
+  const progress = () => job()?.metadata?.progress || null;
+  const currentPhase = () => progress()?.phase || "";
+  const jobState = () => job()?.state || "running";
+  const hasError = () =>
+    progress()?.error || (jobState() === "discarded" && job()?.errors?.length > 0);
+  const errorMsg = () =>
+    progress()?.error || job()?.errors?.[job()?.errors.length - 1]?.error || "";
+
+  // Use a faster poll interval during byte-transfer phases
+  // (pushing/downloading) so the MB counter feels live. The
+  // building/importing phases update less frequently (section
+  // boundaries), so 10s is fine there.
+  const currentPollInterval = () => {
+    const phase = currentPhase();
+    if (phase === "pushing" || phase === "downloading") return POLL_INTERVAL_TRANSFER;
+    return POLL_INTERVAL;
+  };
+
+  const restartPoll = () => {
+    if (pollTimer) clearInterval(pollTimer);
+    const interval = currentPollInterval();
+    pollTimer = setInterval(poll, interval);
+  };
+
   const poll = async () => {
     if (stopped) return;
     try {
       const data = await api.getTask(props.jobID);
+      const prevPhase = progress()?.phase;
       setJob(data);
       setError(null);
       const isFinal = ["completed", "cancelled", "discarded"].includes(data.state);
@@ -50,6 +107,9 @@ export default function ExportProgress(props) {
         stopped = true;
         if (pollTimer) clearInterval(pollTimer);
         props.onComplete?.(data);
+      } else if (data?.metadata?.progress?.phase !== prevPhase) {
+        // Phase changed → restart with the appropriate interval.
+        restartPoll();
       }
     } catch (err) {
       setError(err.message);
@@ -58,11 +118,11 @@ export default function ExportProgress(props) {
 
   if (!props.initialJob) {
     poll();
-    pollTimer = setInterval(poll, POLL_INTERVAL);
+    pollTimer = setInterval(poll, currentPollInterval());
   } else {
     const isFinal = ["completed", "cancelled", "discarded"].includes(props.initialJob.state);
     if (!isFinal) {
-      pollTimer = setInterval(poll, POLL_INTERVAL);
+      pollTimer = setInterval(poll, currentPollInterval());
     }
   }
 
@@ -70,14 +130,6 @@ export default function ExportProgress(props) {
     stopped = true;
     if (pollTimer) clearInterval(pollTimer);
   });
-
-  const progress = () => job()?.metadata?.progress || null;
-  const currentPhase = () => progress()?.phase || "";
-  const jobState = () => job()?.state || "running";
-  const hasError = () =>
-    progress()?.error || (jobState() === "discarded" && job()?.errors?.length > 0);
-  const errorMsg = () =>
-    progress()?.error || job()?.errors?.[job()?.errors.length - 1]?.error || "";
 
   const phaseIndex = (phase) => {
     const idx = phases.findIndex((p) => p.key === phase);
@@ -127,6 +179,10 @@ export default function ExportProgress(props) {
                   >
                     {phase.label}
                   </span>
+                  {/* Live byte counter on the current phase */}
+                  <Show when={isCurrent}>
+                    <ByteProgressLine progress={progress()} />
+                  </Show>
                 </div>
               );
             }}
@@ -192,7 +248,8 @@ export default function ExportProgress(props) {
       </Show>
 
       <p class="text-xs text-gray-400 dark:text-gray-500">
-        Auto-refreshes every {POLL_INTERVAL / 1000}s. <Show when={job()?.id}>Job #{job().id}</Show>
+        Auto-refreshes every {currentPollInterval() / 1000}s.{" "}
+        <Show when={job()?.id}>Job #{job().id}</Show>
       </p>
     </div>
   );

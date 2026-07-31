@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 )
 
 // GraphMeta is a shared knowledge graph's metadata as returned by
@@ -251,7 +252,21 @@ func (c *Client) FetchGraphPresigned(ctx context.Context, graphID string) ([]byt
 // = OS default, typically /tmp). The caller should set it to a
 // mounted volume in containerized environments so a multi-GB bundle
 // doesn't fill the container's writable layer.
+// FetchGraphPresignedToStream downloads a graph bundle from the
+// registry to a temp file and returns the open file for reading.
+// This is the original no-progress variant; callers that want live
+// byte progress should use FetchGraphPresignedToStreamWithProgress.
 func (c *Client) FetchGraphPresignedToStream(ctx context.Context, graphID, tempDir string) (f *os.File, path string, size int64, err error) {
+	return c.FetchGraphPresignedToStreamWithProgress(ctx, graphID, tempDir, nil)
+}
+
+// FetchGraphPresignedToStreamWithProgress is the progress-reporting
+// variant. progressFn (when non-nil) is called periodically (every
+// ~2s of transfer) with bytes downloaded and the total (from
+// Content-Length when available, 0 when unknown). The callback is
+// invoked from the io.Copy loop via a counting writer; it's
+// best-effort and never blocks the download.
+func (c *Client) FetchGraphPresignedToStreamWithProgress(ctx context.Context, graphID, tempDir string, progressFn func(bytesTransferred, total int64)) (f *os.File, path string, size int64, err error) {
 	if c.baseURL == "" {
 		return nil, "", 0, ErrRegistryDisabled
 	}
@@ -289,8 +304,6 @@ func (c *Client) FetchGraphPresignedToStream(ctx context.Context, graphID, tempD
 		return nil, "", 0, fmt.Errorf("registry: creating import temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	// On any failure path, clean up the temp file. The caller owns
-	// the file on the happy path (they close + remove it).
 	success := false
 	defer func() {
 		if !success {
@@ -298,7 +311,28 @@ func (c *Client) FetchGraphPresignedToStream(ctx context.Context, graphID, tempD
 			_ = os.Remove(tmpName)
 		}
 	}()
-	n, err := io.Copy(tmp, resp.Body)
+
+	// Wrap the temp file in a progressCountingWriter when a
+	// callback is provided. The writer fires progressFn every
+	// ~2s during the io.Copy. resp.ContentLength gives the total
+	// when the server advertises it (0 when chunked/unknown).
+	var copyDst io.Writer = tmp
+	if progressFn != nil {
+		total := resp.ContentLength
+		lastCB := time.Now()
+		var written int64
+		copyDst = writerFunc(func(p []byte) (int, error) {
+			n, wErr := tmp.Write(p)
+			written += int64(n)
+			if n > 0 && (time.Since(lastCB) > 2*time.Second || (total > 0 && written >= total)) {
+				lastCB = time.Now()
+				defer func() { recover() }()
+				progressFn(written, total)
+			}
+			return n, wErr
+		})
+	}
+	n, err := io.Copy(copyDst, resp.Body)
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("registry: streaming graph bundle to temp file: %w", err)
 	}
@@ -313,6 +347,13 @@ func (c *Client) FetchGraphPresignedToStream(ctx context.Context, graphID, tempD
 	success = true
 	return readFile, tmpName, n, nil
 }
+
+// writerFunc is an adapter to turn a function into an io.Writer,
+// used by the progress wrapper above. Kept local to avoid importing
+// a third-party adapter.
+type writerFunc func(p []byte) (int, error)
+
+func (wf writerFunc) Write(p []byte) (int, error) { return wf(p) }
 // graphs from the registry. The q parameter is a free-text LIKE over
 // name + description; tag is an exact tag match. Either may be empty
 // (empty = no filter). Mirrors ListSources.

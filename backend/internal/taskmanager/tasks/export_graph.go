@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"time"
@@ -165,7 +166,13 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		StartedAt: now,
 	})
 
-	// Single pass: stream to a temp file.
+	// Single pass: stream to a temp file. Wrap the temp file in a
+	// countingWriter so the UI gets live "N MB written" ticks
+	// during the (potentially minutes-long) building phase. The
+	// total is unknown (the file grows as StreamBuild writes), so
+	// TotalBytes=0 and the UI shows "12.3 MB written" without a
+	// fraction. The throttledProgressWriter ensures the DB is hit
+	// at most every 2s.
 	tmp, err := os.CreateTemp(w.tempDir, "okt-export-*.json.gz")
 	if err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
@@ -176,10 +183,28 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 	}()
-	stats, err := builder.StreamBuild(ctx, meta, tmp, "")
+	pw := newThrottledProgressWriter(ctx, w.taskPool, job.ID)
+	var buildCW *countingWriter
+	var writeCloser io.Writer = tmp
+	if w.taskPool != nil {
+		buildCW = newCountingWriter(tmp, 0, func(transferred, total int64) {
+			defer func() { recover() }()
+			pw.update(GraphProgress{
+				Phase:            "building",
+				StartedAt:        now,
+				BytesTransferred: transferred,
+				TotalBytes:       total,
+			})
+		})
+		writeCloser = buildCW
+	}
+	stats, err := builder.StreamBuild(ctx, meta, writeCloser, "")
 	if err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: streaming bundle: %w", err)
+	}
+	if buildCW != nil {
+		buildCW.flush()
 	}
 	if err := tmp.Close(); err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
@@ -212,6 +237,29 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		return fmt.Errorf("export_graph: reopening temp file: %w", err)
 	}
 	defer tmpRead.Close()
+
+	// Wrap the reader in a countingReader so the UI gets live
+	// "N MB of M MB uploaded (X%)" ticks during the push. The
+	// total is known (info.Size()) so the UI can render a
+	// percentage fill bar.
+	var pushReader io.Reader = tmpRead
+	var pushCR *countingReader
+	if w.taskPool != nil {
+		pushCR = newCountingReader(tmpRead, info.Size(), func(transferred, total int64) {
+			defer func() { recover() }()
+			pw.update(GraphProgress{
+				Phase:            "pushing",
+				StartedAt:        now,
+				SourceCount:      stats.SourceCount,
+				FactCount:        stats.FactCount,
+				ConceptCount:     stats.ConceptCount,
+				BundleBytes:      info.Size(),
+				BytesTransferred: transferred,
+				TotalBytes:       total,
+			})
+		})
+		pushReader = pushCR
+	}
 	pushMeta := &registryclient.GraphMeta{
 		Name:          args.Name,
 		Description:   args.Description,
@@ -221,10 +269,13 @@ func (w *ExportGraphWorker) Work(ctx context.Context, job *river.Job[ExportGraph
 		ConceptCount:  stats.ConceptCount,
 		SchemaVersion: graph.SchemaVersion,
 	}
-	result, err := client.PushGraphStream(ctx, pushMeta, tmpRead, info.Size())
+	result, err := client.PushGraphStream(ctx, pushMeta, pushReader, info.Size())
 	if err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("export_graph: pushing graph: %w", err)
+	}
+	if pushCR != nil {
+		pushCR.flush()
 	}
 
 	log.Printf("export_graph: repo %s pushed graph %s (sources=%d facts=%d concepts=%d bytes=%d)",

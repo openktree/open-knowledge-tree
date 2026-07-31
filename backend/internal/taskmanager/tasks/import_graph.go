@@ -148,11 +148,24 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		if !ok || !client.IsConfigured() {
 			return fmt.Errorf("import_graph: registry %q is not configured", regID)
 		}
+		pw := newThrottledProgressWriter(ctx, w.taskPool, job.ID)
 		updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
 			Phase:     "downloading",
 			StartedAt: now,
 		})
-		f, path, size, err := client.FetchGraphPresignedToStream(ctx, args.RegistryGraphID, w.tempDir)
+		var dlProg func(bytesTransferred, total int64)
+		if w.taskPool != nil {
+			dlProg = func(transferred, total int64) {
+				defer func() { recover() }()
+				pw.update(GraphProgress{
+					Phase:            "downloading",
+					StartedAt:        now,
+					BytesTransferred: transferred,
+					TotalBytes:       total,
+				})
+			}
+		}
+		f, path, size, err := client.FetchGraphPresignedToStreamWithProgress(ctx, args.RegistryGraphID, w.tempDir, dlProg)
 		if err != nil {
 			progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 			return fmt.Errorf("import_graph: fetching graph bundle: %w", err)
@@ -160,14 +173,17 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 		tmpFile = f
 		tmpPath = path
 		updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
-			Phase:       "downloading",
-			StartedAt:   now,
-			BundleBytes: size,
+			Phase:        "downloading",
+			StartedAt:    now,
+			BundleBytes:  size,
+			TotalBytes:   size,
+			BytesTransferred: size,
 		})
 	case ImportSourceUpload:
 		if w.storageBackend == nil {
 			return fmt.Errorf("import_graph: storage backend not configured for upload path")
 		}
+		pw := newThrottledProgressWriter(ctx, w.taskPool, job.ID)
 		updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
 			Phase:     "downloading",
 			StartedAt: now,
@@ -184,7 +200,23 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 			return fmt.Errorf("import_graph: creating upload temp file: %w", err)
 		}
 		tmpPath = tmp.Name()
-		if _, err := io.Copy(tmp, f.Body); err != nil {
+		// Wrap the temp file in a countingWriter so the UI gets
+		// live "N MB downloaded" ticks during the upload-path
+		// download (streaming from storage to temp file). Total
+		// is unknown (streaming), so TotalBytes=0.
+		var copyDst io.Writer = tmp
+		if w.taskPool != nil {
+			copyDst = newCountingWriter(tmp, 0, func(transferred, total int64) {
+				defer func() { recover() }()
+				pw.update(GraphProgress{
+					Phase:            "downloading",
+					StartedAt:        now,
+					BytesTransferred: transferred,
+					TotalBytes:       total,
+				})
+			})
+		}
+		if _, err := io.Copy(copyDst, f.Body); err != nil {
 			_ = tmp.Close()
 			_ = os.Remove(tmpPath)
 			progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
@@ -248,19 +280,46 @@ func (w *ImportGraphWorker) Work(ctx context.Context, job *river.Job[ImportGraph
 	// slices + one batch buffer, not the full bundle (which can be
 	// 8+ GB). The v2 field order (images/bodies/source_images before
 	// facts) means no deferred fixups are needed.
+	//
+	// Wrap the reader in a countingReader so the UI gets live
+	// "N MB of M MB processed (X%)" ticks during the import. The
+	// total is the temp file size (stat'd below).
+	var importTotal int64
+	if fi, statErr := os.Stat(tmpPath); statErr == nil {
+		importTotal = fi.Size()
+	}
 	updateGraphProgress(ctx, w.taskPool, job.ID, GraphProgress{
-		Phase:     "importing",
-		StartedAt: now,
+		Phase:      "importing",
+		StartedAt:  now,
+		TotalBytes: importTotal,
 	})
+	pw := newThrottledProgressWriter(ctx, w.taskPool, job.ID)
+	var importReader io.Reader = bundleReader
+	var importCR *countingReader
+	if w.taskPool != nil {
+		importCR = newCountingReader(bundleReader, importTotal, func(transferred, total int64) {
+			defer func() { recover() }()
+			pw.update(GraphProgress{
+				Phase:            "importing",
+				StartedAt:        now,
+				BytesTransferred: transferred,
+				TotalBytes:       total,
+			})
+		})
+		importReader = importCR
+	}
 	mode := graph.ImportModeNew
 	if args.Mode == "existing" {
 		mode = graph.ImportModeExisting
 	}
 	importer := graph.NewStreamImporter(queries, w.qdrant, w.storageBackend, repoID, repo.Slug, w.embeddingModel)
-	result, err := importer.StreamImport(ctx, bundleReader, mode)
+	result, err := importer.StreamImport(ctx, importReader, mode)
 	if err != nil {
 		progressPhaseError(ctx, w.taskPool, job.ID, "failed", err.Error())
 		return fmt.Errorf("import_graph: applying bundle: %w", err)
+	}
+	if importCR != nil {
+		importCR.flush()
 	}
 
 	// Re-embed if the bundle's embedding model didn't match the local
