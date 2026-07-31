@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -189,5 +190,51 @@ func TestGraphUploadPage_NonGzipReturns4xx(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "reading bundle metadata") {
 		t.Errorf("expected 'reading bundle metadata' error in body, got: %s", rec.Body.String())
+	}
+}
+
+// TestGraphUploadPage_NoFullSpool is the regression test for the
+// streaming refactor: a successful upload must NOT create any file in
+// the configured TempDir. The old path spooled the entire bundle to a
+// temp file (which filled the VM's disk on large bundles); the new
+// path streams straight to storage via multipart.Reader + a replay
+// head buffer, with no full-disk spool. We assert the TempDir is
+// empty after a successful upload — locking in the no-spool invariant.
+func TestGraphUploadPage_NoFullSpool(t *testing.T) {
+	tempDir := t.TempDir()
+	s, err := store.NewSQLiteStore("file::memory:?cache=shared&_pragma=busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("creating sqlite: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.CreateRepository(context.Background(), &model.Repository{
+		ID: "default", Name: "Test", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("creating default repo: %v", err)
+	}
+	rs := &recordingStorage{}
+	reg := service.New(s, rs, 3600, 0, 0, false)
+	h := NewUIHandler(s, reg, &config.AuthConfig{JWTSecret: "test"}, &config.EmailValidationConfig{}, &mailer.NoopMailer{})
+	h.SetUploadConfig(&config.GraphUploadConfig{
+		MaxSizeBytes: 1 << 20,
+		TempDir:      tempDir,
+	})
+
+	bundle := makeBundleGzipUI(t)
+	req := uiUploadRequest(t, bundle)
+	rec := httptest.NewRecorder()
+	h.GraphUploadPage(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302 on success, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The TempDir must be empty — the streaming path never writes the
+	// full bundle to disk. Any file here means the spool regressed.
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("reading temp dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected no files in TempDir (no-spool invariant), found %d: %v", len(entries), entries)
 	}
 }

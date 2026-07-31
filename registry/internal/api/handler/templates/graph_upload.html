@@ -71,8 +71,9 @@
 
     <div class="card">
         <p class="text-sm">
-            The upload streams the bundle to a temp file, then streams it to
-            storage — memory use stays bounded even for 100s-of-GB bundles. A
+            The upload streams the bundle directly to storage — memory use
+            stays bounded (one 64 MB part at a time) even for 100s-of-GB
+            bundles, with no full-disk spool. A
             re-upload of the same bundle (matching name + sha256) refreshes the
             existing graph's metadata instead of creating a duplicate.
         </p>
@@ -124,7 +125,11 @@
 
         var xhr = new XMLHttpRequest();
         xhr.open('POST', form.action, true);
-        xhr.responseType = 'document'; // the server returns HTML (redirect or re-rendered form)
+        // Leave responseType as the default ("") so xhr.responseText
+        // is readable. Setting responseType='document' makes
+        // responseText throw InvalidStateError per the XHR spec, which
+        // crashed the error branch below (the server returns a
+        // re-rendered HTML form on error, not a parsed document).
 
         // Phase 1: upload to server (byte-progress via upload.onprogress).
         xhr.upload.onprogress = function (ev) {
@@ -145,37 +150,64 @@
             showPhase('Processing — extracting metadata and streaming to storage…');
         };
 
+        function resetFormState() {
+            form.classList.remove('uploading');
+            wrap.style.display = 'none';
+            btn.textContent = 'Upload';
+        }
+
         xhr.onload = function () {
             // The server responds with a 302 redirect (success) or a
-            // re-rendered form (error). XHR follows the redirect
-            // automatically, so we land on the graphs list HTML on
-            // success. Replace the current page with the response.
+            // re-rendered form (error, non-2xx status). XHR follows the
+            // redirect automatically, so a success lands here as the
+            // final 200 from the graphs list.
             if (xhr.status >= 200 && xhr.status < 400) {
                 // Success: the browser followed the 302 to
                 // /ui/graphs?uploaded=1. Navigate there so the URL
                 // bar and nav state are correct.
                 window.location.href = '/ui/graphs?uploaded=1';
-            } else {
-                // Error: the response is the re-rendered form with
-                // an error message. Replace the page so the user
-                // sees it and can retry.
-                document.open();
-                document.write(xhr.responseText);
-                document.close();
+                return;
             }
+            // Error: the response is the re-rendered form with an
+            // error message. Parse the HTML, extract the error text,
+            // and inject it into the current page's form so the user
+            // sees the failure in place and can retry without a full
+            // page reload.
+            var msg = '';
+            try {
+                var doc = new DOMParser().parseFromString(xhr.responseText, 'text/html');
+                var errEl = doc.querySelector('.error');
+                if (errEl) msg = errEl.textContent.trim();
+            } catch (e) { /* fall through to the replace fallback */ }
+            if (msg) {
+                // Surface the server's error message in the existing
+                // form's error slot (or create one above the form),
+                // then reset the form state for a retry.
+                var slot = document.querySelector('.error');
+                if (!slot) {
+                    slot = document.createElement('div');
+                    slot.className = 'error';
+                    form.parentNode.insertBefore(slot, form);
+                }
+                slot.textContent = msg;
+                resetFormState();
+                return;
+            }
+            // Fallback: if we couldn't extract a message, replace the
+            // whole page with the re-rendered form so the user at
+            // least sees the server's response.
+            document.open();
+            document.write(xhr.responseText);
+            document.close();
         };
 
         xhr.onerror = function () {
-            form.classList.remove('uploading');
-            wrap.style.display = 'none';
-            btn.textContent = 'Upload';
+            resetFormState();
             alert('Upload failed: network error. The connection was lost during transfer.');
         };
 
         xhr.onabort = function () {
-            form.classList.remove('uploading');
-            wrap.style.display = 'none';
-            btn.textContent = 'Upload';
+            resetFormState();
         };
 
         var fd = new FormData(form);

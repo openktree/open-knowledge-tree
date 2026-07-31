@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -190,4 +191,120 @@ func ExtractGraphMetaFromTempFile(ctx context.Context, tmpPath string) (*model.G
 		SHA256:        bm.SHA256,
 		SchemaVersion: bm.SchemaVersion,
 	}, nil
+}
+
+// metaPeekSize is how many leading bytes of the bundle stream we buffer
+// for the gzip+json metadata parse. The v2 wire format puts
+// schema_version then metadata as the first two fields, so the
+// metadata object is in the first few KB of the gzip stream — 1 MB is
+// far more headroom than any real bundle needs, and it's the only
+// memory the streaming upload path spends regardless of bundle size.
+// The remainder of the bundle (the 100s-of-GB bulk) is never buffered
+// here; it flows straight to storage via the io.MultiReader built from
+// the returned replayHead + the unread part body.
+const metaPeekSize = 1 << 20 // 1 MB
+
+// ExtractGraphMetaFromReader reads the leading bytes of a gzipped
+// graph bundle stream, extracts the metadata section (the same fields
+// ExtractGraphMetaFromTempFile returns), and returns:
+//   - the parsed GraphMeta,
+//   - a replayHead buffer holding the bytes the parse consumed from r
+//     (so the caller can build io.MultiReader(replayHead, r) and
+//     stream the full bundle to storage without re-reading or
+//     spooling).
+//
+// This is the streaming variant of ExtractGraphMetaFromTempFile: it
+// takes an io.Reader (e.g. a multipart file-part body) instead of a
+// file path, and never writes the bundle to disk. Peak memory is
+// metaPeekSize (1 MB) + the gzip reader's internal buffers; the rest
+// of the bundle stays unbuffered and flows through the replayHead +
+// the remaining r to the downstream storage stream.
+//
+// Implementation: an io.TeeReader captures every byte the gzip+json
+// parse reads from r into replayHead. The gzip reader consumes bytes
+// from r in chunks (it has its own internal lookahead buffer), so the
+// bytes it reads but doesn't logically consume (the post-metadata
+// portion it buffered past the metadata object's end) are also
+// captured in replayHead — which is correct, because those bytes
+// belong to the bundle body and must be replayed to storage. After the
+// parse returns, replayHead holds exactly the bytes read from r, and r
+// is positioned at the first byte NOT yet read; concatenating
+// replayHead with the remainder of r reconstructs the full original
+// bundle byte-for-byte.
+//
+// The replayHead is capped at metaPeekSize bytes. The metadata section
+// is always within the first few KB (the v2 format puts it second,
+// right after schema_version), so the cap never truncates a valid
+// bundle. If the parse somehow reads more than metaPeekSize (a
+// malformed bundle with a huge metadata value or a non-v2 field
+// order), the parse fails with the gzip/json error rather than
+// silently truncating — the cap is a safety bound, not a functional
+// limit.
+//
+// Errors mirror ExtractGraphMetaFromTempFile: non-gzip → "opening
+// gzip"; not a JSON object → "expected object"; no "metadata" key →
+// ErrMetadataNotFound.
+func ExtractGraphMetaFromReader(ctx context.Context, r io.Reader) (*model.GraphMeta, *bytes.Buffer, error) {
+	replayHead := new(bytes.Buffer)
+	// The TeeReader mirrors every byte read from r into replayHead.
+	// A limitedReader caps the capture at metaPeekSize so a malformed
+	// bundle can't OOM the registry; the gzip reader will then hit
+	// EOF on the limited reader and return a parse error rather than
+	// reading forever.
+	limited := &io.LimitedReader{R: r, N: metaPeekSize}
+	teed := io.TeeReader(limited, replayHead)
+
+	gz, err := gzip.NewReader(teed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening gzip: %w", err)
+	}
+	defer gz.Close()
+
+	dec := json.NewDecoder(gz)
+	t, err := dec.Token()
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading open token: %w", err)
+	}
+	if d, ok := t.(json.Delim); !ok || d != '{' {
+		return nil, nil, fmt.Errorf("expected object, got %v", t)
+	}
+
+	var bm bundleMetadata
+	found := false
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading key: %w", err)
+		}
+		key, ok := t.(string)
+		if !ok {
+			return nil, nil, fmt.Errorf("non-string key %v", t)
+		}
+		if key == "metadata" {
+			if err := dec.Decode(&bm); err != nil {
+				return nil, nil, fmt.Errorf("decoding metadata: %w", err)
+			}
+			found = true
+			break
+		}
+		var discard json.RawMessage
+		if err := dec.Decode(&discard); err != nil {
+			return nil, nil, fmt.Errorf("skipping %q: %w", key, err)
+		}
+	}
+	if !found {
+		return nil, nil, ErrMetadataNotFound
+	}
+
+	return &model.GraphMeta{
+		Name:          bm.Name,
+		Description:   bm.Description,
+		Owner:         bm.Owner,
+		Tags:          bm.Tags,
+		SourceCount:   bm.SourceCount,
+		FactCount:     bm.FactCount,
+		ConceptCount:  bm.ConceptCount,
+		SHA256:        bm.SHA256,
+		SchemaVersion: bm.SchemaVersion,
+	}, replayHead, nil
 }

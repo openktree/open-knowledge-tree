@@ -354,6 +354,69 @@ func (r *Registry) PushGraphFromFile(ctx context.Context, meta *model.GraphMeta,
 	return &model.GraphPushResult{GraphID: graphID, New: created}, nil
 }
 
+// PushGraphFromReader is the streaming variant of PushGraphFromFile:
+// it indexes a graph bundle from an io.Reader (the multipart file-part
+// body, already parsed for metadata by the caller via
+// ExtractGraphMetaFromReader) without spooling the full bundle to
+// disk. The caller passes the replayHead (the leading bytes the
+// metadata parse consumed) plus the remaining body reader, combined
+// via io.MultiReader(replayHead, body), so storage receives the full
+// original bundle byte-for-byte.
+//
+// Mirrors PushGraphFromFile's contract — resolve the graph id (dedup
+// by (name, sha256) when the caller omits one), stream the body to
+// storage, index the metadata row — with the temp file replaced by an
+// io.Reader. Peak memory is one multipart storage part (64 MB),
+// bounded independently of bundle size; the bundle never lands on
+// disk. This is the path that scales to 100s-of-GB bundles, which the
+// temp-file spool could not (it filled the VM's disk).
+func (r *Registry) PushGraphFromReader(ctx context.Context, meta *model.GraphMeta, body io.Reader) (*model.GraphPushResult, error) {
+	if err := acquire(ctx, r.pushSem); err != nil {
+		return nil, fmt.Errorf("waiting for push concurrency slot: %w", err)
+	}
+	defer release(r.pushSem)
+
+	graphID := meta.ID
+	if graphID == "" {
+		existing, err := r.findExistingGraph(ctx, meta.Name, meta.SHA256)
+		if err != nil {
+			return nil, fmt.Errorf("searching for existing graph: %w", err)
+		}
+		if existing != nil {
+			graphID = existing.ID
+		} else {
+			graphID = uuid.New().String()
+		}
+	}
+	meta.ID = graphID
+	if meta.SchemaVersion == 0 {
+		meta.SchemaVersion = graphSchemaVersion
+	}
+
+	s3Key := GraphKey(graphID)
+	meta.S3Key = s3Key
+
+	// Stream the body straight to storage — no temp file, no disk.
+	// S3 multipart reads one 64 MB part at a time; the bundle body
+	// (the io.MultiReader of replayHead + remaining part) is consumed
+	// strictly sequentially. A failure returns an error to the caller
+	// (no stale metadata row gets indexed); the object is overwrite-
+	// safe so a client retry rewrites the same key.
+	if _, err := r.storage.StoreStream(ctx, s3Key, body, "application/gzip"); err != nil {
+		return nil, fmt.Errorf("storing graph bundle: %w", err)
+	}
+
+	now := time.Now().UTC()
+	meta.CreatedAt = now
+	meta.UpdatedAt = now
+	if err := r.store.IndexGraph(ctx, meta); err != nil {
+		return nil, fmt.Errorf("indexing graph: %w", err)
+	}
+
+	created := meta.ID == graphID && graphID != ""
+	return &model.GraphPushResult{GraphID: graphID, New: created}, nil
+}
+
 // CleanupMultipartUploads lists and aborts orphaned multipart uploads
 // in the storage backend. Only the S3 backend supports multipart
 // uploads; a filesystem/local backend returns an error so the HTTP

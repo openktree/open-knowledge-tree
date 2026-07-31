@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -706,83 +705,17 @@ func (h *UIHandler) GraphUploadPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST: the actual upload.
-	maxBytes := h.uploadCfg.MaxSizeBytes
-	tempDir := h.uploadCfg.TempDir
-	if maxBytes > 0 {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-	}
-	if err := r.ParseMultipartForm(1 << 20); err != nil {
-		msg := "parsing multipart form: " + err.Error()
-		if strings.Contains(err.Error(), "too large") {
-			msg = "upload exceeds the configured size limit"
-		}
-		log.Printf("ui graph upload: parse multipart form: %v", err)
-		d.Error = msg
-		h.renderError(w, http.StatusUnprocessableEntity, "graph_upload.html", d)
-		return
-	}
-	fhs, ok := r.MultipartForm.File["bundle"]
-	if !ok || len(fhs) == 0 {
-		d.Error = "bundle file is required"
-		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
-		return
-	}
-	file, err := fhs[0].Open()
-	if err != nil {
-		log.Printf("ui graph upload: open bundle part: %v", err)
-		d.Error = "opening bundle file part: " + err.Error()
-		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
-		return
-	}
-	defer file.Close()
-	defer func() { _ = r.MultipartForm.RemoveAll() }()
-
-	overrides := uploadOverrides{
-		Name:        strings.TrimSpace(formValue(r.MultipartForm.Value, "name")),
-		Description: strings.TrimSpace(formValue(r.MultipartForm.Value, "description")),
-		Owner:       strings.TrimSpace(formValue(r.MultipartForm.Value, "owner")),
-		TagsJSON:    strings.TrimSpace(formValue(r.MultipartForm.Value, "tags")),
-	}
-
-	tmpPath, err := service.SpoolUploadToTempFile(file, tempDir, maxBytes)
-	if err != nil {
-		if errors.Is(err, service.ErrUploadTooLarge) {
-			d.Error = "upload exceeds the configured size limit"
-		} else {
-			log.Printf("ui graph upload: spool to temp file: %v", err)
-			d.Error = err.Error()
-		}
-		h.renderError(w, http.StatusUnprocessableEntity, "graph_upload.html", d)
-		return
-	}
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	bundleMeta, err := service.ExtractGraphMetaFromTempFile(r.Context(), tmpPath)
-	if err != nil {
-		log.Printf("ui graph upload: extract metadata: %v", err)
-		d.Error = "reading bundle metadata: " + err.Error()
-		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
-		return
-	}
-	applyOverrides(bundleMeta, overrides)
-	if email := auth.RequestUserEmail(r.Context()); email != "" {
-		bundleMeta.Owner = email
-	}
-	if bundleMeta.Owner == "" {
-		bundleMeta.Owner = "anonymous"
-	}
-	if bundleMeta.Name == "" {
-		d.Error = "name is required (set it in the bundle metadata or the name form field)"
-		h.renderError(w, http.StatusBadRequest, "graph_upload.html", d)
-		return
-	}
-
-	result, err := h.svc.PushGraphFromFile(r.Context(), bundleMeta, tmpPath)
-	if err != nil {
-		log.Printf("ui graph upload: %v", err)
-		d.Error = "Failed to upload graph: " + err.Error()
-		h.renderError(w, http.StatusInternalServerError, "graph_upload.html", d)
+	// POST: the actual upload. Stream the bundle straight to storage
+	// via the shared processStreamedUpload core (no full-disk spool):
+	// multipart.Reader drives the file part as an io.Reader, the
+	// leading bytes are peeked for metadata, and the full bundle
+	// streams to S3 one 64 MB part at a time. The 100s-of-GB bulk
+	// never touches disk.
+	result, status, errMsg := processStreamedUpload(h.svc, h.uploadCfg, r)
+	if errMsg != "" {
+		log.Printf("ui graph upload: %s", errMsg)
+		d.Error = errMsg
+		h.renderError(w, status, "graph_upload.html", d)
 		return
 	}
 	_ = result // success → redirect to the graphs list

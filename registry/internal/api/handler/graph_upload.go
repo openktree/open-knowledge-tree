@@ -3,9 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/openktree/knowledge-registry/internal/auth"
@@ -25,141 +28,210 @@ func (h *GraphHandler) SetUploadConfig(cfg *config.GraphUploadConfig) {
 // admin-only file-upload path for graph bundles. A multipart form with
 // a "bundle" file part (a .json.gz graph bundle produced by OKT's
 // export) plus optional "name", "description", "tags" (JSON array),
-// "owner" form fields. The registry spools the file to a temp file,
-// extracts the bundle's metadata section without buffering the whole
-// file in memory, streams the temp file to storage, and indexes the
-// metadata row. Returns 201 + {graph_id, new}.
+// "owner" form fields.
 //
-// Memory is bounded regardless of bundle size: the bundle body is
-// streamed straight to a single temp file (32 KB copy buffer), the
-// metadata parse reads only the small metadata section, and storage's
-// multipart upload reads one 64 MB part at a time. The 100s-of-GB bulk
-// lives only on disk.
+// Streaming path (no full-disk spool): the handler drives
+// multipart.Reader directly — reading text form fields as small parts,
+// then the "bundle" file part as an io.Reader. It peeks the bundle's
+// leading bytes via ExtractGraphMetaFromReader (gzip + json, stops
+// after the metadata section — the first few KB), captures the
+// consumed head as a replay buffer, and streams the full bundle to
+// storage via PushGraphFromReader(io.MultiReader(replayHead, part)).
+// The 100s-of-GB bulk never touches disk; peak memory is the 1 MB
+// metadata peek + one 64 MB S3 multipart part.
 //
 // Admin-only via the router's RequireRole("admin") group. The owner
 // field defaults to the authenticated admin's email (falling back to
 // the bundle's metadata.owner or "anonymous"), mirroring Push.
-//
-// Config: cfg.GraphUpload.MaxSizeBytes (0 = unlimited) bounds the
-// spool; cfg.GraphUpload.TempDir controls where the temp file lives
-// (operators point this at a mounted volume for large uploads).
+// Returns 201 + {graph_id, new}.
 func (h *GraphHandler) UploadFromFile(w http.ResponseWriter, r *http.Request) {
-	if h.uploadCfg == nil {
-		writeError(w, http.StatusServiceUnavailable, "graph upload not configured")
+	result, status, errMsg := processStreamedUpload(h.svc, h.uploadCfg, r)
+	if errMsg != "" {
+		log.Printf("graph upload: %s", errMsg)
+		writeError(w, status, errMsg)
 		return
 	}
-	maxBytes := h.uploadCfg.MaxSizeBytes
-	tempDir := h.uploadCfg.TempDir
+	writeJSON(w, http.StatusCreated, result)
+}
 
-	// Parse the multipart form. ParseMultipartForm with a 1 MB
-	// in-memory threshold spills the bundle file to the parser's own
-	// temp file and exposes it via FileHeader.Open. We re-spool that
-	// to our own temp file below; the double-spool is acceptable (the
-	// alternative — driving NextPart manually — complicates the text-
-	// field parsing and gains ~one disk write for a 100 GB upload).
-	// A single spool would be ideal, but KISS: the parser's temp file
-	// lives in the OS temp dir, ours lives in the configured volume.
-	if maxBytes > 0 {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+// processStreamedUpload is the shared streaming-upload core used by
+// both the API handler (GraphHandler.UploadFromFile) and the UI
+// handler (UIHandler.GraphUploadPage). It drives multipart.Reader,
+// extracts the bundle metadata from the leading bytes without
+// spooling the full file to disk, and streams the bundle to storage.
+// Returns (result, 0, "") on success — the caller writes the response
+// shape (JSON vs redirect) appropriate to its surface. On failure
+// returns (nil, status, errMsg) and the caller renders the error. The
+// caller is responsible for logging errMsg when non-empty.
+func processStreamedUpload(svc *service.Registry, cfg *config.GraphUploadConfig, r *http.Request) (*model.GraphPushResult, int, string) {
+	if cfg == nil {
+		return nil, http.StatusServiceUnavailable, "graph upload not configured"
 	}
-	if err := r.ParseMultipartForm(1 << 20); err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, http.ErrMissingBoundary) {
-			status = http.StatusBadRequest
-		}
-		if strings.Contains(err.Error(), "too large") {
-			status = http.StatusRequestEntityTooLarge
-		}
-		writeError(w, status, "parsing multipart form: "+err.Error())
-		return
-	}
-	fhs, ok := r.MultipartForm.File["bundle"]
-	if !ok || len(fhs) == 0 {
-		writeError(w, http.StatusBadRequest, "bundle file is required")
-		return
-	}
-	file, err := fhs[0].Open()
+	maxBytes := cfg.MaxSizeBytes
+
+	// Parse the multipart boundary from the Content-Type header and
+	// build a streaming multipart.Reader. Unlike ParseMultipartForm
+	// (which buffers file parts to the parser's own temp file and
+	// forces a re-spool), multipart.Reader.NextPart returns each part
+	// as an io.Reader that streams the body without buffering it —
+	// the single-spool-free path.
+	_, mr, err := parseMultipartStream(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "opening bundle file part: "+err.Error())
-		return
-	}
-	defer file.Close()
-	// RemoveAll cleans up the parser's temp file for the bundle
-	// part. Best-effort: a failure here leaks a temp file but the
-	// upload itself has already succeeded by the time this runs.
-	defer func() { _ = r.MultipartForm.RemoveAll() }()
-
-	// Optional form-field overrides. Non-empty fields win over the
-	// bundle's metadata; empty fields fall back to the bundle.
-	overrides := uploadOverrides{
-		Name:        strings.TrimSpace(formValue(r.MultipartForm.Value, "name")),
-		Description: strings.TrimSpace(formValue(r.MultipartForm.Value, "description")),
-		Owner:       strings.TrimSpace(formValue(r.MultipartForm.Value, "owner")),
-		TagsJSON:    strings.TrimSpace(formValue(r.MultipartForm.Value, "tags")),
+		return nil, http.StatusBadRequest, "parsing multipart boundary: " + err.Error()
 	}
 
-	// Spool the bundle to a temp file on the configured volume. The
-	// spool is the single on-disk copy the rest of the path reads
-	// from (metadata parse + storage stream). Cleanup is deferred.
-	tmpPath, err := service.SpoolUploadToTempFile(file, tempDir, maxBytes)
+	overrides := uploadOverrides{}
+	var bundlePart io.Reader
+	for {
+		part, perr := mr.NextPart()
+		if perr == io.EOF {
+			break
+		}
+		if perr != nil {
+			return nil, http.StatusBadRequest, "reading multipart part: " + perr.Error()
+		}
+		formName := part.FormName()
+		if formName == "" {
+			continue
+		}
+		if formName == "bundle" {
+			// The bundle file part — keep the reader and stop iterating
+			// parts. multipart.Reader.NextPart skips past the current
+			// part's body when called again, which would discard the
+			// bundle bytes before we stream them to storage. The
+			// metadata extraction + storage stream reads from this
+			// part reader directly; any remaining text fields after
+			// the bundle are not supported (the upload form puts text
+			// fields first, matching the convention).
+			bundlePart = part
+			break
+		}
+		// Text form field — read the (small) value into the overrides.
+		val, verr := io.ReadAll(io.LimitReader(part, 1<<20))
+		if verr != nil {
+			return nil, http.StatusBadRequest, "reading form field " + formName + ": " + verr.Error()
+		}
+		applyField(&overrides, formName, strings.TrimSpace(string(val)))
+	}
+	if bundlePart == nil {
+		return nil, http.StatusBadRequest, "bundle file is required"
+	}
+
+	// Cap the bundle read at maxBytes (0 = unlimited). A limitedReader
+	// returns ErrUploadTooLarge when exceeded; the metadata parse and
+	// the storage stream both read through it so the cap is enforced
+	// regardless of bundle size.
+	bodyReader := bundlePart
+	if maxBytes > 0 {
+		bodyReader = &limitedUploadReader{R: bundlePart, N: maxBytes}
+	}
+
+	// Extract the bundle's metadata from the leading bytes (gzip +
+	// json, stops after the metadata object). The TeeReader inside
+	// captures the consumed head so the caller can replay it to
+	// storage. The rest of the bundle (the 100s-of-GB bulk) stays in
+	// bodyReader, unread.
+	bundleMeta, replayHead, err := service.ExtractGraphMetaFromReader(r.Context(), bodyReader)
 	if err != nil {
 		if errors.Is(err, service.ErrUploadTooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, err.Error())
-			return
+			return nil, http.StatusRequestEntityTooLarge, "upload exceeds the configured size limit"
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	// Extract the bundle's metadata section (name/description/tags/
-	// counts/sha256/schema_version) by streaming the temp file
-	// through gzip + json.Decoder and stopping after the metadata
-	// object. The rest of the bundle (the 100s-of-GB bulk) is never
-	// touched. Peak parse memory is the small metadata struct.
-	bundleMeta, err := service.ExtractGraphMetaFromTempFile(r.Context(), tmpPath)
-	if err != nil {
 		if errors.Is(err, service.ErrMetadataNotFound) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, http.StatusBadRequest, err.Error()
 		}
-		writeError(w, http.StatusBadRequest, "reading bundle metadata: "+err.Error())
-		return
+		return nil, http.StatusBadRequest, "reading bundle metadata: " + err.Error()
 	}
 
-	// Apply caller overrides. The admin can rename a bundle on
-	// upload; non-empty fields win, empty fields fall back to the
-	// bundle's own metadata.
 	applyOverrides(bundleMeta, overrides)
-
-	// Owner: admin email from the session wins; otherwise the
-	// bundle's owner; otherwise "anonymous". Mirrors Push.
 	if email := auth.RequestUserEmail(r.Context()); email != "" {
 		bundleMeta.Owner = email
 	}
 	if bundleMeta.Owner == "" {
 		bundleMeta.Owner = "anonymous"
 	}
-
-	// Require a name (the registry indexes by name). The bundle's
-	// metadata.name is the source; an override may empty it.
 	if bundleMeta.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required (set it in the bundle metadata or the name form field)")
-		return
+		return nil, http.StatusBadRequest, "name is required (set it in the bundle metadata or the name form field)"
 	}
 
-	result, err := h.svc.PushGraphFromFile(r.Context(), bundleMeta, tmpPath)
+	// Stream the full bundle to storage: the replayed head (the
+	// leading bytes the metadata parse consumed) + the remaining
+	// unread body. Storage's multipart upload reads one 64 MB part at
+	// a time; the bundle never lands on disk.
+	result, err := svc.PushGraphFromReader(r.Context(), bundleMeta, io.MultiReader(replayHead, bodyReader))
 	if err != nil {
-		log.Printf("graph upload: %v", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		// The size cap (limitedUploadReader) surfaces as
+		// ErrUploadTooLarge wrapped inside the storage error. Map
+		// it to 413 so the client gets a clear "too large" signal
+		// rather than a generic 500.
+		if errors.Is(err, service.ErrUploadTooLarge) {
+			return nil, http.StatusRequestEntityTooLarge, "upload exceeds the configured size limit"
+		}
+		return nil, http.StatusInternalServerError, "Failed to upload graph: " + err.Error()
 	}
-	writeJSON(w, http.StatusCreated, result)
+	return result, 0, ""
+}
+
+// parseMultipartStream extracts the boundary from the request's
+// Content-Type and returns a streaming *multipart.Reader. Unlike
+// (*http.Request).ParseMultipartForm, it does not buffer file parts
+// to disk — NextPart returns each part as an io.Reader.
+func parseMultipartStream(r *http.Request) (string, *multipart.Reader, error) {
+	ct := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "multipart/form-data") {
+		return "", nil, errors.New("request is not multipart/form-data")
+	}
+	_, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return "", nil, fmt.Errorf("parsing content-type: %w", err)
+	}
+	boundary, ok := params["boundary"]
+	if !ok || boundary == "" {
+		return "", nil, errors.New("missing multipart boundary")
+	}
+	return boundary, multipart.NewReader(r.Body, boundary), nil
+}
+
+// applyField sets one override field by form-name. Used by
+// processStreamedUpload as it reads text form fields from the
+// multipart stream.
+func applyField(ov *uploadOverrides, name, value string) {
+	switch name {
+	case "name":
+		ov.Name = value
+	case "description":
+		ov.Description = value
+	case "owner":
+		ov.Owner = value
+	case "tags":
+		ov.TagsJSON = value
+	}
+}
+
+// limitedUploadReader is an io.Reader that returns ErrUploadTooLarge
+// once more than N bytes have been read, instead of silently
+// truncating (io.LimitReader's behavior). Used to enforce the upload
+// size cap on the streaming bundle read without buffering the whole
+// file.
+type limitedUploadReader struct {
+	R io.Reader
+	N int64
+}
+
+func (l *limitedUploadReader) Read(p []byte) (int, error) {
+	if l.N <= 0 {
+		return 0, service.ErrUploadTooLarge
+	}
+	if int64(len(p)) > l.N {
+		p = p[:l.N]
+	}
+	n, err := l.R.Read(p)
+	l.N -= int64(n)
+	return n, err
 }
 
 // uploadOverrides carries the optional form-field overrides the admin
 // can supply alongside the bundle file. Non-empty fields win over the
-// bundle's extracted metadata.
+// bundle-extracted metadata.
 type uploadOverrides struct {
 	Name        string
 	Description string
@@ -188,14 +260,4 @@ func applyOverrides(meta *model.GraphMeta, ov uploadOverrides) {
 			meta.Tags = tags
 		}
 	}
-}
-
-// formValue returns the first value for key from a multipart form's
-// Value map (map[string][]string has no .Get). Empty when the key is
-// absent.
-func formValue(values map[string][]string, key string) string {
-	if vs, ok := values[key]; ok && len(vs) > 0 {
-		return vs[0]
-	}
-	return ""
 }

@@ -232,10 +232,12 @@ func TestGraphUpload_TagsOverride(t *testing.T) {
 
 func TestGraphUpload_OversizedRejected(t *testing.T) {
 	env := newUploadTestEnv(t)
-	// Build a gzipped bundle whose compressed size exceeds the 1 KB
+	// Build a gzipped bundle whose compressed size exceeds a 512 B
 	// cap. base64 of high-entropy bytes is JSON-safe and defeats
 	// gzip's repetition-based compression, so the gzipped bundle
-	// stays close to the raw size.
+	// stays close to the raw size (~990 B compressed). The streaming
+	// path caps the compressed bytes read from the part body, so the
+	// cap must be below the compressed size to trigger 413.
 	entropy := make([]byte, 4_000)
 	for i := range entropy {
 		entropy[i] = byte(i*7 + 3) // low repetition → poor gzip ratio
@@ -243,7 +245,7 @@ func TestGraphUpload_OversizedRejected(t *testing.T) {
 	enc := base64.StdEncoding.EncodeToString(entropy) // ~5.3 KB, JSON-safe
 	big := `"sources":[{"idx":0,"url":"` + enc + `","kind":"web","status":"done"}]`
 	bundle := makeBundleGzip(t, bundleMetaJSON{Name: "Big"}, big)
-	env.handler.uploadCfg.MaxSizeBytes = 1 << 10 // 1 KB cap → 413
+	env.handler.uploadCfg.MaxSizeBytes = 1 << 9 // 512 B cap → below the ~990 B bundle → 413
 	req := uploadRequest(t, bundle, nil)
 	rec := httptest.NewRecorder()
 	env.handler.UploadFromFile(rec, req)
