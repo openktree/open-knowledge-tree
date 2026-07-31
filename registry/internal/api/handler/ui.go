@@ -111,6 +111,12 @@ type pageData struct {
 	// Query persists the current free-text search back into the
 	// form so the user can refine it without retyping.
 	Query string
+	// UploadMaxBytes is the configured graph-upload size limit
+	// (0 = unlimited), surfaced to the graph_upload.html template
+	// so the client-side progress JS can pre-reject oversized
+	// files before the POST and compute a byte-accurate progress
+	// percentage. Set by GraphUploadPage from uploadCfg.MaxSizeBytes.
+	UploadMaxBytes int64
 }
 
 func (h *UIHandler) render(w http.ResponseWriter, tmplName string, data pageData) {
@@ -679,6 +685,7 @@ func (h *UIHandler) GraphUploadPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
+		d.UploadMaxBytes = h.uploadCfg.MaxSizeBytes
 		h.render(w, "graph_upload.html", d)
 		return
 	}

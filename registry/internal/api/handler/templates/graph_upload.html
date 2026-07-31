@@ -4,7 +4,34 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Upload Graph — Knowledge Registry</title>
-    <style>{{template "styles" .}}</style>
+    <style>{{template "styles" .}}
+    .progress-wrap { margin-top: 1rem; }
+    .progress-bar {
+        width: 100%; height: 1.5rem; border: 1px solid #ccc;
+        border-radius: 4px; overflow: hidden; background: #f5f5f5;
+    }
+    .progress-fill {
+        height: 100%; width: 0%; background: #1a1a2e;
+        transition: width .15s linear; color: #fff;
+        display: flex; align-items: center; justify-content: center;
+        font-size: .8rem; white-space: nowrap; overflow: hidden;
+    }
+    .progress-fill.indeterminate {
+        width: 30%; animation: slide 1.2s ease-in-out infinite;
+    }
+    @keyframes slide { 0%{margin-left:-30%} 100%{margin-left:100%} }
+    .progress-status { font-size: .85rem; color: #666; margin-top: .4rem; }
+    .progress-phase { font-weight: 600; color: #1a1a2e; }
+    #uploadForm.uploading button { opacity: .5; pointer-events: none; }
+    #uploadForm.uploading input { opacity: .5; pointer-events: none; }
+    .spinner {
+        display: inline-block; width: 1rem; height: 1rem;
+        border: 2px solid #ccc; border-top-color: #1a1a2e;
+        border-radius: 50%; animation: spin .8s linear infinite;
+        vertical-align: -2px; margin-right: .3rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
 </head>
 <body>
 {{template "navbar" .}}
@@ -22,7 +49,7 @@
             and source/fact/concept counts automatically; the fields below override
             the bundle's metadata when filled in.
         </p>
-        <form method="POST" action="/ui/graphs/upload" enctype="multipart/form-data">
+        <form id="uploadForm" method="POST" action="/ui/graphs/upload" enctype="multipart/form-data">
             <label for="bundle">Bundle file (.json.gz)</label>
             <input type="file" name="bundle" id="bundle" accept=".json.gz,application/gzip" required>
             <label for="name">Name <span class="text-sm">(optional — overrides the bundle's name)</span></label>
@@ -31,7 +58,14 @@
             <input type="text" name="description" id="description" placeholder="left blank → use the bundle's description">
             <label for="tags">Tags <span class="text-sm">(optional JSON array, e.g. ["alpha","beta"])</span></label>
             <input type="text" name="tags" id="tags" placeholder='left blank → use the bundle tags'>
-            <button type="submit">Upload</button>
+            <button type="submit" id="uploadBtn">Upload</button>
+
+            <div class="progress-wrap" id="progressWrap" style="display:none">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-status" id="progressStatus"></div>
+            </div>
         </form>
     </div>
 
@@ -44,5 +78,110 @@
         </p>
     </div>
 </div>
+
+<script>
+(function () {
+    var form = document.getElementById('uploadForm');
+    if (!form) return;
+    var btn = document.getElementById('uploadBtn');
+    var wrap = document.getElementById('progressWrap');
+    var fill = document.getElementById('progressFill');
+    var status = document.getElementById('progressStatus');
+    var maxBytes = {{if .UploadMaxBytes}}{{.UploadMaxBytes}}{{else}}0{{end}};
+
+    function fmtBytes(n) {
+        if (n < 1024) return n + ' B';
+        if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+        if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+        return (n / 1073741824).toFixed(2) + ' GB';
+    }
+
+    function showPhase(label) {
+        fill.className = 'progress-fill indeterminate';
+        fill.textContent = '';
+        status.innerHTML = '<span class="spinner"></span><span class="progress-phase">' + label + '</span>';
+    }
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+
+        var fileInput = document.getElementById('bundle');
+        if (!fileInput.files || fileInput.files.length === 0) {
+            form.submit(); // let the browser's required-validation fire
+            return;
+        }
+        var file = fileInput.files[0];
+
+        // Pre-check against the server's configured max (if any).
+        if (maxBytes > 0 && file.size > maxBytes) {
+            alert('File is ' + fmtBytes(file.size) + ' but the upload limit is ' + fmtBytes(maxBytes) + '.');
+            return;
+        }
+
+        form.classList.add('uploading');
+        wrap.style.display = 'block';
+        btn.textContent = 'Uploading…';
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', form.action, true);
+        xhr.responseType = 'document'; // the server returns HTML (redirect or re-rendered form)
+
+        // Phase 1: upload to server (byte-progress via upload.onprogress).
+        xhr.upload.onprogress = function (ev) {
+            if (ev.lengthComputable) {
+                var pct = Math.round((ev.loaded / ev.total) * 100);
+                fill.className = 'progress-fill';
+                fill.style.width = pct + '%';
+                fill.textContent = pct + '%';
+                status.innerHTML = '<span class="progress-phase">Uploading</span> ' +
+                    fmtBytes(ev.loaded) + ' of ' + fmtBytes(ev.total);
+            }
+        };
+
+        xhr.upload.onload = function () {
+            // Upload finished; the server is now processing (metadata
+            // extraction + S3 stream). No progress signal for this
+            // phase, so show an indeterminate bar.
+            showPhase('Processing — extracting metadata and streaming to storage…');
+        };
+
+        xhr.onload = function () {
+            // The server responds with a 302 redirect (success) or a
+            // re-rendered form (error). XHR follows the redirect
+            // automatically, so we land on the graphs list HTML on
+            // success. Replace the current page with the response.
+            if (xhr.status >= 200 && xhr.status < 400) {
+                // Success: the browser followed the 302 to
+                // /ui/graphs?uploaded=1. Navigate there so the URL
+                // bar and nav state are correct.
+                window.location.href = '/ui/graphs?uploaded=1';
+            } else {
+                // Error: the response is the re-rendered form with
+                // an error message. Replace the page so the user
+                // sees it and can retry.
+                document.open();
+                document.write(xhr.responseText);
+                document.close();
+            }
+        };
+
+        xhr.onerror = function () {
+            form.classList.remove('uploading');
+            wrap.style.display = 'none';
+            btn.textContent = 'Upload';
+            alert('Upload failed: network error. The connection was lost during transfer.');
+        };
+
+        xhr.onabort = function () {
+            form.classList.remove('uploading');
+            wrap.style.display = 'none';
+            btn.textContent = 'Upload';
+        };
+
+        var fd = new FormData(form);
+        xhr.send(fd);
+    });
+})();
+</script>
 </body>
 </html>
