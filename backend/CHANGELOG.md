@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.9.0...api-v0.9.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **backend:** split multi-statement RecomputeAllConceptGroupsForRepo so concept_groups is actually repopulated ([88c1541](https://github.com/openktree/open-knowledge-tree/commit/88c1541ae86576b172ba74cdc96318af8e5c68a1))
+
 ## [0.9.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.8.0...api-v0.9.0) (2026-07-31)
 
 
