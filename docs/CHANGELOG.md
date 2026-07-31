@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0](https://github.com/openktree/open-knowledge-tree/compare/docs-v0.1.0...docs-v0.2.0) (2026-07-31)
+
+
+### Features
+
+* **audit:** expand audit coverage across handlers + bootstrap; docs + compose updates ([fb96078](https://github.com/openktree/open-knowledge-tree/commit/fb96078772af2913e44de81776b82dea567b645a))
+* **concepts:** hide small concepts below min_concept_fact_count threshold ([b4fb5c9](https://github.com/openktree/open-knowledge-tree/commit/b4fb5c9f29d869881da19d0cb6730b20f0b6ef2d))
+* **docs:** add OKT paper + MKUltra examples with direct-cite vs auto-matched UI ([6d389ec](https://github.com/openktree/open-knowledge-tree/commit/6d389ec2e93eaf69e27605a31fda181b79ec1880))
+
+
+### Bug Fixes
+
+* **citations:** route report/source citations + resolve kinds by lookup ([28aaf98](https://github.com/openktree/open-knowledge-tree/commit/28aaf9893ff1cdcfe0b73167027e3c08ec5cc828))
+* **registry:** persist promptset_hash + add enable_validation ([23e3ce2](https://github.com/openktree/open-knowledge-tree/commit/23e3ce22fca792216ed93f470d701f923830d784))
+
 ## [0.1.0] (2026-07-19)
 
 
