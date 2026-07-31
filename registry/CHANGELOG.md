@@ -6,6 +6,13 @@
 
 * **registry:** admin file-upload of graph bundles (UI + API), with streaming metadata extraction for 100s-of-GB bundles
 
+## [0.9.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.8.0...registry-v0.9.0) (2026-07-31)
+
+
+### Features
+
+* **registry:** upload progress bar in graph-upload UI ([ad46ec7](https://github.com/openktree/open-knowledge-tree/commit/ad46ec737afdd732aac6b525bae3c9c3bd64352e))
+
 ## [0.8.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.7.0...registry-v0.8.0) (2026-07-31)
 
 
