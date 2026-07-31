@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.0](https://github.com/openktree/open-knowledge-tree/compare/api-v0.7.1...api-v0.8.0) (2026-07-31)
+
+
+### Features
+
+* **concepts:** hide small concepts below min_concept_fact_count threshold ([b4fb5c9](https://github.com/openktree/open-knowledge-tree/commit/b4fb5c9f29d869881da19d0cb6730b20f0b6ef2d))
+* **fetch:** learned (host,provider) auto-skip + 403 retry for WAF-blocked hosts ([46754bb](https://github.com/openktree/open-knowledge-tree/commit/46754bb8e6f535fa6e3e0124a58a05889d4184a2))
+* **fetch:** Unpaywall OA-host timeout + 403 retry ([efc3c01](https://github.com/openktree/open-knowledge-tree/commit/efc3c0124f83ce804eb3af1d39dfef0a629ddb09))
+* **registry:** add browser UI with sources/graphs/users/tokens pages ([67a54ef](https://github.com/openktree/open-knowledge-tree/commit/67a54ef0051d0495cf93b238677ac854d3a0abc7))
+* **registry:** add email validation with resend, gated on enable_validation ([2bfc813](https://github.com/openktree/open-knowledge-tree/commit/2bfc81342b16dee1ed572712da1509dbf0ed6135))
+* **registry:** browser UI with sources/graphs/users/tokens pages ([d6b1346](https://github.com/openktree/open-knowledge-tree/commit/d6b1346d55504977a8c3cb2713aacbb54f12141a))
+
+
+### Bug Fixes
+
+* **registry:** accept form-encoded POST on /ui/tokens create ([0722d39](https://github.com/openktree/open-knowledge-tree/commit/0722d39e32f53420d85e85a28bb0eed90ef839e2))
+* **registry:** accept form-encoded POST on /ui/tokens create ([321ac4b](https://github.com/openktree/open-knowledge-tree/commit/321ac4b996f6037bc1e185059dd7aac1dc85e5ab))
+* **registry:** make API tokens authenticate, prefix with okr_, render in copyable box ([93a70f2](https://github.com/openktree/open-knowledge-tree/commit/93a70f24d200c97d89ba2b88707079d9f4a7af43))
+* **registry:** make API tokens authenticate, prefix with okr_, render in copyable box ([0e674ac](https://github.com/openktree/open-knowledge-tree/commit/0e674ac63461d6914a18718c4eda89c0e4d0c451))
+
 ## [0.7.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.7.0...api-v0.7.1) (2026-07-28)
 
 
