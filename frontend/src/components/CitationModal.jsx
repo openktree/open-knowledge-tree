@@ -120,7 +120,7 @@ export default function CitationModal(props) {
                     status: f().status,
                     fact_kind: f().fact_kind,
                     image_url: f().image_url,
-                    source_count: f().source_count,
+                    source_count: data().sourceCount,
                   }}
                   slug={props.slug}
                 />
