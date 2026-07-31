@@ -6,6 +6,13 @@
 
 * **registry:** admin file-upload of graph bundles (UI + API), with streaming metadata extraction for 100s-of-GB bundles
 
+## [0.9.1](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.9.0...registry-v0.9.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **registry:** return non-2xx on graph-upload error paths so progress-bar JS shows failures ([e084d48](https://github.com/openktree/open-knowledge-tree/commit/e084d48c5e15b2aeea71978cdcc090bd9c1394f4))
+
 ## [0.9.0](https://github.com/openktree/open-knowledge-tree/compare/registry-v0.8.0...registry-v0.9.0) (2026-07-31)
 
 
