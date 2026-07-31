@@ -258,12 +258,12 @@ services:
       UNPAYWALL_EMAIL: ${UNPAYWALL_EMAIL:-}
       # OKT_FETCH_IMPERSONATE enables the TLS-impersonation
       # tier. Set to a tls-client profile id (e.g.
-      # "chrome_124") to enable; empty disables the tier
+      # "chrome_133") to enable; empty disables the tier
       # (the provider self-disables and the chain runs
-      # unpaywall → fetch only). Defaults to chrome_124 in
+      # unpaywall → fetch only). Defaults to chrome_133 in
       # dev/prod so the TLS-fingerprint WAF bypass is on
       # out of the box.
-      OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_124}
+      OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_133}
       # FLARESOLVERR_URL points at a single headless-browser
       # sidecar (backward-compatible shorthand). Empty is
       # fine when FLARESOLVERR_ENDPOINTS is set. The dev/prod
@@ -372,7 +372,7 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY}
       OPENALEX_EMAIL: ${OPENALEX_EMAIL:-carlosgomezsoza@gmail.com}
       UNPAYWALL_EMAIL: ${UNPAYWALL_EMAIL:-}
-      OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_124}
+      OKT_FETCH_IMPERSONATE: ${OKT_FETCH_IMPERSONATE:-chrome_133}
       # FlareSolverr pool — see `api` service. The dev profile
       # boots three Byparr containers; the provider
       # round-robins across them. FLARESOLVERR_URL is kept as
