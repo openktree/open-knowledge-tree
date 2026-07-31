@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.6.0...frontend-v0.7.0) (2026-07-31)
+
+
+### Features
+
+* **graph:** realtime byte counters for export/import progress ([693a703](https://github.com/openktree/open-knowledge-tree/commit/693a703af0ebde8a5a4946f0359ad2a942886be2))
+
 ## [0.6.0](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.5.1...frontend-v0.6.0) (2026-07-31)
 
 
