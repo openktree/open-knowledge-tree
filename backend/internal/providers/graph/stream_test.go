@@ -3,13 +3,19 @@ package graph
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"hash"
 	"io"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/openktree/open-knowledge-tree/backend/internal/qdrantstore"
 )
 
 // TestStreamEncoder_ParityWithMarshal is the core correctness guard
@@ -315,3 +321,96 @@ func sha256Sum(b []byte) string {
 func hexEncode(b []byte) string { return hex.EncodeToString(b) }
 
 var _ = io.ReadAll // keep io imported (used by streamBundleToBytes)
+
+// fakeVectorUpsert records every fact/concept vector batch it receives
+// so a test can assert streamVectors parsed and flushed correctly
+// without standing up Qdrant.
+type fakeVectorUpsert struct {
+	facts    []qdrantstore.FactPoint
+	concepts []qdrantstore.ConceptPoint
+	factErr  error
+	concErr  error
+}
+
+func (f *fakeVectorUpsert) UpsertFactVectors(_ context.Context, pts []qdrantstore.FactPoint) error {
+	if f.factErr != nil {
+		return f.factErr
+	}
+	f.facts = append(f.facts, pts...)
+	return nil
+}
+
+func (f *fakeVectorUpsert) UpsertConceptVectors(_ context.Context, pts []qdrantstore.ConceptPoint) error {
+	if f.concErr != nil {
+		return f.concErr
+	}
+	f.concepts = append(f.concepts, pts...)
+	return nil
+}
+
+// TestStreamVectors_HighIdxNotMisreadAsObjectOpen is the regression
+// test for the double-read bug that surfaced as
+// "import_graph: applying bundle: expected object, got 100246".
+//
+// Before the fix, streamVectors read the opening '{' of the vectors
+// map itself and then handed the decoder to decodeObject, which also
+// tried to read '{' — but the next token was the first map KEY (a
+// stringified idx like "100246"), so decodeObject failed with
+// "expected object, got 100246". Any repo with ≥100k facts/concepts
+// triggered it on import as soon as the embeddings section was parsed.
+//
+// This test feeds a vectors object whose first key is "100246"
+// (mirroring the reported failure), pre-populates the importer's
+// factUUIDs at that idx, and asserts the vector is parsed and
+// upserted — not rejected as a stray object token.
+func TestStreamVectors_HighIdxNotMisreadAsObjectOpen(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeVectorUpsert{}
+	s := &StreamImporter{qdrant: fake}
+
+	// Register fact UUIDs at idx 100246 and 100247 so both parsed
+	// vectors are upserted (unregistered idxs are parsed-and-skipped).
+	factID := pgtype.UUID{}
+	if err := factID.Scan("11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatalf("scan fact id: %v", err)
+	}
+	s.growFactUUIDs(100246, factID)
+	factID2 := pgtype.UUID{}
+	if err := factID2.Scan("33333333-3333-4333-8333-333333333333"); err != nil {
+		t.Fatalf("scan fact id2: %v", err)
+	}
+	s.growFactUUIDs(100247, factID2)
+
+	// A fact_vectors object whose first key is "100246" — exactly the
+	// token the bug misread as the object opener.
+	dec := json.NewDecoder(strings.NewReader(`{"100246":[0.1,0.2,0.3],"100247":[0.4,0.5]}`))
+	if err := s.streamVectors(ctx, dec, "fact"); err != nil {
+		t.Fatalf("streamVectors fact: %v (want no error; the old double-read would fail here with 'expected object, got 100246')", err)
+	}
+	if len(fake.facts) != 2 {
+		t.Fatalf("upserted facts = %d, want 2", len(fake.facts))
+	}
+	if fake.facts[0].ID != asUUID(factID) {
+		t.Errorf("first upserted id = %v, want %v", fake.facts[0].ID, asUUID(factID))
+	}
+	if fake.facts[1].ID != asUUID(factID2) {
+		t.Errorf("second upserted id = %v, want %v", fake.facts[1].ID, asUUID(factID2))
+	}
+
+	// Same regression check for concept_vectors.
+	concID := pgtype.UUID{}
+	if err := concID.Scan("22222222-2222-4222-8222-222222222222"); err != nil {
+		t.Fatalf("scan concept id: %v", err)
+	}
+	s.growConceptUUIDs(100246, concID)
+	decC := json.NewDecoder(strings.NewReader(`{"100246":[0.9,0.8,0.7]}`))
+	if err := s.streamVectors(ctx, decC, "concept"); err != nil {
+		t.Fatalf("streamVectors concept: %v", err)
+	}
+	if len(fake.concepts) != 1 {
+		t.Fatalf("upserted concepts = %d, want 1", len(fake.concepts))
+	}
+	if fake.concepts[0].ID != asUUID(concID) {
+		t.Errorf("upserted concept id = %v, want %v", fake.concepts[0].ID, asUUID(concID))
+	}
+}

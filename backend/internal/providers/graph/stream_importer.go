@@ -32,6 +32,15 @@ type bodyEntry struct {
 	contentType string
 }
 
+// vectorUpsert is the subset of *qdrantstore.Store the streaming
+// importer uses to upsert fact/concept vectors. Defined as an interface
+// so unit tests can substitute a fake without standing up Qdrant;
+// *qdrantstore.Store satisfies it structurally.
+type vectorUpsert interface {
+	UpsertFactVectors(ctx context.Context, points []qdrantstore.FactPoint) error
+	UpsertConceptVectors(ctx context.Context, points []qdrantstore.ConceptPoint) error
+}
+
 // StreamImporter applies a gzipped v2 graph bundle to a repository by
 // streaming one entity at a time from the JSON, inserting in batches,
 // and discarding each row after insert. Unlike BundleImporter (which
@@ -49,7 +58,7 @@ type bodyEntry struct {
 // fixups are needed.
 type StreamImporter struct {
 	queries        *store.Queries
-	qdrant         *qdrantstore.Store
+	qdrant         vectorUpsert
 	storage        storage.FileStorage
 	repoID         pgtype.UUID
 	repoUUID       uuid.UUID
@@ -80,7 +89,9 @@ type StreamImporter struct {
 
 // NewStreamImporter constructs a StreamImporter. The arguments mirror
 // NewBundleImporter so the caller (import_graph worker) can build
-// either one from the same deps.
+// either one from the same deps. qdrant may be a *qdrantstore.Store
+// (the production implementation) or nil; nil is handled by the caller
+// (streamEmbeddings returns needsReembed=true and skips vectors).
 func NewStreamImporter(
 	queries *store.Queries,
 	qdrant *qdrantstore.Store,
@@ -1162,15 +1173,13 @@ func (s *StreamImporter) streamEmbeddings(ctx context.Context, dec *json.Decoder
 
 // streamVectors reads a vectors map (idx→[]float32) key-by-key,
 // accumulates batches of 1000, and upserts to Qdrant.
+//
+// The opening '{' of the vectors object is read by decodeObject itself
+// (not here) — reading it here would consume the first map key and make
+// decodeObject see a stringified idx (e.g. "100246") where it expects
+// '{', surfacing as "expected object, got <idx>" on repos with ≥100k
+// facts/concepts.
 func (s *StreamImporter) streamVectors(ctx context.Context, dec *json.Decoder, kind string) error {
-	t, err := dec.Token()
-	if err != nil {
-		return fmt.Errorf("reading vectors open: %w", err)
-	}
-	if d, ok := t.(json.Delim); !ok || d != '{' {
-		return fmt.Errorf("vectors is not an object")
-	}
-
 	if kind == "fact" {
 		var batch []qdrantstore.FactPoint
 		err := decodeObject(dec, func(key string) error {
