@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/openktree/open-knowledge-tree/compare/api-v0.9.1...api-v0.9.2) (2026-08-01)
+
+
+### Bug Fixes
+
+* **backend:** stop double-reading vectors object open in graph stream import ([d0ee4bf](https://github.com/openktree/open-knowledge-tree/commit/d0ee4bfe1cce6fe614f1ba30803c7a5336c4d719))
+
 ## [0.9.1](https://github.com/openktree/open-knowledge-tree/compare/api-v0.9.0...api-v0.9.1) (2026-07-31)
 
 
