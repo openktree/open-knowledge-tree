@@ -50,7 +50,7 @@ Restart opencode after the skill writes the config.
 Add this repo as a marketplace and install:
 
 ```
-/plugin marketplace add anomalyco/open-knowledge-tree-go
+/plugin marketplace add openktree/open-knowledge-tree
 /plugin install okt-agents@okt-agents-official
 ```
 
@@ -69,7 +69,7 @@ Restart Claude Code after the skill writes the config.
 ### GitHub Copilot in VS Code
 
 1. Open Settings and add the repo to `chat.plugins.marketplaces`:
-   `"anomalyco/open-knowledge-tree-go"`
+   `"openktree/open-knowledge-tree"`
 2. Command Palette → **Chat: Install Plugin** → pick `okt-agents`
 3. Ask any agent to run the `okt-setup` skill (or run `Chat: Run Skill` →
    `okt-setup`).
@@ -79,7 +79,7 @@ Restart VS Code after the skill writes `.vscode/mcp.json`.
 ### OpenAI Codex CLI
 
 ```
-codex plugin marketplace add anomalyco/open-knowledge-tree-go
+codex plugin marketplace add openktree/open-knowledge-tree
 codex plugin install okt-agents@okt-agents-official
 ```
 
