@@ -51,14 +51,44 @@ test("all three plugin.json files share the same name and version", async () => 
   }
 });
 
-test("each plugin.json points to existing agents/ and skills/ dirs", async () => {
+test("each plugin.json's agents/ and skills/ dirs exist", async () => {
+  // Claude Code auto-discovers agents/ and skills/ from the directory layout
+  // and rejects an `agents` field in plugin.json; Codex CLI and VS Code/Copilot
+  // require the explicit `agents`/`skills` fields. Both cases must point at
+  // (or default to) the same existing directories.
   for (const p of MANIFEST_PATHS) {
     const m = await readJson(p);
-    const agentsDir = join(PLUGINS, m.agents.replace(/^\.\//, ""));
-    const skillsDir = join(PLUGINS, m.skills.replace(/^\.\//, ""));
-    assert.equal(existsSync(agentsDir), true, `${p}: agents dir missing`);
-    assert.equal(existsSync(skillsDir), true, `${p}: skills dir missing`);
+    const agentsRel = m.agents ? m.agents.replace(/^\.\//, "") : "agents";
+    const skillsRel = m.skills ? m.skills.replace(/^\.\//, "") : "skills";
+    assert.equal(
+      existsSync(join(PLUGINS, agentsRel)),
+      true,
+      `${p}: agents dir missing`,
+    );
+    assert.equal(
+      existsSync(join(PLUGINS, skillsRel)),
+      true,
+      `${p}: skills dir missing`,
+    );
   }
+});
+
+test("Codex and VS Code plugin.json declare agents/skills fields", async () => {
+  // Claude's schema rejects `agents`; the other two clients require it.
+  for (const p of [
+    join(PLUGINS, ".codex-plugin", "plugin.json"),
+    join(PLUGINS, "plugin.json"),
+  ]) {
+    const m = await readJson(p);
+    assert.equal(typeof m.agents, "string", `${p}: missing agents field`);
+    assert.equal(typeof m.skills, "string", `${p}: missing skills field`);
+  }
+});
+
+test("Claude plugin.json omits agents/skills fields", async () => {
+  const m = await readJson(join(PLUGINS, ".claude-plugin", "plugin.json"));
+  assert.equal(m.agents, undefined, "Claude plugin.json must not declare agents");
+  assert.equal(m.skills, undefined, "Claude plugin.json must not declare skills");
 });
 
 // ---------------------------------------------------------------------------
