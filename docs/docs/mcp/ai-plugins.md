@@ -7,9 +7,9 @@ title: AI Client Plugins
 # AI Client Plugins (agents)
 
 OKT ships a single plugin that installs the six **Open Knowledge Tree** research
-agents into four AI coding clients. The agents are model-agnostic and talk to
-the OKT backend through the [MCP server](/docs/mcp/getting-started) — no MCP
-URL is baked into the plugin.
+agents into AI coding clients that support plugin packages. The agents are
+model-agnostic and talk to the OKT backend through the
+[MCP server](/docs/mcp/getting-started) — no MCP URL is baked into the plugin.
 
 | Agent | Role | Mode |
 |---|---|---|
@@ -20,12 +20,14 @@ URL is baked into the plugin.
 | `super-synthesizer` | Meta-synthesis across multiple sub-syntheses | subagent |
 | `reviewer` | Audits a synthesis for epistemic correctness + neutrality | subagent |
 
-Supported clients:
+Clients with a first-class plugin package:
 
-- **opencode** — via the `@okt/ai-plugins` npm package
 - **Claude Code** — via this repo as a Claude plugin marketplace
 - **GitHub Copilot in VS Code** — via this repo as a Copilot plugin marketplace
 - **OpenAI Codex CLI** — via this repo as a Codex plugin marketplace
+
+Any other MCP-speaking client can be wired by hand — see
+[Other clients](#other-clients-no-plugin-package) below.
 
 After installing the plugin in your client, run the bundled `okt-setup` skill
 to write the right MCP config block, then [authenticate with
@@ -33,25 +35,6 @@ OAuth 2.1](/docs/mcp/getting-started#how-an-mcp-client-authenticates) on first
 use.
 
 ## Install
-
-### opencode
-
-```jsonc
-// opencode.json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@okt/ai-plugins"]
-}
-```
-
-On first launch the plugin copies the six agent files into
-`~/.config/opencode/agents/` (idempotent — never overwrites your edits) and
-installs the `okt-setup` skill into `~/.config/opencode/skills/`. Then ask any
-agent:
-
-> Run the `okt-setup` skill to configure my OKT MCP server.
-
-Restart opencode after the skill writes the config.
 
 ### Claude Code
 
@@ -116,6 +99,50 @@ url = "http://localhost:8080/api/v1/mcp"
 ```
 
 Restart Codex after editing the config.
+
+## Other clients (no plugin package)
+
+If your AI client speaks MCP but has no OKT plugin package (e.g. Claude
+Desktop, Cursor, Windsurf, Goose, Continue, a custom agent harness), you can
+wire it up by hand:
+
+1. **Point your client at the OKT MCP server.** Add an HTTP MCP server named
+   `okt` pointing at `http://localhost:8080/api/v1/mcp` (or your remote OKT
+   URL). See [Getting Started with MCP](/docs/mcp/getting-started#connecting-common-clients)
+   for per-client snippets (Claude Desktop, Cursor, VS Code, MCP Inspector).
+2. **Create the six agents manually** from the prompt files below. Each client
+   has its own "agent"/"custom instruction"/"prompt" mechanism — copy the body
+   of the matching prompt file into a new agent named `okt`, `research`,
+   `investigation`, `synthesizer`, `super-synthesizer`, and `reviewer`
+   respectively. Set `okt` as primary/standalone and the other five as
+   subagents/delegates if your client distinguishes.
+3. **Authenticate via OAuth 2.1** on first call — your client drives the flow
+   automatically; see
+   [Getting Started with MCP → How an MCP client authenticates](/docs/mcp/getting-started#how-an-mcp-client-authenticates).
+
+## Agent prompts
+
+The canonical agent prompt files live in the repo under
+[`.opencode/agent/`](https://github.com/openktree/open-knowledge-tree/tree/main/.opencode/agent).
+Each file is a self-contained system prompt (frontmatter + body); copy the
+body into your client's agent/custom-instruction editor. The files are
+identical across clients — only the frontmatter shape differs, which your
+client ignores if it has its own agent config format.
+
+| Agent | Prompt file | Description |
+|---|---|---|
+| `okt` | [`okt.md`](https://github.com/openktree/open-knowledge-tree/blob/main/.opencode/agent/okt.md) | Orchestrator — entry point for research workflows |
+| `research` | [`research.md`](https://github.com/openktree/open-knowledge-tree/blob/main/.opencode/agent/research.md) | Plans + gathers evidence (graph exploration, ingestion) |
+| `investigation` | [`investigation.md`](https://github.com/openktree/open-knowledge-tree/blob/main/.opencode/agent/investigation.md) | Creates investigations, ingests sources, tracks drain |
+| `synthesizer` | [`synthesizer.md`](https://github.com/openktree/open-knowledge-tree/blob/main/.opencode/agent/synthesizer.md) | Standalone research document on one scope |
+| `super-synthesizer` | [`super-synthesizer.md`](https://github.com/openktree/open-knowledge-tree/blob/main/.opencode/agent/super-synthesizer.md) | Meta-synthesis across multiple sub-syntheses |
+| `reviewer` | [`reviewer.md`](https://github.com/openktree/open-knowledge-tree/blob/main/.opencode/agent/reviewer.md) | Audits a synthesis for epistemic correctness + neutrality |
+
+The `okt` agent is the primary entry point — users invoke it directly and it
+delegates to the five subagents as needed. If your client only supports a
+single agent/prompt, start with `okt.md`; it can still call the MCP tools
+directly for lightweight workflows, it just can't spawn the specialized
+subagents.
 
 ## Next steps
 

@@ -16,7 +16,8 @@ The end-to-end flow is:
 2. **[Register your first user](#3-register-your-first-user)** — the first
    account becomes the system admin.
 3. **[Configure the OKT agents](#4-configure-the-okt-agents-in-your-ai-client)**
-   in your AI coding client (opencode, Claude Code, VS Code Copilot, or Codex).
+   in your AI coding client (Claude Code, VS Code Copilot, Codex, or any other
+   agentic tool that speaks MCP).
 4. **[Authenticate via OAuth 2.1](#5-authenticate-via-oauth-21)** on first use
    of an OKT agent.
 
@@ -86,14 +87,11 @@ This pulls pre-built images from GitHub Container Registry and starts everything
 
 Go to **[http://localhost:3000](http://localhost:3000)** and register. The
 **first** account you create is automatically promoted to system admin
-(sysadmin) — this is safe on a localhost dev stack and is the smooth
-out-of-the-box path: no env vars, no `psql` surgery, no scripts. A starter
-repository is also created for you on first boot.
+(sysadmin). A starter repository is created for you on first boot.
 
 > For a **public** deployment, set `OKT_BOOTSTRAP_AUTO_PROMOTE=false` in
 > `.env` and use the `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars to seed an
-> explicit admin instead, so an attacker cannot become sysadmin by
-> registering first. See [Configuration Reference](/docs/reference/config).
+> explicit admin instead. See [Configuration Reference](/docs/reference/config).
 
 ## 4. Configure the OKT agents in your AI client
 
@@ -106,7 +104,6 @@ into your AI coding client. The agents talk to the OKT backend through the
 Pick your client below — full per-client instructions are in
 [AI Client Plugins](/docs/mcp/ai-plugins):
 
-- **opencode** — add `"plugin": ["@okt/ai-plugins"]` to `opencode.json`.
 - **Claude Code** — `/plugin marketplace add openktree/open-knowledge-tree`
   then `/plugin install okt-agents@okt-agents-official`.
 - **GitHub Copilot in VS Code** — Command Palette →
@@ -114,6 +111,10 @@ Pick your client below — full per-client instructions are in
   `https://github.com/openktree/open-knowledge-tree`.
 - **OpenAI Codex CLI** — `codex plugin marketplace add openktree/open-knowledge-tree`
   then `codex plugin install okt-agents@okt-agents-official`.
+- **Other agentic tools** — if your client speaks MCP but has no OKT plugin
+  package, you can wire the MCP server by hand and create the agents manually
+  from the [agent prompts](/docs/mcp/ai-plugins#agent-prompts). See
+  [AI Client Plugins → Other clients](/docs/mcp/ai-plugins#other-clients-no-plugin-package).
 
 After installing the plugin, ask any OKT agent to run the `okt-setup` skill so
 it writes the right MCP config block into your client:

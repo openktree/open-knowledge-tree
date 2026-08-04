@@ -111,6 +111,11 @@ Many config values can be set via environment variables. Env vars take precedenc
 | `REGISTRY_READ_API_KEY` | `providers.registry.read_api_key` | Registry read key |
 | `AUTH_JWTSECRET` | `auth.jwt_secret` | JWT signing secret |
 | `OKT_OAUTH_ISSUER` | `oauth.issuer` | OAuth 2.1 issuer URL |
+| `OKT_BOOTSTRAP_AUTO_PROMOTE` | `bootstrap.auto_promote_first_user` | First-user autopromotion toggle (true/false/1/0) |
+| `OKT_BOOTSTRAP_DEFAULT_ADMIN_EMAIL` | `bootstrap` | Explicit admin email (see `bootstrap` section) |
+| `OKT_BOOTSTRAP_DEFAULT_ADMIN_PASSWORD` | `bootstrap` | Explicit admin password |
+| `OKT_BOOTSTRAP_DEFAULT_ADMIN_DISPLAY_NAME` | `bootstrap` | Explicit admin display name |
+| `OKT_AUDIT_RETENTION_DAYS` | `audit.retention_days` | Audit log retention in days |
 
 ---
 
@@ -228,18 +233,70 @@ oauth:
   auth_code_ttl: 10m              # Single-use authorization codes
 ```
 
+### `api_keys`
+
+Personal API keys (personal access tokens). Users create these from the
+Profile page to authenticate the REST surface without a browser session —
+useful for CI, scripts, and the CLI. Each key is scoped to a subset of
+(object, action) permission pairs and optionally to a single repository; the
+key never grants anything its owner couldn't already do via RBAC. Keys are
+opaque, stored as sha256(hex) hashes; the raw `okt_`-prefixed token is shown
+once at creation.
+
+```yaml
+api_keys:
+  max_per_user: 20        # Cap on active keys per user (0 = built-in default 20)
+  default_ttl: 0          # Default lifetime in days when omitted (0 = no expiry)
+  max_ttl: 2160h          # 90d upper bound on any key's lifetime (0 = disable cap)
+```
+
+### `search`
+
+In-repo fact/concept search behavior (lexical vs hybrid fusion with the
+Qdrant embedding index). Separate from `providers.search` (external search
+providers). When hybrid is disabled, or when Qdrant or the embedding provider
+is not configured at boot, the search endpoints fall back to lexical-only.
+
+```yaml
+search:
+  hybrid:
+    enabled: true               # Master switch (false = lexical-only)
+    rrf_k: 60                    # Reciprocal Rank Fusion damping constant
+    min_score: 0.0              # Qdrant cosine similarity floor (0.0 = accept all)
+    over_fetch_multiplier: 3    # x limit each channel fetches before fusion
+```
+
+### `concepts`
+
+Concept-relations read surface (REST `/concepts/{id}/relations` and the MCP
+`getRelatedConcepts` tool). Classifies each relation by `shared_fact_count`
+into three bands: `insignificant` (< `min_shared_fact_count`, hidden by
+default), `weak` (between the two thresholds), `stable` (>=
+`stable_shared_fact_count`).
+
+```yaml
+concepts:
+  min_shared_fact_count: 3        # Below this = insignificant (hidden unless show_insignificant=true)
+  stable_shared_fact_count: 6     # At/above this = stable
+  min_concept_fact_count: 5       # Floor for concept list/search (show_small=true to lower)
+```
+
 ### `providers.search`
 
 Web and academic search providers.
 
 ```yaml
 providers:
+  promptset_default: ""           # Global default promptset hash (empty = built-in default)
   search:
     provider: "serper"            # Default search provider
     serper:
       api_key: ""                 # https://serper.dev
     openalex:
       email: ""                   # Polite-pool email for higher rate limits
+    registry:
+      per_page: 20                # Registry search page size (0 = default)
+      timeout: 15s                # Registry search timeout
 ```
 
 ### `providers.resolution`
@@ -403,6 +460,30 @@ providers:
     api_key: ""                              # Write key
     read_api_key: ""                         # Read key (falls back to api_key)
     allowed_models: []                       # ["*"] to allow all
+  registries: []                             # Multi-registry list (see below)
+```
+
+### `providers.registries`
+
+Multi-registry list (optional). When set, each repository can pick which
+registry it uses (cache lookup on fetch + remote browse/pull) from its
+Settings page. The legacy single `registry:` block above is the default entry
+(id `default`) when this list is empty; you don't need to duplicate it here.
+
+Each entry needs a unique `id` (used as the per-repo selector) and a `url`.
+
+```yaml
+providers:
+  registries:
+    - id: public
+      url: "https://registry.example.org"
+      auth_mode: bearer
+      api_key: "write-secret"
+      read_api_key: "read-secret"
+      allowed_models: ["*"]
+    - id: internal
+      url: "http://internal-registry:8081"
+      allowed_models: ["openai/gpt-4o"]
 ```
 
 ### `providers.summarization`
@@ -470,6 +551,7 @@ providers:
     openrouter:
       api_key: ""
       embed_batch_size: 32       # Inputs per embedding POST
+    rate_limit_wait_timeout: 1h  # How long a Chat/Embed call blocks for a rate-limiter token
     models:                      # Catalog with rate limits and cost
       - id: "google/gemma-4-31b-it"
         provider: "openrouter"
@@ -482,6 +564,25 @@ providers:
         output_cost_per_1m: 0.0
         rate_limit_rpm: 500
 ```
+
+### `providers.llm_retry`
+
+LLM retry budget shared by every AI-provider Chat/Embed call (decomposition,
+summarization, refinement, synthesis). The defaults let a single LLM call ride
+out a transient provider degradation.
+
+```yaml
+providers:
+  llm_retry:
+    max_attempts: 4              # Total attempts including the first
+    base_delay: 2s               # Backoff for attempt 2; grows exponentially
+    max_delay: 30s               # Cap on per-attempt backoff
+    per_call_timeout: 5m         # Per-attempt ctx timeout
+```
+
+`per_call_timeout` must be less than or equal to the smallest worker LLM
+timeout; the worker timeout must exceed
+`max_attempts × per_call_timeout + backoffs`.
 
 ### `bootstrap`
 
@@ -538,4 +639,16 @@ repository_presets:
     custom_contexts: ["Product", "Application", "Role"]
 
 default_repository_preset: general
+```
+
+### `audit`
+
+Audit-log retention. The daily `audit_cleanup` periodic job deletes
+`okt_system.permission_audit` rows older than `retention_days`. The default of
+30 matches the common compliance window; raise it for longer history, lower it
+to bound table growth.
+
+```yaml
+audit:
+  retention_days: 30            # Env override: OKT_AUDIT_RETENTION_DAYS
 ```
