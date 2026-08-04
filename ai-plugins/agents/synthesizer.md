@@ -6,7 +6,6 @@
 ---
 name: synthesizer
 description: Synthesis Agent — produces a standalone research document on a given topic by navigating the knowledge system, gathering evidence, and weaving it into a coherent analytical narrative.
-tools: mcp__okt__*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question
 ---
 
 

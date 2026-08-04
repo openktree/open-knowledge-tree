@@ -6,7 +6,6 @@
 ---
 name: okt
 description: Open Knowledge Tree orchestrator — the primary entry point for research workflows. Creates investigations, ingests sources, and delegates synthesis and super-synthesis to specialized subagents. Use when the user wants to research a topic, build evidence, or produce a synthesis in an OKT repository.
-tools: mcp__okt__*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question
 model: inherit
 ---
 

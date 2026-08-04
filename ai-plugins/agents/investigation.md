@@ -6,7 +6,6 @@
 ---
 name: investigation
 description: Investigation Agent — collects and ingests sources around a topic into an Open Knowledge Tree investigation, tracking ingestion progress and reporting what was gathered. Use when the orchestrator needs to build up evidence before synthesis.
-tools: mcp__okt__*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question
 ---
 
 

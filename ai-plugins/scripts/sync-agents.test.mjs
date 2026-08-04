@@ -147,10 +147,10 @@ test("emitClaudeMd produces required Claude frontmatter fields", () => {
   assert.match(out, /<!--[\s\S]*?-->/);
   assert.match(out, /^name: okt$/m);
   assert.match(out, /^description: "Orchestrator — research workflows: creates investigations\."$/m);
-  assert.match(
-    out,
-    new RegExp(`^tools: mcp__${MCP_SERVER}__\\*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question$`, "m")
-  );
+  // No `tools` field: agents inherit all available tools (including the
+  // user's OKT MCP server). A allowlist would have to enumerate
+  // Claude-specific tool names and can't glob MCP tools.
+  assert.doesNotMatch(out, /^tools:/m);
   assert.match(out, /^model: inherit$/m);
   // mode should NOT appear (Claude has no mode field).
   assert.doesNotMatch(out, /^mode:/m);

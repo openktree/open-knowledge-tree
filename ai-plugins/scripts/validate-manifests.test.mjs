@@ -153,9 +153,10 @@ test("each agents/*.md has name + description frontmatter", async () => {
     const fm = m[1];
     assert.match(fm, /^name: \S+$/m, `${f}: missing name`);
     assert.match(fm, /^description: .+$/m, `${f}: missing description`);
-    // tools field is required for Claude agents (restricts to OKT MCP).
-    assert.match(fm, /^tools: .+$/m, `${f}: missing tools`);
-    assert.match(fm, /mcp__okt__\*/, `${f}: tools must include the mcp__okt__* glob`);
+    // No `tools` field: Claude Code agents inherit all available tools
+    // (including the user's OKT MCP server). A allowlist would have to
+    // enumerate Claude-specific tool names and can't glob MCP tools.
+    assert.doesNotMatch(fm, /^tools:/m, `${f}: must not declare tools (inherits all)`);
   }
 });
 

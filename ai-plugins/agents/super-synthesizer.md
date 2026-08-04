@@ -6,7 +6,6 @@
 ---
 name: super-synthesizer
 description: Super-Synthesizer Agent — reads multiple independent synthesis documents (each produced by a separate synthesizer agent investigating a different scope of the same topic) and produces a comprehensive META-SYNTHESIS that is greater than the sum of its parts.
-tools: mcp__okt__*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question
 ---
 
 

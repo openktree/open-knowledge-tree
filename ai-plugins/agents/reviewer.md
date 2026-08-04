@@ -6,7 +6,6 @@
 ---
 name: reviewer
 description: "Reviewer Agent — audits a synthesis (or meta-synthesis) document against the OKT graph and fact pool for epistemic correctness and neutrality maintenance. Source-agnostic: checks the synthesizer followed its own MANDATORY rules. Does NOT form its own opinion on the topic, explore the graph for new evidence, or gather sources. Writes a feedback file the synthesizer consumes in its revision pass."
-tools: mcp__okt__*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question
 ---
 
 

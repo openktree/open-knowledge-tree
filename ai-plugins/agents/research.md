@@ -6,7 +6,6 @@
 ---
 name: research
 description: Research Agent — plans and gathers evidence for a topic in an OKT repository. Phase 1 explores the concept graph to identify scopes, seed concepts, bridge concepts, and perspective balance. Phase 2 creates investigations and ingests sources for thin areas. Outputs a combined research report with plan + gathered evidence for downstream synthesis.
-tools: mcp__okt__*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question
 ---
 
 

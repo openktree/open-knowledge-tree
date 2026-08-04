@@ -112,26 +112,28 @@ export function tomlEscape(s) {
 
 export function emitClaudeMd(name, src) {
   // Claude Code + VS Code/Copilot share the `.md` format (YAML frontmatter +
-  // markdown body). We use the Claude `tools` syntax (comma-separated string
-  // of tool names) which VS Code's agent loader also accepts per the
-  // cross-tool compatibility notes.
+  // markdown body).
   //
   // `okt` is the orchestrator (primary); the four subagents stay subagents.
   // Claude's frontmatter has no `mode` field — the orchestrator uses the
-  // Task tool to delegate. We restrict `tools` to OKT MCP tools plus
-  // read-only helpers so agents can't wander into editing the user's repo.
-  const tools = `mcp__${MCP_SERVER}__*, Read, Grep, Glob, TodoWrite, Task, WebFetch, question`;
+  // Task tool to delegate. We omit `tools` so the agent inherits all
+  // available tools (including whatever MCP servers the user has configured),
+  // matching how Anthropic's own agent-sdk-dev plugin ships its agents. The
+  // agent body already instructs the model to use OKT MCP tools; a tight
+  // allowlist would also have to enumerate Claude-specific tool names
+  // (AskUserQuestion, TaskCreate, ...) that differ from opencode's, and
+  // couldn't use a wildcard for the MCP server since Claude doesn't support
+  // `mcp__okt__*` glob patterns in `tools`.
   const fm = {
     name,
     description: src.frontmatter.description,
-    tools,
   };
   if (src.frontmatter.model) {
     // Claude Code doesn't understand `ollama/...`; `inherit` lets the user's
     // session model flow through. OKT agents are model-agnostic by design.
     fm.model = "inherit";
   }
-  const order = ["name", "description", "tools", "model"];
+  const order = ["name", "description", "model"];
   const fmText = serializeFrontmatter(fm, order);
   const header = [
     "<!--",
