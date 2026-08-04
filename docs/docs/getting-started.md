@@ -6,7 +6,19 @@ title: Getting Started
 
 # Getting Started
 
-Run the full OKT stack with two commands. No git clone, no Go, no Node — just Docker.
+Run the full OKT stack, register your first user, wire the OKT agents into your
+AI coding client, and authenticate via OAuth 2.1. No git clone, no Go, no Node
+— just Docker.
+
+The end-to-end flow is:
+
+1. **[Boot the stack](#1-configure-your-environment)** with `docker compose up`.
+2. **[Register your first user](#3-register-your-first-user)** — the first
+   account becomes the system admin.
+3. **[Configure the OKT agents](#4-configure-the-okt-agents-in-your-ai-client)**
+   in your AI coding client (opencode, Claude Code, VS Code Copilot, or Codex).
+4. **[Authenticate via OAuth 2.1](#5-authenticate-via-oauth-21)** on first use
+   of an OKT agent.
 
 ## 1. Configure your environment
 
@@ -70,7 +82,7 @@ This pulls pre-built images from GitHub Container Registry and starts everything
 | **Qdrant** | 6333/6334 | Vector search |
 | **FlareSolverr** ×3 | 8191–8193 | JS-challenge bypass |
 
-## 3. Open the frontend
+## 3. Register your first user
 
 Go to **[http://localhost:3000](http://localhost:3000)** and register. The
 **first** account you create is automatically promoted to system admin
@@ -82,6 +94,54 @@ repository is also created for you on first boot.
 > `.env` and use the `OKT_BOOTSTRAP_DEFAULT_ADMIN_*` env vars to seed an
 > explicit admin instead, so an attacker cannot become sysadmin by
 > registering first. See [Configuration Reference](/docs/reference/config).
+
+## 4. Configure the OKT agents in your AI client
+
+OKT ships a single plugin that installs the six research agents (`okt`,
+`research`, `investigation`, `synthesizer`, `super-synthesizer`, `reviewer`)
+into your AI coding client. The agents talk to the OKT backend through the
+[MCP server](/docs/mcp/getting-started) at
+`http://localhost:8080/api/v1/mcp`.
+
+Pick your client below — full per-client instructions are in
+[AI Client Plugins](/docs/mcp/ai-plugins):
+
+- **opencode** — add `"plugin": ["@okt/ai-plugins"]` to `opencode.json`.
+- **Claude Code** — `/plugin marketplace add openktree/open-knowledge-tree`
+  then `/plugin install okt-agents@okt-agents-official`.
+- **GitHub Copilot in VS Code** — Command Palette →
+  **Chat: Install Plugin From Source** → enter
+  `https://github.com/openktree/open-knowledge-tree`.
+- **OpenAI Codex CLI** — `codex plugin marketplace add openktree/open-knowledge-tree`
+  then `codex plugin install okt-agents@okt-agents-official`.
+
+After installing the plugin, ask any OKT agent to run the `okt-setup` skill so
+it writes the right MCP config block into your client:
+
+> Run the `okt-setup` skill to configure my OKT MCP server.
+
+The skill asks for your OKT MCP URL (default
+`http://localhost:8080/api/v1/mcp`) and writes the config to the right place
+for your client. **Restart your AI client** afterwards so it picks up the `okt`
+MCP server.
+
+## 5. Authenticate via OAuth 2.1
+
+The OKT MCP server is protected by OAuth 2.1 with PKCE. A compliant client
+self-registers and runs the authorize/token flow on first connect — you
+normally do nothing by hand.
+
+1. In your AI client, invoke any OKT agent (e.g. `@okt list my repositories`).
+2. The first call returns `401` and the client opens a browser to the OKT
+   authorize endpoint.
+3. Log in with the account you registered in step 3 and approve consent.
+4. The client caches the access token and retries the call. Subsequent calls
+   reuse the cached token; the client refreshes it automatically when it
+   expires.
+
+If your client doesn't drive the flow automatically, see
+[Getting Started with MCP](/docs/mcp/getting-started#manual-flow-for-debugging-or-scripts)
+for the manual `register → authorize → token` curl flow.
 
 ## Provider setup
 

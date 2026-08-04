@@ -68,13 +68,28 @@ Restart Claude Code after the skill writes the config.
 
 ### GitHub Copilot in VS Code
 
+Install directly from the remote repo (no local checkout or marketplace config
+needed):
+
+1. Command Palette → **Chat: Install Plugin From Source** → enter:
+   `https://github.com/openktree/open-knowledge-tree`
+2. Ask any agent to run the `okt-setup` skill (or run `Chat: Run Skill` →
+   `okt-setup`).
+
+Restart VS Code after the skill writes `.vscode/mcp.json`.
+
+<details>
+<summary>Prefer a marketplace?</summary>
+
+Add the repo as a marketplace and install from it:
+
 1. Open Settings and add the repo to `chat.plugins.marketplaces`:
    `"openktree/open-knowledge-tree"`
 2. Command Palette → **Chat: Install Plugin** → pick `okt-agents`
 3. Ask any agent to run the `okt-setup` skill (or run `Chat: Run Skill` →
    `okt-setup`).
 
-Restart VS Code after the skill writes `.vscode/mcp.json`.
+</details>
 
 ### OpenAI Codex CLI
 

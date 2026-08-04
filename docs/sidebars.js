@@ -104,7 +104,7 @@ const sidebars = {
       type: "category",
       label: "MCP Tools",
       link: { type: "doc", id: "mcp/overview" },
-      items: ["mcp/getting-started", "mcp/tools"],
+      items: ["mcp/getting-started", "mcp/ai-plugins", "mcp/tools"],
     },
   ],
   api: [
