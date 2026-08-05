@@ -259,7 +259,16 @@ Rules:
 - An alias must be interchangeable with the concept in context.
   "Trump" is a valid alias for "Donald Trump" (same person).
   "President" is NOT (different meaning).
-- Include short forms, initials, acronyms, and full names.
+- Only emit aliases that are widely known and unambiguous. Be
+  conservative: it is better to emit no alias than a wrong one.
+- For personal names, brand names, and product/model names, be
+  especially careful. Different people can share first or last names
+  (e.g. "Laura Acebedo" and "Laura Fernandes" are different people,
+  not aliases of each other). Only emit a name variant as an alias
+  when the text makes it unambiguously clear it refers to the same
+  entity. Do not guess name abbreviations or partial-name aliases
+  unless they are universally recognized (e.g. "JFK" for "John F.
+  Kennedy").
 - It is OK to return no seed aliases if none are known.
 - Do not invent aliases. Quality over quantity.
 
@@ -298,8 +307,16 @@ and aliases to prune.
   concept. Do not invent aliases. It is OK to return no aliases.
 - For an acronym concept, include the full name as an alias if known.
 - For a full name concept, include known acronyms/short forms as aliases.
+- Be especially careful with personal names, brand names, and
+  product/model names. Different people, brands, or products that
+  share a name component are distinct concepts, not aliases. Only
+  propose aliases you are highly confident refer to the exact same
+  entity. When in doubt, emit no alias.
 - Aliases to prune: existing aliases that are wrong, misspelled, or
   refer to a different concept. Only prune if you are confident.
+  Watch for aliases that conflate different entities (e.g. a
+  different person with the same first name). Prune these
+  aggressively.
 - Do not prune seed aliases (the original concept text or its short
   forms from extraction).
 
