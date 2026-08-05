@@ -13,7 +13,6 @@ const EXPORT_PHASES = [
 
 const IMPORT_PHASES = [
   { key: "downloading", label: "Downloading", icon: "↓" },
-  { key: "decoding", label: "Decoding Bundle", icon: "Z" },
   { key: "importing", label: "Importing", icon: "I" },
   { key: "completed", label: "Completed", icon: "✓" },
 ];
@@ -154,25 +153,25 @@ export default function ExportProgress(props) {
           <For each={phases}>
             {(phase) => {
               const idx = phaseIndex(phase.key);
-              const currentIdx = phaseIndex(currentPhase());
-              const isDone = currentIdx > idx;
-              const isCurrent = currentPhase() === phase.key;
+              const currentIdx = () => phaseIndex(currentPhase());
+              const isDone = () => currentIdx() > idx;
+              const isCurrent = () => currentPhase() === phase.key;
               return (
                 <div class="flex items-center gap-2 text-sm">
                   <span
                     class={`inline-flex items-center justify-center w-5 h-5 rounded-full text-xs font-mono ${
-                      isDone
+                      isDone()
                         ? "bg-green-500 text-white"
-                        : isCurrent
+                        : isCurrent()
                           ? "bg-blue-500 text-white animate-pulse"
                           : "bg-gray-200 dark:bg-gray-700 text-gray-400"
                     }`}
                   >
-                    {isDone ? "✓" : phase.icon}
+                    {isDone() ? "✓" : phase.icon}
                   </span>
                   <span
                     class={
-                      isDone || isCurrent
+                      isDone() || isCurrent()
                         ? "text-gray-700 dark:text-gray-200"
                         : "text-gray-400 dark:text-gray-500"
                     }
@@ -180,7 +179,7 @@ export default function ExportProgress(props) {
                     {phase.label}
                   </span>
                   {/* Live byte counter on the current phase */}
-                  <Show when={isCurrent}>
+                  <Show when={isCurrent()}>
                     <ByteProgressLine progress={progress()} />
                   </Show>
                 </div>
