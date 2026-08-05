@@ -81,7 +81,8 @@ synthesizer missed — that is a revision or new synthesis job, not an audit.
 
 | # | Category | What you check | How |
 |---|----------|----------------|-----|
-| 1 | **Citation reality** | Every `<fact:ID>` and `<concept:ID>` (and bare `<uuid>`) in the doc resolves to a real fact/concept in the graph. | Regex-extract every UUID from the markdown — prefixed (`fact:`, `concept:`), bare (`<uuid>`), and image (`![alt](<fact:uuid>)`). Batch `getFact` / `getConcept`. Flag 404s, wrong-kind IDs (a `concept:` ID that is actually a fact UUID — note the system auto-corrects this but it signals prompt-following failure), malformed links, and hallucinated UUIDs. |
+| 1a | **Citation reality** | Every `<fact:ID>` and `<concept:ID>` (and bare `<uuid>`) in the doc resolves to a real fact/concept in the graph. | Regex-extract every UUID from the markdown — prefixed (`fact:`, `concept:`), bare (`<uuid>`), and image (`![alt](<fact:uuid>)`). Batch `getFact` / `getConcept`. Flag 404s, wrong-kind IDs (a `concept:` ID that is actually a fact UUID — note the system auto-corrects this but it signals prompt-following failure), malformed links, and hallucinated UUIDs. |
+| 1b | **Citation syntax** | Every `fact:` / `concept:` token is wrapped in `<>` angle brackets inside a markdown link `[...](<...>)` or image embed `![...](<...>)`. Bare-bracket forms (`[fact:uuid]`, `[concept:uuid]`) and unbracketed link targets (`[text](fact:uuid)`) render as literal text in the UI — they are critical syntax failures, not cosmetic. | Regex-scan for every `fact:` / `concept:` token in the markdown. For each token, verify it sits inside `<>` and inside a `[...](<...>)` or `![...](<...>)` construct. Flag any `fact:` / `concept:` token NOT wrapped in `<>` as a "Citation syntax failure — will not render in UI" (critical, separate from the UUID-exists check in 1a). Suggested fix: rewrite as `[description](<fact:uuid>)` / `[name](<concept:uuid>)` / `![alt](<fact:uuid>)`. |
 | 2 | **Citation fidelity (drift)** | For every cited fact, the fact's text actually says what the synthesis's paraphrase claims it says. | For each cited fact, compare the fact's `text` field to the synthesis's prose around the link. Flag drift (synthesis says X, fact says Y), overstatement (synthesis says "clearly shows", fact says "may suggest"), understatement, contradiction. |
 | 3 | **Agent hypothesis grounding** | Every paragraph/sentence explicitly labeled "Agent hypothesis" cites specific originating facts; those facts exist and plausibly inspire the hypothesis. | Find every "Agent hypothesis" / "this synthesis's own analysis" / "not stated by any source" label. Verify it cites specific `<fact:ID>`/`<concept:ID>` links. Verify those facts exist (item 1) and plausibly support the inference. Flag untethered hypotheses (no originating facts cited) and hypotheses whose cited facts do not plausibly inspire the inference. |
 | 4 | **Neutrality / anti-asymmetry** | The synthesizer's own anti-asymmetry rules were followed: both scenarios built at full strength, symmetric skepticism, no one-directional falsifiability, no loaded labels, no consensus-prior framing, parallel-scenario structure for contested claims. | Scan for: Scenario A vs B length/rigor parity; one-directional falsifiability ("the suppression claim is unfalsifiable" without noting the counter is equally unfalsifiable); loaded labels (fringe, pseudoscience, debunked, believer); confident register for one side and hedged for the other; pre-deciding opening framing. |
@@ -352,17 +353,24 @@ positive form of that mandate, applied to the hypothesis audit.
    additional ground truth — a meta-synthesis claim that contradicts its
    source sub-syntheses is drift even before you check facts.
  4. **Extract citations** — regex-extract every UUID from the markdown:
-    prefixed (`<fact:ID>`, `<concept:ID>`), bare (`<uuid>`), and image embeds
-    (`![alt](<fact:ID>)`). Dedup the UUID set.
- 5. **Verify citation reality** — batch `getFact` / `getConcept` for every
-    extracted UUID. Flag 404s, wrong-kind (a `concept:` prefix on a fact
-    UUID — note the system auto-corrects but flag as prompt-following
-    failure), malformed, hallucinated. For image embeds, verify the
-    resolved fact has `fact_kind: "image"` and a non-null `image_url`;
-    flag text-fact ids embedded as images (they render as broken
-    placeholders) and empty/UUID-only alt text.
- 6. **Verify citation fidelity** — for each cited fact, compare its `text` to
-    the synthesis's paraphrase. Flag drift, overstatement, contradiction.
+     prefixed (`<fact:ID>`, `<concept:ID>`), bare (`<uuid>`), and image embeds
+     (`![alt](<fact:ID>)`). Dedup the UUID set.
+  5. **Verify citation reality** — batch `getFact` / `getConcept` for every
+     extracted UUID. Flag 404s, wrong-kind (a `concept:` prefix on a fact
+     UUID — note the system auto-corrects but flag as prompt-following
+     failure), malformed, hallucinated. For image embeds, verify the
+     resolved fact has `fact_kind: "image"` and a non-null `image_url`;
+     flag text-fact ids embedded as images (they render as broken
+     placeholders) and empty/UUID-only alt text.
+  5b. **Verify citation syntax** — for every `fact:` / `concept:` token
+     found in step 4, verify it sits inside `<>` and inside a
+     `[...](<...>)` or `![...](<...>)` construct. Flag any token NOT
+     wrapped in `<>` (e.g. `[fact:uuid]`, `[concept:uuid]`,
+     `[text](fact:uuid)`) as a citation syntax failure — it will render
+     as literal text in the UI. This is a critical failure, separate from
+     the UUID-exists check in step 5.
+  6. **Verify citation fidelity** — for each cited fact, compare its `text` to
+     the synthesis's paraphrase. Flag drift, overstatement, contradiction.
 7. **Verify agent hypothesis grounding** — find every hypothesis label, check
    it cites real originating facts and those facts plausibly inspire it.
 8. **Verify neutrality / anti-asymmetry** — scan for both-scenarios parity,
@@ -403,6 +411,7 @@ Use this structure:
 - Neutrality / anti-asymmetry flags: V
 - Loaded-label flags: U
 - Confidence-register mismatches: T
+- Citation syntax failures: S
 - Verdict: [Passed | Passed with minor fixes | Needs revision — N critical issues]
 
 ## Citation Reality Failures
@@ -410,6 +419,12 @@ Use this structure:
 - Link: `<fact:ID>` or `<concept:ID>`
 - Failure: 404 / wrong-kind / malformed
 - Suggested fix: ...
+
+## Citation Syntax Failures
+### [section heading where the token appears]
+- Token: `[fact:ID]` (no angle brackets) / `[concept:ID]` (no angle brackets) / `[text](fact:ID)` (no angle brackets)
+- Failure: will NOT render in the UI — the token appears as literal text
+- Suggested fix: rewrite as `[description](<fact:ID>)` / `[name](<concept:ID>)` / `![alt](<fact:ID>)`
 
 ## Citation Fidelity / Drift
 ### [section heading] → "quoted synthesis text"

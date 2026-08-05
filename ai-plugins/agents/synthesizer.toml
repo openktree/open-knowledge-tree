@@ -547,6 +547,21 @@ prefix when you know it, and you MAY omit it and write `[text](<uuid>)` if
 you are unsure which kind an id is. Always wrap the target in angle brackets:
 `[text](<uuid>)`, never `[text](uuid)`.
 
+The angle brackets are load-bearing for the frontend's citation parser:
+without them a `fact:` / `concept:` token renders as literal text instead of
+a clickable numbered link. Only the canonical forms below render in the UI.
+
+RIGHT (renders as a clickable numbered link):
+- `[description](<fact:factID>)` — fact citation (preferred)
+- `[name](<concept:conceptID>)` — concept citation
+- `![alt text](<fact:factID>)` — image embed
+
+WRONG (will NOT render — the token appears as literal text in the UI):
+- `[fact:factID]` — bare-bracket, no angle brackets
+- `[concept:conceptID]` — bare-bracket, no angle brackets
+- `[text](fact:factID)` — markdown link, no angle brackets
+- `[text](<fact:factID>), <fact:factID>` — citation outside a markdown link
+
 - **Fact links**: `[description](<fact:factID>)` for key evidence — routes to
   `/:slug/facts/<factID>`. Use one on EVERY specific attributed claim.
 - **Concept links**: `[concept name](<concept:conceptID>)` on first mention of
