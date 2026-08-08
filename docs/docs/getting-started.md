@@ -196,7 +196,7 @@ A walkthrough of the full workflow — booting the stack with `docker compose`,
 registering your first user, wiring the OKT agents into an AI client, and
 running a research task end-to-end.
 
-<video controls width="100%" style="max-width: 960px; border-radius: 6px;">
+<video controls width="100%">
   <source src="/okt-demo.mp4" type="video/mp4" />
   Your browser does not support the video tag. <a href="/okt-demo.mp4">Download the demo</a>.
 </video>
