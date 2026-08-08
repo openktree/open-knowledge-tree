@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.7.1...frontend-v0.7.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **frontend:** make import-progress phase stepper reactive ([d36c03d](https://github.com/openktree/open-knowledge-tree/commit/d36c03dbb802f3d6f1ae460f530e938f8248337e))
+
 ## [0.7.1](https://github.com/openktree/open-knowledge-tree/compare/frontend-v0.7.0...frontend-v0.7.1) (2026-07-31)
 
 
