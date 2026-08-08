@@ -8,6 +8,8 @@ sources, investigations, and synthesized reports from them.
 See [`AGENTS.md`](./AGENTS.md) for the full contributor guide, conventions,
 folder structure, testing policy, and artifact placement rules.
 
+![OKT end-to-end demo](docs/static/img/okt-demo.gif)
+
 ## Quick start
 
 The fastest way to a running OKT is the pre-built public images on GHCR. You
