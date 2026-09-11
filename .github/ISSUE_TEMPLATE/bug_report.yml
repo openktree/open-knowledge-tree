@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a problem with Open Knowledge Tree
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: service
+    attributes:
+      label: Affected service
+      options:
+        - api/backend
+        - frontend
+        - registry
+        - docs
+        - ai-plugins
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: OKT version / tag
+      description: e.g. `v0.1.0`, `OKT_TAG` from your `.env`, or the commit hash if running from source.
+      placeholder: api-v0.1.0 / commit abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Docker Compose (prebuilt images)
+        - Built from source
+        - Dev environment (`just dev`)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you saw vs. what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to '...'
+        2. Click '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant API/frontend/registry logs here.
+      render: shell
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Config and secrets
+      description: Reminder — **redact secrets before pasting any configuration**. Never post `JWTSecret`, `SERPER_API_KEY`, model provider API keys, passwords, or session tokens.
+      options:
+        - label: I have redacted all secrets from my logs and config snippets
+          required: true

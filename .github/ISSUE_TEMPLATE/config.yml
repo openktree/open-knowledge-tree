@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://docs.openktree.com
+    about: User and reference documentation — deployment, configuration, and how-to guides.
+  - name: GitHub Discussions
+    url: https://github.com/openktree/open-knowledge-tree/discussions
+    about: Usage questions, troubleshooting help, and ideas that aren't fully-formed feature requests.

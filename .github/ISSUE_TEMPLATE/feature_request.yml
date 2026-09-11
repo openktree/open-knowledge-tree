@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an idea or improvement for Open Knowledge Tree
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area (optional)
+      options:
+        - api/backend
+        - frontend
+        - registry
+        - docs
+        - ai-plugins
+        - other / not sure
+    validations:
+      required: false
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What are you trying to do, and what's missing or painful today? "So what?" helps — describe the outcome you need, not just the mechanism.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you'd like to happen. Concrete UI/API behavior is more actionable than abstract ideas.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative approaches you've thought about.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, links, or any other context.
