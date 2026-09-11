@@ -4,7 +4,7 @@
 
 | Layer | Tech |
 |-------|------|
-| Backend | Go 1.22+, Chi router, pgx/v5, sqlc, Casbin, Viper |
+| Backend | Go 1.26+, Chi router, pgx/v5, sqlc, Casbin, Viper |
 | Frontend | SolidJS, Vite, Tailwind CSS, @solidjs/router |
 | Data | PostgreSQL 16 |
 | DevOps | Docker Compose, `just` runner |
@@ -14,6 +14,16 @@
 **Backend**
 - **sqlc**: Write SQL in `backend/db/queries/*.sql` → generated typesafe Go in `backend/internal/store`. Never hand-write store boilerplate.
 - **Provider Strategy**: Search and resolution use strategy/adapter patterns (`internal/providers/`). Register new providers in `cmd/app/api.go`.
+- **AI providers**: `internal/providers/ai` — chat + embedding gateway (openrouter, ollama, ollama_cloud) with rate limiting and token-usage tracking.
+- **Vector store**: `internal/qdrantstore` — gRPC Qdrant client (`okt_facts` / `okt_concepts` collections); Postgres stays the source of truth.
+- **Hybrid search**: `internal/search` — lexical tsvector + Qdrant cosine fused via Reciprocal Rank Fusion; fail-open to lexical-only when the vector side is unavailable.
+- **Concept grouping**: `internal/concepts` — canonical grouping of per-context concept rows + vector alias disambiguation.
+- **Promptsets**: `internal/promptset` — versioned prompt sets (built-in + custom, content-hash identity).
+- **Tasks**: `internal/taskmanager` — River queue wrapper (heartbeats, orphan rescue, stale-unique-key sweep, stuck-txn watchdog); 23 job kinds in `internal/taskmanager/tasks/`, queues sized via the `task.queues` config.
+- **AI phase providers** (under `internal/providers/`): `refinement` / `summarization` / `synthesis` (concept refinement, summary slices, synthesis), `decomposition` (chunking / fact / image / concept extraction), `claims` + `posture` (report auto-citation), `content_parsing` (Trafilatura + MuPDF), `ontology` (embedded 88 DBpedia-L3 context categories), `storage` (local + S3/MinIO blobs), `graph` (Shared Graphs export/import bundles), `registry` (federation client).
+- **Registry import**: `internal/registryimport` — single importer for pre-computed fact/concept embeddings from registry decomposition packages (shared by all pull paths).
+- **Bootstrap**: `internal/bootstrap` — first-boot seeding of the default admin user and default repository.
+- **Audit**: `internal/audit` — permission audit recorder (`okt_system.permission_audit`), best-effort + async.
 - **RBAC**: Casbin with a custom `pgx` adapter (`internal/rbac/adapter.go`). Policies are rows in PostgreSQL.
 - **Config**: Layered Viper loading: `configs/config.default.yaml` → `configs/config.local.yaml` → `.env` overrides. The default is bundled into the binary (`backend/configs/embed.go`) and auto-written to `<binary_dir>/configs/config.default.yaml` on first run when no on-disk copy is found. Searched in `./configs`, `.`, the binary's directory, and `<binary-dir>/configs`; override the search with `--config <file|dir>`.
 - **Schema**: migrations live in `backend/db/migrations/NNNN_*.up.sql` / `.down.sql`, embedded as `backend.MigrationsFS` and applied by golang-migrate at boot (see `backend/internal/dbpool/registry.go`).
@@ -45,27 +55,52 @@ open-knowledge-tree/
 │   │   │   │   ├── repository.go # Repository CRUD + GetMyPermissions
 │   │   │   │   ├── oauth.go      # OAuth 2.1 authorize/token/register/revoke
 │   │   │   │   ├── oauth_consent.go # server-rendered login + consent HTML
-│   │   │   │   ├── mcp.go        # MCP server (mark3labs/mcp-go) + 16 tools (getRepositories, searchFacts, getFact, searchConcepts, getConcept, getConceptSummaries, getRelatedConcepts, getInvestigation, createInvestigation, searchSources, listSearchProviders, fetchAndProcessSource, getSourceTasks, createReport, getReport, listReports, getReportTasks)
+│   │   │   │   ├── mcp.go        # MCP server (mark3labs/mcp-go) + 20 tools (getRepositories, searchFacts, getFact, searchConcepts, getConcept, getConceptSources, getConceptSummaries, getRelatedConcepts, getInvestigation, createInvestigation, addInvestigationSource, fetchAndProcessSource, getSourceTasks, searchSources, listSearchProviders, createReport, getReport, updateReport, listReports, getReportTasks)
 │   │   │   │   └── source.go     # ListProviders, TestSearch, ClassifyResource
 │   │   │   ├── middleware/       # HTTP middlewares (AuthRequired, RequirePermission, OAuthBearer)
 │   │   │   └── httputil/         # Response helpers (WriteJSON/WriteError) and context keys
+│   │   ├── audit/                 # Permission audit recorder (best-effort, async writes)
 │   │   ├── auth/                 # JWT and crypto helpers (transport-agnostic)
+│   │   ├── bootstrap/             # First-boot seeding: default admin user + default repository
+│   │   ├── concepts/              # Concept grouping domain logic (canonical groups, alias disambiguation)
 │   │   ├── config/               # Config struct and Load()
+│   │   ├── dbpool/                # Multi-database pool registry (search_path wiring, per-repo pool resolution)
 │   │   ├── oauth/                # OAuth 2.1 authorization server (transport-agnostic)
 │   │   │   ├── token.go          # JWT issue/verify, PKCE, opaque-token helpers
 │   │   │   ├── types.go          # Config, TokenPair, ClientRegistrationResponse
 │   │   │   └── server.go         # authorize/token/register/revoke logic
+│   │   ├── promptset/             # Versioned prompt sets (built-in + custom, content-hash identity)
 │   │   ├── providers/            # External integrations (transport-agnostic)
+│   │   │   ├── ai/               # Chat + embedding providers (openrouter, ollama, ollama_cloud; rate limiting + usage tracking)
+│   │   │   ├── claims/           # Report auto-citation: sentence → claims extraction
+│   │   │   ├── content_parsing/  # Raw document → clean text/HTML/images (Trafilatura + MuPDF)
+│   │   │   ├── decomposition/    # Chunking + fact / image / concept extraction providers
+│   │   │   ├── fetch/            # Resolution providers + strategy
+│   │   │   │   ├── resolution.go # ResolutionProvider interface, Resource, ResolvedContent
+│   │   │   │   ├── http_fetch.go # HTTP fetch implementation
+│   │   │   │   ├── unpaywall.go  # Open-Access PDF resolution (Unpaywall)
+│   │   │   │   ├── tls_impersonation.go # TLS-fingerprint impersonation fetch
+│   │   │   │   ├── flaresolverr.go # FlareSolverr-backed fetch (bot challenges)
+│   │   │   │   └── strategy.go   # FetchStrategy (composes resolution providers)
+│   │   │   ├── graph/            # Shared Graphs export/import bundles
+│   │   │   ├── ontology/         # Embedded 88 DBpedia-L3 context categories
+│   │   │   ├── posture/          # Report auto-citation: supports/contradicts/related classifier
+│   │   │   ├── refinement/       # Concept refinement LLM phase
+│   │   │   ├── registry/         # OKT registry federation client (cache-hit pulls, remote search)
 │   │   │   ├── search/           # Search providers (interface + concrete impls)
 │   │   │   │   ├── search.go     # SearchResult, SearchProvider interface
 │   │   │   │   ├── serper.go     # Serper (Google Search)
-│   │   │   │   └── openalex.go   # OpenAlex (Academic Works)
-│   │   │   └── fetch/            # Resolution providers + strategy
-│   │   │       ├── resolution.go # ResolutionProvider interface, Resource, ResolvedContent
-│   │   │       ├── fetch.go      # HTTP fetch implementation
-│   │   │       └── strategy.go   # FetchStrategy (composes resolution providers)
+│   │   │   │   ├── openalex.go   # OpenAlex (Academic Works)
+│   │   │   │   └── registry.go   # OKT Registry (cached sources from the federation hub)
+│   │   │   ├── storage/          # Blob storage backends (local filesystem + S3/MinIO)
+│   │   │   ├── summarization/    # Per-concept summary-slice LLM phase
+│   │   │   └── synthesis/        # Concept synthesis LLM phase
+│   │   ├── qdrantstore/           # Qdrant gRPC client (okt_facts / okt_concepts; Postgres is source of truth)
 │   │   ├── rbac/                 # Casbin service, adapter, seed
-│   │   └── store/                # sqlc-generated code (DO NOT EDIT)
+│   │   ├── registryimport/        # Imports pre-computed embeddings from registry decomposition packages
+│   │   ├── search/                # Hybrid search: lexical tsvector + Qdrant cosine fused via RRF (fail-open)
+│   │   ├── store/                # sqlc-generated code (DO NOT EDIT)
+│   │   └── taskmanager/           # River queue wrapper; tasks/ holds the 23 job kinds
 │   ├── docker-compose.yml        # postgres, api, frontend, test services
 │   └── sqlc.yaml                 # sqlc codegen config
 ├── frontend/
@@ -75,6 +110,9 @@ open-knowledge-tree/
 │   │   ├── services/             # API client module
 │   │   └── store/                # Solid global state modules
 │   └── package.json
+├── registry/                      # Standalone federation hub service (SQLite/Postgres metadata + S3/MinIO blobs)
+├── docs/                          # Docusaurus documentation site (docs.openktree.com)
+├── ai-plugins/                    # Plugin installing the OKT research agents into AI coding clients
 ├── .env                          # Secrets injected by docker-compose / Viper
 └── justfile                      # Dev commands (`just dev`, `just test-e2e`)
 ```
