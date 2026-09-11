@@ -6,7 +6,7 @@ title: MCP Tools Reference
 
 # MCP Tools Reference
 
-All 18 tools registered in `backend/internal/api/handler/mcp.go:192-605`. Every tool takes a `repository` argument (UUID or slug) unless noted.
+All 20 tools registered in `backend/internal/api/handler/mcp.go`. Every tool takes a `repository` argument (UUID or slug) unless noted.
 
 ---
 
@@ -109,6 +109,22 @@ Get a concept's full group (all contexts sharing the canonical name) plus the au
 | `concept` | string | yes | Concept UUID or canonical name |
 
 **Returns:** the concept group (contexts, aliases, fact counts) + `synthesis` (the `concept_syntheses` content) when one exists.
+
+---
+
+### getConceptSources
+
+List the unique sources backing a concept's facts, with a `fact_count` per source — the provenance signal for a concept.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `repository` | string | yes | Repository UUID or slug |
+| `concept` | string | yes | Concept UUID or canonical name |
+| `context` | string | no | Narrows to a single context's concept_id when `concept` is a canonical name (default: aggregate all contexts sharing the name) |
+| `limit` | number | no | Max sources (1-200, default 50) |
+| `offset` | number | no | Pagination offset (default 0) |
+
+**Returns:** `{sources: [{id, url, doi, parsed_title, parsed_author, fact_count}], total, limit, offset}`.
 
 ---
 
@@ -257,6 +273,26 @@ Get a report's metadata and per-sentence annotations.
 | `reportId` | string | yes | Report UUID (from `createReport`) |
 
 **Returns:** `{id, title, topic, status, body_md, sentence_count, similarity_threshold, embedded_model, created_at, annotations: [{sentence_index, sentence_text, fact: {id, text, status, fact_kind, source_count, created_at}, score}]}`. Score is cosine similarity 0..1 (higher = stronger match).
+
+---
+
+### updateReport
+
+Update a report's title/topic/body and/or reparent it. Mirrors the REST `PUT /reports/{reportID}`.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `repository` | string | yes | Repository UUID or slug |
+| `reportId` | string | yes | Report UUID to update |
+| `title` | string | yes | New title |
+| `text` | string | yes | New report body as raw markdown |
+| `topic` | string | no | New topic / free-text description |
+| `parentId` | string | no | UUID of a report to set as parent; an explicit empty string clears the parent (top-level). Omit to leave parentage unchanged |
+| `childrenIds` | string[] | no | Existing report UUIDs to reparent under this report |
+
+Cycle prevention: `parentId` must not be this report or any of its descendants. When `text` differs from the stored body, an auto-annotation job is enqueued and `status` resets to `pending`; reparenting alone does not re-annotate. All ids must belong to the same repository.
+
+**Returns:** the updated report.
 
 ---
 

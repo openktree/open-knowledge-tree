@@ -6,7 +6,7 @@ title: MCP Overview
 
 # MCP Overview
 
-OKT exposes 18 tools via the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP), allowing an AI agent to fetch sources, search facts and concepts, track ingestion, and create annotated reports — all over OAuth 2.1 bearer auth.
+OKT exposes 20 tools via the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP), allowing an AI agent to fetch sources, search facts and concepts, track ingestion, and create annotated reports — all over OAuth 2.1 bearer auth.
 
 ## Endpoint
 

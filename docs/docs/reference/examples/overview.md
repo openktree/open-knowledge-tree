@@ -31,6 +31,8 @@ Both kinds may also carry a **posture** (supports / contradicts / related), show
 
 ## Examples
 
+The list runs from neutral-domain demonstrations (the OKT paper itself, agroforestry, human alimentation) to contested-topic ones (miraculous healing, relationship dynamics, MKUltra, the shadow fleet) — the later examples double as stress tests for OKT's evidence-tiering, showing how declassified record, attributed testimony, and contested debate are kept apart.
+
 1. [Atomic Facts and Emergent Concept Graphs](./paper) — **the OKT paper, written by OKT.** A self-referential deep dive on OKT's own mechanisms: atomic fact decomposition, the emergent concept graph, and the fact-co-occurrence relations that fall out of it. Carries both direct cites (`[D{N}]`, amber) and auto-matched annotations (`[N]`, blue). **Authored by GLM 5.2.**
 2. [The Modular Tropical Agroforestry Recipe Book](./agroforestry) — a 4-scope meta-synthesis (~1,300 sources, 100,000+ facts) integrating tropical polyculture architecture, belowground mechanisms, mycorrhizal/microbial symbiosis, and mushroom & pest ecology into a modular recipe book. Citations carry a posture (supports / contradicts / related). **Authored by GLM 5.2.**
 3. [Human Alimentation: A Multidimensional Feeding Meta-Synthesis](./humanalimentation) — a 9-scope meta-synthesis integrating contemporary and global foodways, ancient and historical diets, protein sources, nutrient matrices, disease and lifespan, mood and cognition, life-stage physiology, lived and community evidence, and methods, governance, conflicts, and incentives. Citations carry a posture (supports / contradicts / related). **Authored by GPT 5.6 Sol.**

@@ -160,7 +160,7 @@ The official Inspector (`@modelcontextprotocol/inspector`) is the fastest way to
 npx @modelcontextprotocol/inspector
 ```
 
-In the UI, set **Transport Type** to `Streamable HTTP` and **URL** to `http://localhost:8080/api/v1/mcp`. Click Connect; the Inspector runs the OAuth flow in a popup, lists the 18 tools, and lets you call each with a JSON args editor. This is the easiest way to verify a tool's argument shape before wiring it into a client.
+In the UI, set **Transport Type** to `Streamable HTTP` and **URL** to `http://localhost:8080/api/v1/mcp`. Click Connect; the Inspector runs the OAuth flow in a popup, lists the 20 tools, and lets you call each with a JSON args editor. This is the easiest way to verify a tool's argument shape before wiring it into a client.
 
 ## Verifying the connection
 

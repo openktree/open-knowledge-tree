@@ -52,3 +52,30 @@ Summaries and syntheses are the slow-accumulation layer. Summaries incrementally
 - **Qdrant**: fact vectors (`okt_facts` collection) and concept vectors (`okt_concepts` collection). Qdrant is a dumb vector store — payloads carry `{repository_id, status}` only; Postgres is the single source of truth for everything except the vector.
 
 See [Architecture > Schema](/docs/architecture/schema) for the full table reference.
+
+## Beyond the core stages: ops and federation jobs
+
+The seven stages above are the ingestion spine, but the worker registry in `backend/internal/taskmanager/tasks/` holds 23 job kinds. The rest fall into three groups:
+
+**Federation (registry contribute / pull)**
+
+- `contribute_source` — upload one source's decomposition package (facts, concepts, embeddings) to the registry; chained after `cleanup_facts` so only stable, deduplicated facts leave the repo.
+- `contribute_all` — contribute every eligible source in the repository to the registry.
+- `pull_all_from_registry` — pull every cached source the registry can offer this repository (the "Pull All" button).
+- `pull_remote_batch` — pull a batch of remote registry source ids into the local repository (the Remote UI's "Pull page" / "Pull all results" buttons).
+- `export_graph` — build a whole-repository graph bundle and push it to the registry.
+- `import_graph` — pull a shared graph bundle and re-insert every entity into the target repository.
+
+**Maintenance & ops**
+
+- `fact_catchup` — daily sweep that deletes stale `to_delete` / `new` facts (older than `dedup.catchup_max_age`) across every database, including their Qdrant vectors.
+- `audit_cleanup` — daily prune of `okt_system.permission_audit` rows past the configured retention.
+- `refresh_concept_relations` — refresh the `concept_relations` materialized view (stage 6c above; also runs on a schedule via the companion `refresh_all_concept_relations` job so every database stays fresh).
+- `recompute_concept_groups` — full recompute of the `concept_groups` summary table, repairing drift from the incremental updates.
+- `migrate_context` — merge a concept's context into another ontology class and re-map its facts.
+
+**Reporting**
+
+- `annotate_report` — the report auto-citation pass: chunk the report body into sentences, embed each, and match against the repository's facts (with supports / contradicts / related posture classification).
+
+All of these share the same River queue infrastructure and are observable through the REST `/tasks` endpoints and the `getSourceTasks` / `getReportTasks` MCP tools.
