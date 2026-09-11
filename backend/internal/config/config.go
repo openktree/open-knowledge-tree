@@ -1087,8 +1087,10 @@ func (s SummarizationConfig) TierFor(factCount int) (batchSize, maxTokens int) {
 // When Enabled is false or the provider/model is not configured, the
 // synthesize_concept worker is a no-op and summarize_concepts does
 // not enqueue it. MaxTokens caps the LLM's output length per
-// synthesis (default 1200, roughly 900 words — a definition is
-// richer than a single summary slice).
+// synthesis (default 3000, roughly 2250 words — a definition is
+// richer than a single summary slice, and large concepts with many
+// summary slices need the extra room to exercise the parallel-scenario
+// and attribution analyses the system prompt mandates).
 //
 // MaxRelatedConcepts (N1) caps how many related concept names with
 // per-context shared_fact_counts are loaded as the graph-structure
@@ -1102,7 +1104,7 @@ type SynthesisConfig struct {
 	Provider            string `mapstructure:"provider"`              // ai provider id, e.g. "openrouter"
 	Model               string `mapstructure:"model"`                 // synthesis chat model id
 	ImagePickerModel    string `mapstructure:"image_picker_model"`    // image-picker model id; defaults to Model
-	MaxTokens           int    `mapstructure:"max_tokens"`            // synthesis output cap; default 1200
+	MaxTokens           int    `mapstructure:"max_tokens"`            // synthesis output cap; default 3000
 	MaxImages           int    `mapstructure:"max_images"`            // max embedded images; default 10
 	MaxImageCandidates  int    `mapstructure:"max_image_candidates"`  // DB cap before picker; default 50
 	MaxRelatedConcepts  int    `mapstructure:"max_related_concepts"`  // top N1 related concept names + per-context counts; default 10
@@ -1150,7 +1152,7 @@ func (s SynthesisConfig) LLMTimeoutOr(def time.Duration) time.Duration {
 	return 25 * time.Minute
 }
 
-// MaxTokensOr returns the configured MaxTokens or the default (1200)
+// MaxTokensOr returns the configured MaxTokens or the default (3000)
 // when zero/negative.
 func (s SynthesisConfig) MaxTokensOr(def int) int {
 	if s.MaxTokens > 0 {

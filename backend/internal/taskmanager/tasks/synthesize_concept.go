@@ -192,7 +192,7 @@ func (w *SynthesizeConceptsWorker) Work(ctx context.Context, job *river.Job[Synt
 		}
 	}
 
-	maxTokens := w.cfg.MaxTokensOr(1200)
+	maxTokens := w.cfg.MaxTokensOr(3000)
 	maxImages := w.cfg.MaxImagesOr(10)
 	maxCands := w.cfg.MaxImageCandidatesOr(50)
 	// N1: top related concept names + per-context counts (graph block).
