@@ -231,7 +231,15 @@ func NewMultiDBTestEnv(t testing.TB) *MultiDBTestEnv {
 	if dbURL == "" {
 		dbURL = "postgres://okt:okt_test@localhost:5433/okt?sslmode=disable"
 	}
-	tasksURL := "postgres://okt:okt_test@localhost:5433/okt_tasks?sslmode=disable"
+	// The tasks database URL is derived from OKT_TEST_DATABASE_URL
+	// by swapping the database name, unless OKT_TEST_TASKS_DATABASE_URL
+	// overrides it outright. Deriving keeps the two pools consistent
+	// when the host/port changes (CI matrix, port conflicts with
+	// other projects' Postgres containers).
+	tasksURL := os.Getenv("OKT_TEST_TASKS_DATABASE_URL")
+	if tasksURL == "" {
+		tasksURL = "postgres://okt:okt_test@localhost:5433/okt_tasks?sslmode=disable"
+	}
 
 	// Reset both databases. We open a one-off pool for the
 	// reset so the registry can later open them with the
