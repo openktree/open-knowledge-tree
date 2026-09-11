@@ -69,7 +69,7 @@ User and reference docs are hosted at **<https://docs.openktree.com>**.
 
 | Service | Path | Description |
 |---------|------|-------------|
-| **API** | `backend/` | Go 1.22+ backend. Chi router, pgx/v5, sqlc-generated store, Casbin RBAC, OAuth 2.1 authorization server, MCP server, River background jobs, layered Viper config. Multi-database Postgres layout (system + per-repository schemas) with tiered isolation. |
+| **API** | `backend/` | Go 1.26+ backend. Chi router, pgx/v5, sqlc-generated store, Casbin RBAC, OAuth 2.1 authorization server, MCP server, River background jobs, layered Viper config. Multi-database Postgres layout (system + per-repository schemas) with tiered isolation. |
 | **Frontend** | `frontend/` | SolidJS + Vite + Tailwind CSS single-page app. `@solidjs/router`, signal-based stores, thin fetch API layer. |
 | **Registry** | `registry/` | Standalone Go service that catalogs repositories and routes push/pull/search across OKT instances. Backed by SQLite + MinIO/S3. |
 | **Docs** | `docs/` | Docusaurus site for user and reference documentation. |
@@ -85,7 +85,7 @@ providers like Unpaywall, FlareSolverr, HTTP fetch) live under
 - **[just](https://github.com/casey/just)** (command runner) — required for the
   development workflows below; the `just` recipes wrap the source-build compose
   files.
-- Go 1.22+ (for running e2e tests and building backend binaries on demand).
+- Go 1.26+ (for running e2e tests and building backend binaries on demand).
 - Node 18+ (for the frontend and docs site).
 
 ## Common commands

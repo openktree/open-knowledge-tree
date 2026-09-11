@@ -6,7 +6,7 @@
 # `extlib pkgconfig` CGo build path.
 # We build with CGo enabled because go-fitz — the MuPDF
 # binding used by the PDF content parser — is CGo-only.
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 # Enable the community repo: the `mupdf-dev` package
 # lives there, and go-fitz's CGo build path invokes
 # `pkg-config mupdf` to discover the system MuPDF.

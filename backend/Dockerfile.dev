@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine
+FROM golang:1.26-alpine
 ENV GOTOOLCHAIN=auto
 # Enable the community repo so we can install mupdf-dev
 # (headers + pkg-config file) and mupdf-libs (runtime
