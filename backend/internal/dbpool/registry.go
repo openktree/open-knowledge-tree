@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -199,7 +200,14 @@ func dsnWithSearchPath(db config.DatabaseConfig) (string, error) {
 		return "", err
 	}
 	q := parsed.Query()
-	q.Set("search_path", searchPath)
+	// No spaces: url.Values.Encode turns spaces into "+" and
+	// pgx >= v5.11 parses the search_path DSN parameter as a
+	// comma-separated identifier list without decoding "+" as a
+	// space — the spaced form silently becomes one bogus schema
+	// name, so CURRENT_SCHEMA() returns NULL and the migrate
+	// driver fails to initialize. The SET form in openPool keeps
+	// its spaces; only this DSN form must be space-free.
+	q.Set("search_path", strings.ReplaceAll(searchPath, " ", ""))
 	parsed.RawQuery = q.Encode()
 	return parsed.String(), nil
 }
