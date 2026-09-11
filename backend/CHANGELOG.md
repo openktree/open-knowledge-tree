@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.3](https://github.com/openktree/open-knowledge-tree/compare/api-v0.9.2...api-v0.9.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* **api:** make the migration DSN search_path compatible with pgx &gt;= 5.11 ([e88228c](https://github.com/openktree/open-knowledge-tree/commit/e88228ca5eef6d6450b299b93a1efd3c644115db))
+* **api:** raise synthesis max_tokens default to 3000 ([f5b6475](https://github.com/openktree/open-knowledge-tree/commit/f5b64754b02f4bb7cf77f3ec98b346b44dc296a9))
+
 ## [0.9.2](https://github.com/openktree/open-knowledge-tree/compare/api-v0.9.1...api-v0.9.2) (2026-08-01)
 
 
